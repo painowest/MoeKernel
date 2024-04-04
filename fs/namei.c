@@ -4040,6 +4040,19 @@ SYSCALL_DEFINE3(mkdirat, int, dfd, const char __user *, pathname, umode_t, mode)
 	}
 #endif
 
+#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
+	struct filename* fname;
+	int status;
+
+	fname = getname_safe(pathname);
+	status = susfs_suspicious_path(fname, &error, SYSCALL_FAMILY_MKDIRAT);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+#endif
+
 retry:
 	dentry = user_path_create(dfd, pathname, &path, lookup_flags);
 	if (IS_ERR(dentry))
@@ -4411,6 +4424,19 @@ SYSCALL_DEFINE3(symlinkat, const char __user *, oldname,
 	}
 #endif
 
+#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
+	struct filename* fname;
+	int status;
+
+	fname = getname_safe(newname);
+	status = susfs_suspicious_path(fname, &error, SYSCALL_FAMILY_SYMLINKAT_NEWNAME);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+#endif
+
 	from = getname(oldname);
 	if (IS_ERR(from))
 		return PTR_ERR(from);
@@ -4543,6 +4569,27 @@ SYSCALL_DEFINE5(linkat, int, olddfd, const char __user *, oldname,
 	int error;
 	struct filename* fname;
 	int status;
+
+#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
+	struct filename* fname;
+	int status;
+
+	fname = getname_safe(oldname);
+	status = susfs_suspicious_path(fname, &error, SYSCALL_FAMILY_LINKAT_OLDNAME);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+
+	fname = getname_safe(newname);
+	status = susfs_suspicious_path(fname, &error, SYSCALL_FAMILY_LINKAT_NEWNAME);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+#endif
 
 #if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
 	struct filename* fname;
@@ -4848,6 +4895,27 @@ SYSCALL_DEFINE5(renameat2, int, olddfd, const char __user *, oldname,
 	}
 #endif
 
+#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
+	struct filename* fname;
+	int status;
+
+	fname = getname_safe(oldname);
+	status = susfs_suspicious_path(fname, &error, SYSCALL_FAMILY_RENAMEAT2_OLDNAME);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+
+	fname = getname_safe(newname);
+	status = susfs_suspicious_path(fname, &error, SYSCALL_FAMILY_RENAMEAT2_NEWNAME);
+	putname_safe(fname);
+
+	if (status) {
+		return error;
+	}
+#endif
+
 	if (flags & ~(RENAME_NOREPLACE | RENAME_EXCHANGE | RENAME_WHITEOUT))
 		return -EINVAL;
 
@@ -4887,6 +4955,13 @@ retry:
 		error = -ENOENT;
 		goto exit;
 	}
+
+#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
+	status = susfs_suspicious_path(to, &error, SYSCALL_FAMILY_RENAMEAT2_NEWNAME);
+	if (status) {
+		goto exit;
+	}
+#endif
 
 #if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
 	status = susfs_suspicious_path(to, &error, SYSCALL_FAMILY_RENAMEAT2_NEWNAME);
