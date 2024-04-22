@@ -462,6 +462,10 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma, int is_pid)
 	unsigned long start, end;
 	dev_t dev = 0;
 	const char *name = NULL;
+#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
+	char tmpname[SUSFS_MAX_LEN_PATHNAME];
+	int ret = 0;
+#endif
 
 	if (file) {
 		struct inode *inode = file_inode(vma->vm_file);
@@ -472,11 +476,21 @@ show_map_vma(struct seq_file *m, struct vm_area_struct *vma, int is_pid)
 
 	start = vma->vm_start;
 	end = vma->vm_end;
+
 #if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
-	if (susfs_suspicious_maps(ino, &ino, &dev)) return;
+    ret = susfs_suspicious_maps(ino, &ino, &dev, tmpname);
 #endif
+
 	show_vma_header_prefix(m, start, end, flags, pgoff, dev, ino);
 
+#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
+	if (ret) {
+		seq_pad(m, ' ');
+		seq_puts(m, tmpname);
+		seq_putc(m, '\n');
+		return;
+	}
+#endif
 	/*
 	 * Print the dentry name for named mappings, and a
 	 * special [heap] marker for the heap:

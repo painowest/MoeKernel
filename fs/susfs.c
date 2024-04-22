@@ -28,7 +28,7 @@ bool is_log_enable = true;
 #define SUSFS_LOGI(fmt, ...) if (is_log_enable) pr_info("susfs: " fmt, ##__VA_ARGS__)
 #define SUSFS_LOGE(fmt, ...) if (!is_log_enable) pr_err("susfs: " fmt, ##__VA_ARGS__)
 
-int susfs_add_suspicious_path(struct st_susfs_suspicious_path* __user user_info) {
+int susfs_add_sus_path(struct st_susfs_suspicious_path* __user user_info) {
     struct st_susfs_suspicious_path_list *cursor, *temp;
     struct st_susfs_suspicious_path_list *new_list = NULL;
 	struct st_susfs_suspicious_path info;
@@ -61,7 +61,7 @@ int susfs_add_suspicious_path(struct st_susfs_suspicious_path* __user user_info)
     return 0;
 }
 
-int susfs_add_mount_type(struct st_susfs_suspicious_mount_type* __user user_info) {
+int susfs_add_sus_mount_type(struct st_susfs_suspicious_mount_type* __user user_info) {
     struct st_susfs_suspicious_mount_type_list *cursor, *temp;
     struct st_susfs_suspicious_mount_type_list *new_list = NULL;
 	struct st_susfs_suspicious_mount_type info;
@@ -94,7 +94,7 @@ int susfs_add_mount_type(struct st_susfs_suspicious_mount_type* __user user_info
     return 0;
 }
 
-int susfs_add_mount_path(struct st_susfs_suspicious_mount_path* __user user_info) {
+int susfs_add_sus_mount_path(struct st_susfs_suspicious_mount_path* __user user_info) {
     struct st_susfs_suspicious_mount_path_list *cursor, *temp;
     struct st_susfs_suspicious_mount_path_list *new_list = NULL;
 	struct st_susfs_suspicious_mount_path info;
@@ -127,7 +127,7 @@ int susfs_add_mount_path(struct st_susfs_suspicious_mount_path* __user user_info
     return 0;
 }
 
-int susfs_add_suspicious_kstat(struct st_susfs_suspicious_kstat* __user user_info) {
+int susfs_add_sus_kstat(struct st_susfs_suspicious_kstat* __user user_info) {
     struct st_susfs_suspicious_kstat_list *cursor, *temp;
     struct st_susfs_suspicious_kstat_list *new_list = NULL;
 	struct st_susfs_suspicious_kstat info;
@@ -138,8 +138,12 @@ int susfs_add_suspicious_kstat(struct st_susfs_suspicious_kstat* __user user_inf
 	}
 
     list_for_each_entry_safe(cursor, temp, &LH_KSTAT_SPOOFER, list) {
-        if (!strcmp(info.target_pathname, cursor->info.target_pathname)) {
-            SUSFS_LOGE("target_pathname: '%s' is already created in LH_KSTAT_SPOOFER.\n", info.target_pathname);
+        if (cursor->info.target_ino == info.target_ino) {
+            if (strlen(info.target_pathname) > 0) {
+                SUSFS_LOGE("target_pathname: '%s' is already created in LH_KSTAT_SPOOFER.\n", info.target_pathname);
+            } else {
+                SUSFS_LOGE("target_ino: '%lu' is already created in LH_KSTAT_SPOOFER.\n", info.target_ino);
+            }
             return 1;
         }
     }
@@ -151,15 +155,34 @@ int susfs_add_suspicious_kstat(struct st_susfs_suspicious_kstat* __user user_inf
 	}
 
 	memcpy(&new_list->info, &info, sizeof(struct st_susfs_suspicious_kstat));
+	/* Seems the dev number issue is finally solved, the userspace stat we see is already a encoded dev
+	 * which is set by new_encode_dev() / huge_encode_dev() function for 64bit system and 
+	 * old_encode_dev() for 32bit only system, that's why we need to decode it in kernel as well,
+	 * and different kernel may have different function to encode the dev number, be cautious!
+	 * Also check your encode_dev() macro in fs/stat.c to determine which one to use 
+	 */
+#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
+#ifdef CONFIG_MIPS
+	new_list->info.spoofed_dev = new_decode_dev(new_list->info.spoofed_dev);
+#else
+	new_list->info.spoofed_dev = huge_decode_dev(new_list->info.spoofed_dev);
+#endif /* CONFIG_MIPS */
+#else
+	new_list->info.spoofed_dev = old_decode_dev(new_list->info.spoofed_dev);
+#endif /* defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64) */
     INIT_LIST_HEAD(&new_list->list);
     spin_lock(&susfs_spin_lock);
     list_add_tail(&new_list->list, &LH_KSTAT_SPOOFER);
     spin_unlock(&susfs_spin_lock);
-    SUSFS_LOGI("target_pathname: '%s' is successfully added to LH_KSTAT_SPOOFER.\n", new_list->info.target_pathname);
+    if (strlen(new_list->info.target_pathname) > 0) {
+        SUSFS_LOGI("target_pathname: '%s' is successfully added to LH_KSTAT_SPOOFER, original dev: %lu\n", new_list->info.target_pathname, new_list->info.spoofed_dev);
+    } else {
+        SUSFS_LOGI("ino: '%lu' is successfully added to LH_KSTAT_SPOOFER, original dev: %lu\n", new_list->info.target_ino, new_list->info.spoofed_dev);
+    }
     return 0;
 }
 
-int susfs_update_suspicious_kstat(struct st_susfs_suspicious_kstat* __user user_info) {
+int susfs_update_sus_kstat(struct st_susfs_suspicious_kstat* __user user_info) {
     struct st_susfs_suspicious_kstat_list *cursor, *temp;
 	struct st_susfs_suspicious_kstat info;
 
@@ -213,7 +236,7 @@ int susfs_add_try_umount(struct st_susfs_try_umount* __user user_info) {
     return 0;
 }
 
-int susfs_add_uname(struct st_susfs_uname* __user user_info) {
+int susfs_set_uname(struct st_susfs_uname* __user user_info) {
 	struct st_susfs_uname info;
 
 	if (copy_from_user(&info, user_info, sizeof(struct st_susfs_uname))) {
@@ -390,10 +413,18 @@ void susfs_suspicious_kstat(unsigned long ino, struct stat* out_stat) {
 
 	if (!uid_matches_suspicious_kstat()) return;
 	list_for_each_entry_safe(cursor, temp, &LH_KSTAT_SPOOFER, list) {
-        if (cursor->info.target_ino == ino) {
+        if (cursor->info.target_ino == ino && !cursor->info.spoof_in_maps_only) {
             SUSFS_LOGI("spoofing kstat for pathname '%s' for UID %i\n", cursor->info.target_pathname, current_uid().val);
 			out_stat->st_ino = cursor->info.spoofed_ino;
-			out_stat->st_dev = cursor->info.spoofed_dev;
+#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
+#ifdef CONFIG_MIPS
+			out_stat->st_dev = new_encode_dev(cursor->info.spoofed_dev);
+#else
+			out_stat->st_dev = huge_encode_dev(cursor->info.spoofed_dev);
+#endif /* CONFIG_MIPS */
+#else
+			out_stat->st_dev = old_encode_dev(cursor->info.spoofed_dev);
+#endif /* defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64) */
 			out_stat->st_atime = cursor->info.spoofed_atime_tv_sec;
 			out_stat->st_mtime = cursor->info.spoofed_mtime_tv_sec;
 			out_stat->st_ctime = cursor->info.spoofed_ctime_tv_sec;
@@ -407,22 +438,28 @@ void susfs_suspicious_kstat(unsigned long ino, struct stat* out_stat) {
     }
 }
 
-int susfs_suspicious_maps(unsigned long target_ino, unsigned long* orig_ino, dev_t* orig_dev) {
+int susfs_suspicious_maps(unsigned long target_ino, unsigned long* orig_ino, dev_t* orig_dev, char *tmpname) {
     struct st_susfs_suspicious_kstat_list *cursor, *temp;
 
 	if (!uid_matches_suspicious_kstat()) return 0;
 	list_for_each_entry_safe(cursor, temp, &LH_KSTAT_SPOOFER, list) {
         if (cursor->info.target_ino == target_ino) {
-			if (cursor->info.hide_in_maps == HIDE_IN_MAPS_HIDE_ENTRYS) {
-				SUSFS_LOGI("hiding pathname '%s' in maps for UID %i\n", cursor->info.target_pathname, current_uid().val);
-				return 1;
-			}
-			if (target_ino != 0) {
-				*orig_ino = cursor->info.spoofed_ino;
-				// someone tell me why the hell I need to left shift 12 bits, userspace's dev number is different in kernel ?
-				*orig_dev = cursor->info.spoofed_dev << 12;
-				return 0;
-			}
+            if (!cursor->info.spoof_in_maps_only) {
+                if (target_ino != 0) {
+                    *orig_ino = cursor->info.spoofed_ino;
+                    *orig_dev = cursor->info.spoofed_dev;
+                    SUSFS_LOGI("[uid:%u] spoofing ino: '%lu' -> ino: %lu, dev: 0x%x, MAJOR(dev): 0x%x, MINOR(dev): 0x%x, target_pathname: %s\n", current_uid().val, target_ino, *orig_ino, *orig_dev, MAJOR(*orig_dev), MINOR(*orig_dev), cursor->info.target_pathname);
+                    return 0;
+                }
+            } else {
+                if (target_ino != 0) {
+                    *orig_ino = cursor->info.spoofed_ino;
+                    *orig_dev = cursor->info.spoofed_dev;
+					strncpy(tmpname, cursor->info.spoofed_pathname, SUSFS_MAX_LEN_PATHNAME);
+					SUSFS_LOGI("[uid:%u] spoofing ino: '%lu' -> ino: %lu, dev: 0x%x, MAJOR(dev): 0x%x, MINOR(dev): 0x%x, pathname: %s\n", current_uid().val, target_ino, *orig_ino, *orig_dev, MAJOR(*orig_dev), MINOR(*orig_dev), cursor->info.spoofed_pathname);
+                    return 1;
+                }
+            }
         }
     }
 	return 0;
@@ -476,11 +513,11 @@ static void try_umount(const char *mnt, bool check_mnt, int flags) {
 	umount_mnt(&path, flags);
 }
 
-void susfs_try_umount(void) {
+void susfs_try_umount(uid_t target_uid) {
     struct st_susfs_try_umount_list *cursor, *temp;
 
 	list_for_each_entry_safe(cursor, temp, &LH_TRY_UMOUNT_PATH, list) {
-		SUSFS_LOGI("umounting '%s' for uid: %d\n", cursor->info.name, current_uid().val);
+		SUSFS_LOGI("umounting '%s' for uid: %d\n", cursor->info.name, target_uid);
         try_umount(cursor->info.name, false, MNT_DETACH);
     }
 }
