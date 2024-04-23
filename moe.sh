@@ -4,6 +4,10 @@
 
 SECONDS=0
 ZIPNAME="MoeKSU-$(date '+%Y%m%d').zip"
+
+KSU_DIR="KernelSU"
+KSUVER="11798"
+
 TC_DIR="$HOME/tc/clang-19.0.0"
 GCC_64_DIR="$HOME/tc/aarch64-linux-android-14.0"
 GCC_32_DIR="$HOME/tc/arm-linux-androideabi-14.0"
@@ -14,6 +18,11 @@ export PATH="$TC_DIR/bin:$PATH"
 
 export KBUILD_BUILD_USER=Moe
 export KBUILD_BUILD_HOST=Nyan
+
+if ! [ -d "${KSU_DIR}" ]; then
+	echo "KernelSU not found! Cloning to ${KSU_DIR}"
+	git clone https://github.com/backslashxx/KernelSU -b $KSUVER
+fi
 
 if ! [ -d "${TC_DIR}" ]; then
     echo "Clang not found! Cloning to ${TC_DIR}..."
