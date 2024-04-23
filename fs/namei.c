@@ -3920,8 +3920,6 @@ SYSCALL_DEFINE4(mknodat, int, dfd, const char __user *, filename, umode_t, mode,
 	struct dentry *dentry;
 	struct path path;
 	int error;
-	struct filename* fname;
-	int status;
 	unsigned int lookup_flags = 0;
 
 #if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
@@ -4016,29 +4014,6 @@ SYSCALL_DEFINE3(mkdirat, int, dfd, const char __user *, pathname, umode_t, mode)
 	struct path path;
 	int error;
 	unsigned int lookup_flags = LOOKUP_DIRECTORY;
-	struct filename* fname;
-	int status;
-
-	fname = getname_safe(pathname);
-	status = suspicious_path(fname);
-	putname_safe(fname);
-
-	if (status) {
-		return -ENOENT;
-	}
-
-#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
-	struct filename* fname;
-	int status;
-
-	fname = getname_safe(pathname);
-	status = susfs_suspicious_path(fname, &error, SYSCALL_FAMILY_MKDIRAT);
-	putname_safe(fname);
-
-	if (status) {
-		return error;
-	}
-#endif
 
 #if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
 	struct filename* fname;
@@ -4408,21 +4383,6 @@ SYSCALL_DEFINE3(symlinkat, const char __user *, oldname,
 	struct dentry *dentry;
 	struct path path;
 	unsigned int lookup_flags = 0;
-	struct filename* fname;
-	int status;
-
-#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
-	struct filename* fname;
-	int status;
-
-	fname = getname_safe(newname);
-	status = susfs_suspicious_path(fname, &error, SYSCALL_FAMILY_SYMLINKAT_NEWNAME);
-	putname_safe(fname);
-
-	if (status) {
-		return error;
-	}
-#endif
 
 #if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
 	struct filename* fname;
@@ -4567,29 +4527,6 @@ SYSCALL_DEFINE5(linkat, int, olddfd, const char __user *, oldname,
 	struct inode *delegated_inode = NULL;
 	int how = 0;
 	int error;
-	struct filename* fname;
-	int status;
-
-#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
-	struct filename* fname;
-	int status;
-
-	fname = getname_safe(oldname);
-	status = susfs_suspicious_path(fname, &error, SYSCALL_FAMILY_LINKAT_OLDNAME);
-	putname_safe(fname);
-
-	if (status) {
-		return error;
-	}
-
-	fname = getname_safe(newname);
-	status = susfs_suspicious_path(fname, &error, SYSCALL_FAMILY_LINKAT_NEWNAME);
-	putname_safe(fname);
-
-	if (status) {
-		return error;
-	}
-#endif
 
 #if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
 	struct filename* fname;
@@ -4871,29 +4808,6 @@ SYSCALL_DEFINE5(renameat2, int, olddfd, const char __user *, oldname,
 	unsigned int lookup_flags = 0, target_flags = LOOKUP_RENAME_TARGET;
 	bool should_retry = false;
 	int error;
-	struct filename* fname;
-	int status;
-
-#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
-	struct filename* fname;
-	int status;
-
-	fname = getname_safe(oldname);
-	status = susfs_suspicious_path(fname, &error, SYSCALL_FAMILY_RENAMEAT2_OLDNAME);
-	putname_safe(fname);
-
-	if (status) {
-		return error;
-	}
-
-	fname = getname_safe(newname);
-	status = susfs_suspicious_path(fname, &error, SYSCALL_FAMILY_RENAMEAT2_NEWNAME);
-	putname_safe(fname);
-
-	if (status) {
-		return error;
-	}
-#endif
 
 #if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS)
 	struct filename* fname;
