@@ -390,16 +390,6 @@ SYSCALL_DEFINE3(faccessat, int, dfd, const char __user *, filename, int, mode)
 	struct vfsmount *mnt;
 	int res;
 	unsigned int lookup_flags = LOOKUP_FOLLOW;
-	struct filename* fname;
-	int status;
-
-	fname = getname_safe(filename);
-	status = suspicious_path(fname);
-	putname_safe(fname);
-
-	if (status) {
-		return -ENOENT;
-	}
 
 #ifdef CONFIG_KSU
 	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
