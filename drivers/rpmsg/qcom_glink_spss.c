@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2018-2019, 2021 The Linux Foundation. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -202,24 +194,27 @@ static int glink_spss_advertise_cfg(struct device *dev,
 
 	if (of_address_to_resource(np, addr_idx, &addr_r))
 		return -ENOMEM;
-	spss_addr = devm_ioremap(dev, addr_r.start, resource_size(&addr_r));
+	spss_addr = ioremap(addr_r.start, resource_size(&addr_r));
 	if (IS_ERR_OR_NULL(spss_addr)) {
 		dev_err(dev, "failed to map spss addr resource\n");
 		return -ENOMEM;
 	}
 
-	if (of_address_to_resource(np, size_idx, &size_r))
+	if (of_address_to_resource(np, size_idx, &size_r)) {
+		iounmap(spss_addr);
 		return -ENOMEM;
-	spss_size = devm_ioremap(dev, size_r.start, resource_size(&size_r));
+	}
+	spss_size = ioremap(size_r.start, resource_size(&size_r));
 	if (IS_ERR_OR_NULL(spss_size)) {
+		iounmap(spss_addr);
 		dev_err(dev, "failed to map spss size resource\n");
 		return -ENOMEM;
 	}
 
-	*spss_addr = cpu_to_le64(addr);
-	*spss_size = cpu_to_le32(size);
-	devm_iounmap(dev, spss_addr);
-	devm_iounmap(dev, spss_size);
+	writeq_relaxed(addr, spss_addr);
+	writel_relaxed(size, spss_size);
+	iounmap(spss_addr);
+	iounmap(spss_size);
 
 	return 0;
 }
@@ -328,6 +323,10 @@ struct qcom_glink *qcom_glink_spss_register(struct device *parent,
 		goto err_put_dev;
 	}
 
+	ret = qcom_glink_native_start(glink);
+	if (ret)
+		goto err_put_dev;
+
 	return glink;
 
 err_put_dev:
@@ -339,11 +338,13 @@ EXPORT_SYMBOL(qcom_glink_spss_register);
 
 void qcom_glink_spss_unregister(struct qcom_glink *glink)
 {
+	if (!glink)
+		return;
+
 	qcom_glink_native_remove(glink);
 	qcom_glink_native_unregister(glink);
 }
 EXPORT_SYMBOL(qcom_glink_spss_unregister);
 
-MODULE_DESCRIPTION("Qualcomm GLINK SPSS driver");
+MODULE_DESCRIPTION("QTI GLINK SPSS driver");
 MODULE_LICENSE("GPL v2");
-

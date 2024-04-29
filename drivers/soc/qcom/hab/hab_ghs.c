@@ -1,16 +1,8 @@
-/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
-
 #include "hab.h"
 #include "hab_ghs.h"
 
@@ -138,8 +130,8 @@ int habhyp_commdev_alloc(void **commdev, int is_be, char *name, int vmid_remote,
 	pchan->closed = 0;
 	pchan->hyp_data = (void *)dev;
 	pchan->is_be = is_be;
-	strlcpy(dev->name, name, sizeof(dev->name));
-	strlcpy(pchan->name, name, sizeof(pchan->name));
+	strscpy(dev->name, name, sizeof(dev->name));
+	strscpy(pchan->name, name, sizeof(pchan->name));
 	*ppchan = pchan;
 	dev->read_data = kmalloc(GIPC_RECV_BUFF_SIZE_BYTES, GFP_KERNEL);
 	if (!dev->read_data) {
@@ -173,6 +165,9 @@ int habhyp_commdev_dealloc(void *commdev)
 	kfree(dev->os_data);
 	kfree(dev);
 
+	pchan->closed = 1;
+	pchan->hyp_data = NULL;
+
 	if (get_refcnt(pchan->refcount) > 1) {
 		pr_warn("potential leak pchan %s vchans %d refcnt %d\n",
 			pchan->name, pchan->vcnt, get_refcnt(pchan->refcount));
@@ -199,3 +194,5 @@ int hab_hypervisor_register(void)
 
 	return ret;
 }
+
+int hab_hypervisor_register_post(void) { return 0; }

@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/drivers/char/ttyprintk.c
  *
  *  Copyright (C) 2010  Samo Pogacnik
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the smems of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
  */
 
 /*
@@ -38,6 +35,8 @@ static struct ttyprintk_port tpk_port;
  */
 #define TPK_STR_SIZE 508 /* should be bigger then max expected line length */
 #define TPK_MAX_ROOM 4096 /* we could assume 4K for instance */
+#define TPK_PREFIX KERN_SOH __stringify(CONFIG_TTY_PRINTK_LEVEL)
+
 static int tpk_curr;
 
 static char tpk_buffer[TPK_STR_SIZE + 4];
@@ -46,19 +45,14 @@ static void tpk_flush(void)
 {
 	if (tpk_curr > 0) {
 		tpk_buffer[tpk_curr] = '\0';
-		pr_info("[U] %s\n", tpk_buffer);
+		printk(TPK_PREFIX "[U] %s\n", tpk_buffer);
 		tpk_curr = 0;
 	}
 }
 
 static int tpk_printk(const unsigned char *buf, int count)
 {
-	int i = tpk_curr;
-
-	if (buf == NULL) {
-		tpk_flush();
-		return i;
-	}
+	int i;
 
 	for (i = 0; i < count; i++) {
 		if (tpk_curr >= TPK_STR_SIZE) {
@@ -103,11 +97,6 @@ static void tpk_close(struct tty_struct *tty, struct file *filp)
 	struct ttyprintk_port *tpkp = tty->driver_data;
 	unsigned long flags;
 
-	spin_lock_irqsave(&tpkp->spinlock, flags);
-	/* flush tpk_printk buffer */
-	tpk_printk(NULL, 0);
-	spin_unlock_irqrestore(&tpkp->spinlock, flags);
-
 	tty_port_close(&tpkp->port, tty, filp);
 }
 
@@ -121,7 +110,6 @@ static int tpk_write(struct tty_struct *tty,
 	unsigned long flags;
 	int ret;
 
-
 	/* exclusive use of tpk_printk within this tty */
 	spin_lock_irqsave(&tpkp->spinlock, flags);
 	ret = tpk_printk(buf, count);
@@ -133,30 +121,33 @@ static int tpk_write(struct tty_struct *tty,
 /*
  * TTY operations write_room function.
  */
-static int tpk_write_room(struct tty_struct *tty)
+static unsigned int tpk_write_room(struct tty_struct *tty)
 {
 	return TPK_MAX_ROOM;
 }
 
 /*
- * TTY operations ioctl function.
+ * TTY operations hangup function.
  */
-static int tpk_ioctl(struct tty_struct *tty,
-			unsigned int cmd, unsigned long arg)
+static void tpk_hangup(struct tty_struct *tty)
 {
 	struct ttyprintk_port *tpkp = tty->driver_data;
 
-	if (!tpkp)
-		return -EINVAL;
+	tty_port_hangup(&tpkp->port);
+}
 
-	switch (cmd) {
-	/* Stop TIOCCONS */
-	case TIOCCONS:
-		return -EOPNOTSUPP;
-	default:
-		return -ENOIOCTLCMD;
-	}
-	return 0;
+/*
+ * TTY port operations shutdown function.
+ */
+static void tpk_port_shutdown(struct tty_port *tport)
+{
+	struct ttyprintk_port *tpkp =
+		container_of(tport, struct ttyprintk_port, port);
+	unsigned long flags;
+
+	spin_lock_irqsave(&tpkp->spinlock, flags);
+	tpk_flush();
+	spin_unlock_irqrestore(&tpkp->spinlock, flags);
 }
 
 /*
@@ -174,17 +165,18 @@ static const struct tty_operations ttyprintk_ops = {
 	.close = tpk_close,
 	.write = tpk_write,
 	.write_room = tpk_write_room,
-	.ioctl = tpk_ioctl,
 	.hangup = tpk_hangup,
 };
 
-static const struct tty_port_operations null_ops = { };
+static const struct tty_port_operations tpk_port_ops = {
+	.shutdown = tpk_port_shutdown,
+};
 
 static struct tty_driver *ttyprintk_driver;
 
 static int __init ttyprintk_init(void)
 {
-	int ret = -ENOMEM;
+	int ret;
 
 	spin_lock_init(&tpk_port.spinlock);
 
@@ -196,7 +188,7 @@ static int __init ttyprintk_init(void)
 		return PTR_ERR(ttyprintk_driver);
 
 	tty_port_init(&tpk_port.port);
-	tpk_port.port.ops = &null_ops;
+	tpk_port.port.ops = &tpk_port_ops;
 
 	ttyprintk_driver->driver_name = "ttyprintk";
 	ttyprintk_driver->name = "ttyprintk";
@@ -217,7 +209,7 @@ static int __init ttyprintk_init(void)
 	return 0;
 
 error:
-	put_tty_driver(ttyprintk_driver);
+	tty_driver_kref_put(ttyprintk_driver);
 	tty_port_destroy(&tpk_port.port);
 	return ret;
 }
@@ -225,7 +217,7 @@ error:
 static void __exit ttyprintk_exit(void)
 {
 	tty_unregister_driver(ttyprintk_driver);
-	put_tty_driver(ttyprintk_driver);
+	tty_driver_kref_put(ttyprintk_driver);
 	tty_port_destroy(&tpk_port.port);
 }
 

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2014-2017, The Linux Foundation. All rights reserved.
- * Copyright (c) 2018, Linaro Ltd.
+ * Copyright (c) 2019, Linaro Ltd.
  */
 
 #include <linux/clk-provider.h>
@@ -40,11 +40,33 @@ struct qcom_phy {
 	struct device *dev;
 	void __iomem *base;
 
+	struct regulator_bulk_data vregs[2];
+
+	struct reset_control *phy_reset;
 	struct reset_control *pipe_reset;
 	struct clk *pipe_clk;
 };
 
-static int qcom_pcie2_phy_power_on(struct phy *phy) {
+static int qcom_pcie2_phy_init(struct phy *phy)
+{
+	struct qcom_phy *qphy = phy_get_drvdata(phy);
+	int ret;
+
+	ret = reset_control_deassert(qphy->phy_reset);
+	if (ret) {
+		dev_err(qphy->dev, "cannot deassert pipe reset\n");
+		return ret;
+	}
+
+	ret = regulator_bulk_enable(ARRAY_SIZE(qphy->vregs), qphy->vregs);
+	if (ret)
+		reset_control_assert(qphy->phy_reset);
+
+	return ret;
+}
+
+static int qcom_pcie2_phy_power_on(struct phy *phy)
+{
 	struct qcom_phy *qphy = phy_get_drvdata(phy);
 	int ret;
 	u32 val;
@@ -147,14 +169,36 @@ out:
 	return ret;
 }
 
-static int qcom_pcie2_phy_power_off(struct phy *phy) {
+static int qcom_pcie2_phy_power_off(struct phy *phy)
+{
+	struct qcom_phy *qphy = phy_get_drvdata(phy);
+	u32 val;
+
+	val = readl(qphy->base + PCIE2_PHY_RESET_CTRL);
+	val |= BIT(0);
+	writel(val, qphy->base + PCIE2_PHY_RESET_CTRL);
+
+	clk_disable_unprepare(qphy->pipe_clk);
+	reset_control_assert(qphy->pipe_reset);
+
+	return 0;
+}
+
+static int qcom_pcie2_phy_exit(struct phy *phy)
+{
+	struct qcom_phy *qphy = phy_get_drvdata(phy);
+
+	regulator_bulk_disable(ARRAY_SIZE(qphy->vregs), qphy->vregs);
+	reset_control_assert(qphy->phy_reset);
 
 	return 0;
 }
 
 static const struct phy_ops qcom_pcie2_ops = {
+	.init = qcom_pcie2_phy_init,
 	.power_on = qcom_pcie2_phy_power_on,
 	.power_off = qcom_pcie2_phy_power_off,
+	.exit = qcom_pcie2_phy_exit,
 	.owner = THIS_MODULE,
 };
 
@@ -176,7 +220,8 @@ static const struct phy_ops qcom_pcie2_ops = {
  *    clk  |   +-------+   |                   +-----+
  *         +---------------+
  */
-static int phy_pipe_clk_register(struct qcom_phy *qphy) {
+static int phy_pipe_clksrc_register(struct qcom_phy *qphy)
+{
 	struct device_node *np = qphy->dev->of_node;
 	struct clk_fixed_rate *fixed;
 	struct clk_init_data init = { };
@@ -194,17 +239,17 @@ static int phy_pipe_clk_register(struct qcom_phy *qphy) {
 
 	init.ops = &clk_fixed_rate_ops;
 
-	/* controllers using QMP phys use 125MHz pipe clock interface */
+	/* controllers using QMP phys use 250MHz pipe clock interface */
 	fixed->fixed_rate = 250000000;
 	fixed->hw.init = &init;
 
 	return devm_clk_hw_register(qphy->dev, &fixed->hw);
 }
 
-static int qcom_pcie2_phy_probe(struct platform_device *pdev) {
+static int qcom_pcie2_phy_probe(struct platform_device *pdev)
+{
 	struct phy_provider *phy_provider;
 	struct qcom_phy *qphy;
-	struct resource *res;
 	struct device *dev = &pdev->dev;
 	struct phy *phy;
 	int ret;
@@ -214,16 +259,38 @@ static int qcom_pcie2_phy_probe(struct platform_device *pdev) {
 		return -ENOMEM;
 
 	qphy->dev = dev;
-
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	qphy->base = devm_ioremap_resource(dev, res);
+	qphy->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(qphy->base))
 		return PTR_ERR(qphy->base);
 
-	qphy->pipe_clk = devm_clk_get(dev, "pipe");
+	ret = phy_pipe_clksrc_register(qphy);
+	if (ret) {
+		dev_err(dev, "failed to register pipe_clk\n");
+		return ret;
+	}
+
+	qphy->vregs[0].supply = "vdda-vp";
+	qphy->vregs[1].supply = "vdda-vph";
+	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(qphy->vregs), qphy->vregs);
+	if (ret < 0)
+		return ret;
+
+	qphy->pipe_clk = devm_clk_get(dev, NULL);
 	if (IS_ERR(qphy->pipe_clk)) {
-		dev_err(dev, "unable to acquire pipe clock\n");
+		dev_err(dev, "failed to acquire pipe clock\n");
 		return PTR_ERR(qphy->pipe_clk);
+	}
+
+	qphy->phy_reset = devm_reset_control_get_exclusive(dev, "phy");
+	if (IS_ERR(qphy->phy_reset)) {
+		dev_err(dev, "failed to acquire phy reset\n");
+		return PTR_ERR(qphy->phy_reset);
+	}
+
+	qphy->pipe_reset = devm_reset_control_get_exclusive(dev, "pipe");
+	if (IS_ERR(qphy->pipe_reset)) {
+		dev_err(dev, "failed to acquire pipe reset\n");
+		return PTR_ERR(qphy->pipe_reset);
 	}
 
 	phy = devm_phy_create(dev, dev->of_node, &qcom_pcie2_ops);
@@ -233,12 +300,6 @@ static int qcom_pcie2_phy_probe(struct platform_device *pdev) {
 	}
 
 	phy_set_drvdata(phy, qphy);
-
-	ret = phy_pipe_clk_register(qphy);
-	if (ret) {
-		dev_err(dev, "failed to register pipe_clk\n");
-		return ret;
-	}
 
 	phy_provider = devm_of_phy_provider_register(dev, of_phy_simple_xlate);
 	if (IS_ERR(phy_provider))
@@ -251,17 +312,17 @@ static const struct of_device_id qcom_pcie2_phy_match_table[] = {
 	{ .compatible = "qcom,pcie2-phy" },
 	{}
 };
-
 MODULE_DEVICE_TABLE(of, qcom_pcie2_phy_match_table);
 
 static struct platform_driver qcom_pcie2_phy_driver = {
 	.probe = qcom_pcie2_phy_probe,
 	.driver = {
-		.name = "qcom-pcie2-phy",
+		.name = "phy-qcom-pcie2",
 		.of_match_table = qcom_pcie2_phy_match_table,
 	},
 };
 
 module_platform_driver(qcom_pcie2_phy_driver);
+
 MODULE_DESCRIPTION("Qualcomm PCIe PHY driver");
-MODULE_LICENSE("GPL +v2");
+MODULE_LICENSE("GPL v2");

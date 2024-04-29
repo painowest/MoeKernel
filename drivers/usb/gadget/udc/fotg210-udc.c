@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * FOTG210 UDC Driver supports Bulk transfer so far
  *
  * Copyright (C) 2013 Faraday Technology Corporation
  *
  * Author : Yuan-Hsin Chen <yhchen@faraday-tech.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
  */
 
 #include <linux/dma-mapping.h>
@@ -329,6 +326,7 @@ dma_reset:
 static void fotg210_start_dma(struct fotg210_ep *ep,
 			struct fotg210_request *req)
 {
+	struct device *dev = &ep->fotg210->gadget.dev;
 	dma_addr_t d;
 	u8 *buffer;
 	u32 length;
@@ -352,17 +350,13 @@ static void fotg210_start_dma(struct fotg210_ep *ep,
 			length = req->req.length - req->req.actual;
 	}
 
-	d = dma_map_single(NULL, buffer, length,
+	d = dma_map_single(dev, buffer, length,
 			ep->dir_in ? DMA_TO_DEVICE : DMA_FROM_DEVICE);
 
-	if (dma_mapping_error(NULL, d)) {
+	if (dma_mapping_error(dev, d)) {
 		pr_err("dma_mapping_error\n");
 		return;
 	}
-
-	dma_sync_single_for_device(NULL, d, length,
-				   ep->dir_in ? DMA_TO_DEVICE :
-					DMA_FROM_DEVICE);
 
 	fotg210_enable_dma(ep, d, length);
 
@@ -374,7 +368,7 @@ static void fotg210_start_dma(struct fotg210_ep *ep,
 	/* update actual transfer length */
 	req->req.actual += length;
 
-	dma_unmap_single(NULL, d, length, DMA_TO_DEVICE);
+	dma_unmap_single(dev, d, length, DMA_TO_DEVICE);
 }
 
 static void fotg210_ep0_queue(struct fotg210_ep *ep,
@@ -487,7 +481,6 @@ static int fotg210_set_halt_and_wedge(struct usb_ep *_ep, int value, int wedge)
 	struct fotg210_ep *ep;
 	struct fotg210_udc *fotg210;
 	unsigned long flags;
-	int ret = 0;
 
 	ep = container_of(_ep, struct fotg210_ep, ep);
 
@@ -510,7 +503,7 @@ static int fotg210_set_halt_and_wedge(struct usb_ep *_ep, int value, int wedge)
 	}
 
 	spin_unlock_irqrestore(&ep->fotg210->lock, flags);
-	return ret;
+	return 0;
 }
 
 static int fotg210_ep_set_halt(struct usb_ep *_ep, int value)
@@ -713,6 +706,20 @@ static int fotg210_is_epnstall(struct fotg210_ep *ep)
 	return value & INOUTEPMPSR_STL_EP ? 1 : 0;
 }
 
+/* For EP0 requests triggered by this driver (currently GET_STATUS response) */
+static void fotg210_ep0_complete(struct usb_ep *_ep, struct usb_request *req)
+{
+	struct fotg210_ep *ep;
+	struct fotg210_udc *fotg210;
+
+	ep = container_of(_ep, struct fotg210_ep, ep);
+	fotg210 = ep->fotg210;
+
+	if (req->status || req->actual != req->length) {
+		dev_warn(&fotg210->gadget.dev, "EP0 request failed: %d\n", req->status);
+	}
+}
+
 static void fotg210_get_status(struct fotg210_udc *fotg210,
 				struct usb_ctrlrequest *ctrl)
 {
@@ -888,6 +895,8 @@ static irqreturn_t fotg210_irq(int irq, void *_fotg210)
 		int_grp2 &= ~int_msk2;
 
 		if (int_grp2 & DISGR2_USBRST_INT) {
+			usb_gadget_udc_reset(&fotg210->gadget,
+					     fotg210->driver);
 			value = ioread32(reg);
 			value &= ~DISGR2_USBRST_INT;
 			iowrite32(value, reg);
@@ -1177,6 +1186,8 @@ static int fotg210_udc_probe(struct platform_device *pdev)
 	if (fotg210->ep0_req == NULL)
 		goto err_map;
 
+	fotg210->ep0_req->complete = fotg210_ep0_complete;
+
 	fotg210_init(fotg210);
 
 	fotg210_disable_unplug(fotg210);
@@ -1216,7 +1227,7 @@ err:
 
 static struct platform_driver fotg210_driver = {
 	.driver		= {
-		.name =	(char *)udc_name,
+		.name =	udc_name,
 	},
 	.probe		= fotg210_udc_probe,
 	.remove		= fotg210_udc_remove,

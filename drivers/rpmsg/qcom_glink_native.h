@@ -1,14 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright (c) 2016-2017, Linaro Ltd
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #ifndef __QCOM_GLINK_NATIVE_H__
@@ -17,6 +9,9 @@
 #define GLINK_FEATURE_INTENT_REUSE	BIT(0)
 #define GLINK_FEATURE_MIGRATION		BIT(1)
 #define GLINK_FEATURE_TRACER_PKT	BIT(2)
+#define GLINK_FEATURE_ZERO_COPY		BIT(3)
+#define GLINK_FEATURE_ZERO_COPY_POOLS	BIT(4)
+#define GLINK_FEATURE_SHORT_CMD         BIT(8)
 
 struct qcom_glink_pipe {
 	size_t length;
@@ -35,13 +30,22 @@ struct qcom_glink_pipe {
 };
 
 struct qcom_glink;
+extern const struct dev_pm_ops glink_native_pm_ops;
+
+#if IS_ENABLED(CONFIG_DEEPSLEEP) && IS_ENABLED(CONFIG_RPMSG_QCOM_GLINK_RPM)
+void glink_rpm_ready_wait(void);
+#endif
 
 struct qcom_glink *qcom_glink_native_probe(struct device *dev,
 					   unsigned long features,
 					   struct qcom_glink_pipe *rx,
 					   struct qcom_glink_pipe *tx,
 					   bool intentless);
+int qcom_glink_native_start(struct qcom_glink *glink);
 void qcom_glink_native_remove(struct qcom_glink *glink);
 
 void qcom_glink_native_unregister(struct qcom_glink *glink);
+
+void *qcom_glink_prepare_da_for_cpu(u64 da, size_t len);
+
 #endif

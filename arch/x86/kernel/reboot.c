@@ -10,14 +10,14 @@
 #include <linux/sched.h>
 #include <linux/tboot.h>
 #include <linux/delay.h>
-#include <linux/frame.h>
+#include <linux/objtool.h>
+#include <linux/pgtable.h>
 #include <acpi/reboot.h>
 #include <asm/io.h>
 #include <asm/apic.h>
 #include <asm/io_apic.h>
 #include <asm/desc.h>
 #include <asm/hpet.h>
-#include <asm/pgtable.h>
 #include <asm/proto.h>
 #include <asm/reboot_fixups.h>
 #include <asm/reboot.h>
@@ -113,17 +113,9 @@ void __noreturn machine_real_restart(unsigned int type)
 	spin_unlock(&rtc_lock);
 
 	/*
-	 * Switch back to the initial page table.
+	 * Switch to the trampoline page table.
 	 */
-#ifdef CONFIG_X86_32
-	load_cr3(initial_page_table);
-#else
-	write_cr3(real_mode_header->trampoline_pgd);
-
-	/* Exiting long mode will fail if CR4.PCIDE is set. */
-	if (static_cpu_has(X86_FEATURE_PCID))
-		cr4_clear_bits(X86_CR4_PCIDE);
-#endif
+	load_trampoline_pgtable();
 
 	/* Jump to the identity-mapped low memory code */
 #ifdef CONFIG_X86_32
@@ -559,7 +551,6 @@ static void emergency_reboot_disable_virtualization(void)
 
 		/* Disable VMX/SVM and halt on other CPUs. */
 		nmi_shootdown_cpus_on_restart();
-
 	}
 }
 
@@ -651,7 +642,7 @@ static void native_machine_emergency_restart(void)
 
 		case BOOT_CF9_FORCE:
 			port_cf9_safe = true;
-			/* Fall through */
+			fallthrough;
 
 		case BOOT_CF9_SAFE:
 			if (port_cf9_safe) {
@@ -667,7 +658,7 @@ static void native_machine_emergency_restart(void)
 			break;
 
 		case BOOT_TRIPLE:
-			idt_invalidate(NULL);
+			idt_invalidate();
 			__asm__ __volatile__("int3");
 
 			/* We're probably dead after this, but... */
@@ -692,7 +683,7 @@ void native_machine_shutdown(void)
 	 * Even without the erratum, it still makes sense to quiet IO APIC
 	 * before disabling Local APIC.
 	 */
-	disable_IO_APIC();
+	clear_IO_APIC();
 #endif
 
 #ifdef CONFIG_SMP
@@ -706,6 +697,7 @@ void native_machine_shutdown(void)
 #endif
 
 	lapic_shutdown();
+	restore_boot_irq_mode();
 
 #ifdef CONFIG_HPET_TIMER
 	hpet_disable();
@@ -850,11 +842,6 @@ static int crash_nmi_callback(unsigned int val, struct pt_regs *regs)
 	return NMI_HANDLED;
 }
 
-static void smp_send_nmi_allbutself(void)
-{
-	apic->send_IPI_allbutself(NMI_VECTOR);
-}
-
 /**
  * nmi_shootdown_cpus - Stop other CPUs via NMI
  * @callback:	Optional callback to be invoked from the NMI handler
@@ -897,7 +884,7 @@ void nmi_shootdown_cpus(nmi_shootdown_cb callback)
 	 */
 	wmb();
 
-	smp_send_nmi_allbutself();
+	apic_send_IPI_allbutself(NMI_VECTOR);
 
 	/* Kick CPUs looping in NMI context. */
 	WRITE_ONCE(crash_ipi_issued, 1);

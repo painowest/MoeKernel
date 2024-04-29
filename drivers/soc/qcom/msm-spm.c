@@ -1,14 +1,7 @@
-/* Copyright (c) 2011-2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -504,9 +497,9 @@ static void msm_spm_drv_set_avs_vlevel(struct msm_spm_driver_data *dev,
 #endif
 
 static inline int msm_spm_drv_validate_data(struct msm_spm_driver_data *dev,
-					unsigned int vlevel, int vctl_port)
+						unsigned int vlevel, int vctl_port)
 {
-	int timeout_us = dev->vctl_timeout_us;
+	uint32_t timeout_us = dev->vctl_timeout_us;
 	uint32_t new_level;
 
 	/* Confirm the voltage we set was what hardware sent and
@@ -726,8 +719,7 @@ int msm_spm_drv_reg_init(struct msm_spm_driver_data *dev,
 	return 0;
 }
 
-void msm_spm_drv_upd_reg_shadow(struct msm_spm_driver_data *dev, int id,
-		int val)
+void msm_spm_drv_upd_reg_shadow(struct msm_spm_driver_data *dev, int id, int val)
 {
 	dev->reg_shadow[id] = val;
 	msm_spm_drv_flush_shadow(dev, id);

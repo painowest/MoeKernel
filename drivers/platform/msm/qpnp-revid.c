@@ -1,13 +1,7 @@
-/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -65,8 +59,7 @@ static const char *const pmic_names[] = {
 	[PM8150B_SUBTYPE] = "PM8150B",
 	[PM8150L_SUBTYPE] = "PM8150L",
 	[PM6150_SUBTYPE] = "PM6150",
-	[PM8150A_SUBTYPE] = "PM8150A",
-	[PME9205_SUBTYPE] = "PME9205",
+	[PM7250B_SUBTYPE] = "PM7250B",
 	[PM6125_SUBTYPE] = "PM6125",
 	[PM8008_SUBTYPE] = "PM8008",
 	[SMB1355_SUBTYPE] = "SMB1355",
@@ -149,18 +142,18 @@ static size_t build_pmic_string(char *buf, size_t n, int sid,
 			&& rev4 < 0x02)
 		rev4++;
 
-	pos += snprintf(buf + pos, n - pos, "PMIC@SID%d", sid);
+	pos += scnprintf(buf + pos, n - pos, "PMIC@SID%d", sid);
 	if (subtype >= ARRAY_SIZE(pmic_names) || subtype == 0)
-		pos += snprintf(buf + pos, n - pos, ": %s (subtype: 0x%02X)",
+		pos += scnprintf(buf + pos, n - pos, ": %s (subtype: 0x%02X)",
 				pmic_names[0], subtype);
 	else
-		pos += snprintf(buf + pos, n - pos, ": %s",
+		pos += scnprintf(buf + pos, n - pos, ": %s",
 				pmic_names[subtype]);
-	pos += snprintf(buf + pos, n - pos, " v%d.%d", rev4, rev3);
+	pos += scnprintf(buf + pos, n - pos, " v%d.%d", rev4, rev3);
 	if (rev2 || rev1)
-		pos += snprintf(buf + pos, n - pos, ".%d", rev2);
+		pos += scnprintf(buf + pos, n - pos, ".%d", rev2);
 	if (rev1)
-		pos += snprintf(buf + pos, n - pos, ".%d", rev1);
+		pos += scnprintf(buf + pos, n - pos, ".%d", rev1);
 	return pos;
 }
 
@@ -265,7 +258,6 @@ static struct platform_driver qpnp_revid_driver = {
 	.probe	= qpnp_revid_probe,
 	.driver	= {
 		.name		= QPNP_REVID_DEV_NAME,
-		.owner		= THIS_MODULE,
 		.of_match_table	= qpnp_revid_match_table,
 	},
 };

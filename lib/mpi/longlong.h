@@ -48,8 +48,8 @@
 
 /* Define auxiliary asm macros.
  *
- * 1) umul_ppmm(high_prod, low_prod, multipler, multiplicand) multiplies two
- * UWtype integers MULTIPLER and MULTIPLICAND, and generates a two UWtype
+ * 1) umul_ppmm(high_prod, low_prod, multiplier, multiplicand) multiplies two
+ * UWtype integers MULTIPLIER and MULTIPLICAND, and generates a two UWtype
  * word product in HIGH_PROD and LOW_PROD.
  *
  * 2) __umulsidi3(a,b) multiplies two UWtype integers A and B, and returns a
@@ -397,8 +397,8 @@ do { \
 #define add_ssaaaa(sh, sl, ah, al, bh, bl) \
 	__asm__ ("addl %5,%1\n" \
 	   "adcl %3,%0" \
-	: "=r" ((USItype)(sh)), \
-	     "=&r" ((USItype)(sl)) \
+	: "=r" (sh), \
+	     "=&r" (sl) \
 	: "%0" ((USItype)(ah)), \
 	     "g" ((USItype)(bh)), \
 	     "%1" ((USItype)(al)), \
@@ -406,22 +406,22 @@ do { \
 #define sub_ddmmss(sh, sl, ah, al, bh, bl) \
 	__asm__ ("subl %5,%1\n" \
 	   "sbbl %3,%0" \
-	: "=r" ((USItype)(sh)), \
-	     "=&r" ((USItype)(sl)) \
+	: "=r" (sh), \
+	     "=&r" (sl) \
 	: "0" ((USItype)(ah)), \
 	     "g" ((USItype)(bh)), \
 	     "1" ((USItype)(al)), \
 	     "g" ((USItype)(bl)))
 #define umul_ppmm(w1, w0, u, v) \
 	__asm__ ("mull %3" \
-	: "=a" ((USItype)(w0)), \
-	     "=d" ((USItype)(w1)) \
+	: "=a" (w0), \
+	     "=d" (w1) \
 	: "%0" ((USItype)(u)), \
 	     "rm" ((USItype)(v)))
 #define udiv_qrnnd(q, r, n1, n0, d) \
 	__asm__ ("divl %4" \
-	: "=a" ((USItype)(q)), \
-	     "=d" ((USItype)(r)) \
+	: "=a" (q), \
+	     "=d" (r) \
 	: "0" ((USItype)(n0)), \
 	     "1" ((USItype)(n1)), \
 	     "rm" ((USItype)(d)))

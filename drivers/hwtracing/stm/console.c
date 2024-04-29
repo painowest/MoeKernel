@@ -1,15 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Simple kernel console driver for STM devices
  * Copyright (c) 2014, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  *
  * STM console will send kernel messages over STM devices to a trace host.
  */
@@ -35,7 +27,7 @@ static struct stm_console {
 	},
 };
 
-static void
+static void notrace __nocfi
 stm_console_write(struct console *con, const char *buf, unsigned len)
 {
 	struct stm_console *sc = container_of(con, struct stm_console, console);

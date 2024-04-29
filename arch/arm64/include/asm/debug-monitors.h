@@ -1,22 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2012 ARM Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #ifndef __ASM_DEBUG_MONITORS_H
 #define __ASM_DEBUG_MONITORS_H
-
-#ifdef __KERNEL__
 
 #include <linux/errno.h>
 #include <linux/types.h>
@@ -66,12 +53,10 @@
 #define CACHE_FLUSH_IS_SAFE		1
 
 /* kprobes BRK opcodes with ESR encoding  */
-#define BRK64_ESR_MASK		0xFFFF
-#define BRK64_ESR_KPROBES	0x0004
-#define BRK64_OPCODE_KPROBES	(AARCH64_BREAK_MON | (BRK64_ESR_KPROBES << 5))
+#define BRK64_OPCODE_KPROBES	(AARCH64_BREAK_MON | (KPROBES_BRK_IMM << 5))
+#define BRK64_OPCODE_KPROBES_SS	(AARCH64_BREAK_MON | (KPROBES_BRK_SS_IMM << 5))
 /* uprobes BRK opcodes with ESR encoding  */
-#define BRK64_ESR_UPROBES	0x0005
-#define BRK64_OPCODE_UPROBES	(AARCH64_BREAK_MON | (BRK64_ESR_UPROBES << 5))
+#define BRK64_OPCODE_UPROBES	(AARCH64_BREAK_MON | (UPROBES_BRK_IMM << 5))
 
 /* AArch32 */
 #define DBG_ESR_EVT_BKPT	0x4
@@ -145,6 +130,7 @@ static inline int reinstall_suspended_bps(struct pt_regs *regs)
 
 int aarch32_break_handler(struct pt_regs *regs);
 
+void debug_traps_init(void);
+
 #endif	/* __ASSEMBLY */
-#endif	/* __KERNEL__ */
 #endif	/* __ASM_DEBUG_MONITORS_H */

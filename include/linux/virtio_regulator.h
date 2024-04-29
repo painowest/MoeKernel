@@ -1,14 +1,5 @@
-/* Copyright (c) 2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved. */
 
 #ifndef _LINUX_VIRTIO_REGULATOR_H
 #define _LINUX_VIRTIO_REGULATOR_H
@@ -25,6 +16,9 @@ struct virtio_regulator_msg {
 	__virtio32 result;
 	__virtio32 data[4];
 };
+
+/* Virtio ID of regulator : 0xC001 */
+#define VIRTIO_ID_REGULATOR	49153
 
 /* Request type */
 #define VIRTIO_REGULATOR_T_ENABLE	0

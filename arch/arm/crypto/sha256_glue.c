@@ -1,18 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Glue code for the SHA256 Secure Hash Algorithm assembly implementation
  * using optimized ARM assembler and NEON instructions.
  *
- * Copyright © 2015 Google Inc.
+ * Copyright Â© 2015 Google Inc.
  *
  * This file is based on sha256_ssse3_glue.c:
  *   Copyright (C) 2013 Intel Corporation
  *   Author: Tim Chen <tim.c.chen@linux.intel.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- *
  */
 
 #include <crypto/internal/hash.h>
@@ -20,10 +15,9 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mm.h>
-#include <linux/cryptohash.h>
 #include <linux/types.h>
 #include <linux/string.h>
-#include <crypto/sha.h>
+#include <crypto/sha2.h>
 #include <crypto/sha256_base.h>
 #include <asm/simd.h>
 #include <asm/neon.h>
@@ -52,7 +46,8 @@ static int crypto_sha256_arm_final(struct shash_desc *desc, u8 *out)
 int crypto_sha256_arm_finup(struct shash_desc *desc, const u8 *data,
 			    unsigned int len, u8 *out)
 {
-	sha256_base_do_update(desc, data, len, sha256_block_data_order);
+	sha256_base_do_update(desc, data, len,
+			      (sha256_block_fn *)sha256_block_data_order);
 	return crypto_sha256_arm_final(desc, out);
 }
 EXPORT_SYMBOL(crypto_sha256_arm_finup);
@@ -68,7 +63,6 @@ static struct shash_alg algs[] = { {
 		.cra_name	=	"sha256",
 		.cra_driver_name =	"sha256-asm",
 		.cra_priority	=	150,
-		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize	=	SHA256_BLOCK_SIZE,
 		.cra_module	=	THIS_MODULE,
 	}
@@ -83,7 +77,6 @@ static struct shash_alg algs[] = { {
 		.cra_name	=	"sha224",
 		.cra_driver_name =	"sha224-asm",
 		.cra_priority	=	150,
-		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize	=	SHA224_BLOCK_SIZE,
 		.cra_module	=	THIS_MODULE,
 	}

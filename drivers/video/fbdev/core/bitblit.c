@@ -240,8 +240,8 @@ static void bit_cursor(struct vc_data *vc, struct fb_info *info, int mode,
 	struct fbcon_ops *ops = info->fbcon_par;
 	unsigned short charmask = vc->vc_hi_font_mask ? 0x1ff : 0xff;
 	int w = DIV_ROUND_UP(vc->vc_font.width, 8), c;
-	int y = real_y(ops->p, vc->vc_y);
-	int attribute, use_sw = (vc->vc_cursor_type & 0x10);
+	int y = real_y(ops->p, vc->state.y);
+	int attribute, use_sw = vc->vc_cursor_type & CUR_SW;
 	int err = 1;
 	char *src;
 
@@ -263,7 +263,7 @@ static void bit_cursor(struct vc_data *vc, struct fb_info *info, int mode,
 	if (attribute) {
 		u8 *dst;
 
-		dst = kmalloc(w * vc->vc_font.height, GFP_ATOMIC);
+		dst = kmalloc_array(w, vc->vc_font.height, GFP_ATOMIC);
 		if (!dst)
 			return;
 		kfree(ops->cursor_data);
@@ -280,10 +280,10 @@ static void bit_cursor(struct vc_data *vc, struct fb_info *info, int mode,
 		cursor.set |= FB_CUR_SETCMAP;
 	}
 
-	if ((ops->cursor_state.image.dx != (vc->vc_font.width * vc->vc_x)) ||
+	if ((ops->cursor_state.image.dx != (vc->vc_font.width * vc->state.x)) ||
 	    (ops->cursor_state.image.dy != (vc->vc_font.height * y)) ||
 	    ops->cursor_reset) {
-		ops->cursor_state.image.dx = vc->vc_font.width * vc->vc_x;
+		ops->cursor_state.image.dx = vc->vc_font.width * vc->state.x;
 		ops->cursor_state.image.dy = vc->vc_font.height * y;
 		cursor.set |= FB_CUR_SETPOS;
 	}
@@ -306,7 +306,7 @@ static void bit_cursor(struct vc_data *vc, struct fb_info *info, int mode,
 	    vc->vc_cursor_type != ops->p->cursor_shape ||
 	    ops->cursor_state.mask == NULL ||
 	    ops->cursor_reset) {
-		char *mask = kmalloc(w*vc->vc_font.height, GFP_ATOMIC);
+		char *mask = kmalloc_array(w, vc->vc_font.height, GFP_ATOMIC);
 		int cur_height, size, i = 0;
 		u8 msk = 0xff;
 
@@ -319,7 +319,7 @@ static void bit_cursor(struct vc_data *vc, struct fb_info *info, int mode,
 		ops->p->cursor_shape = vc->vc_cursor_type;
 		cursor.set |= FB_CUR_SETSHAPE;
 
-		switch (ops->p->cursor_shape & CUR_HWMASK) {
+		switch (CUR_SIZE(ops->p->cursor_shape)) {
 		case CUR_NONE:
 			cur_height = 0;
 			break;
@@ -407,6 +407,3 @@ void fbcon_set_bitops(struct fbcon_ops *ops)
 	if (ops->rotate)
 		fbcon_set_rotate(ops);
 }
-
-EXPORT_SYMBOL(fbcon_set_bitops);
-

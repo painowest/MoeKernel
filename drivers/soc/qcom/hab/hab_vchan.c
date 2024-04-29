@@ -1,14 +1,7 @@
-/* Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include "hab.h"
 
@@ -176,7 +169,10 @@ void hab_vchan_stop(struct virtual_channel *vchan)
 		vchan->otherend_closed = 1;
 		wake_up(&vchan->rx_queue);
 		if (vchan->ctx)
-			wake_up_interruptible(&vchan->ctx->exp_wq);
+			if (vchan->pchan->mem_proto == 1)
+				wake_up_interruptible(&vchan->ctx->imp_wq);
+			else
+				wake_up_interruptible(&vchan->ctx->exp_wq);
 		else
 			pr_err("NULL ctx for vchan %x\n", vchan->id);
 	}
@@ -239,19 +235,18 @@ static int hab_vchans_empty(int vmid)
 	for (i = 0; i < hab_driver.ndevices; i++) {
 		hab_dev = &hab_driver.devp[i];
 
-		spin_lock_bh(&hab_dev->pchan_lock);
+		read_lock_bh(&hab_dev->pchan_lock);
 		list_for_each_entry(pchan, &hab_dev->pchannels, node) {
 			if (pchan->vmid_remote == vmid) {
 				if (!hab_vchans_per_pchan_empty(pchan)) {
 					empty = 0;
-					spin_unlock_bh(&hab_dev->pchan_lock);
 					pr_info("vmid %d %s's vchans are not closed\n",
 							vmid, pchan->name);
 					break;
 				}
 			}
 		}
-		spin_unlock_bh(&hab_dev->pchan_lock);
+		read_unlock_bh(&hab_dev->pchan_lock);
 	}
 
 	return empty;

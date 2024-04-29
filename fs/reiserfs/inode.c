@@ -1044,7 +1044,8 @@ research:
 			if (blocks_needed == 1) {
 				un = &unf_single;
 			} else {
-				un = kzalloc(min(blocks_needed, max_to_insert) * UNFM_P_SIZE, GFP_NOFS);
+				un = kcalloc(min(blocks_needed, max_to_insert),
+					     UNFM_P_SIZE, GFP_NOFS);
 				if (!un) {
 					un = &unf_single;
 					blocks_needed = 1;
@@ -1065,7 +1066,7 @@ research:
 			} else {
 				/* paste hole to the indirect item */
 				/*
-				 * If kmalloc failed, max_to_insert becomes
+				 * If kcalloc failed, max_to_insert becomes
 				 * zero and it means we only have space for
 				 * one block
 				 */
@@ -1159,11 +1160,9 @@ failure:
 	return retval;
 }
 
-static int
-reiserfs_readpages(struct file *file, struct address_space *mapping,
-		   struct list_head *pages, unsigned nr_pages)
+static void reiserfs_readahead(struct readahead_control *rac)
 {
-	return mpage_readpages(mapping, pages, nr_pages, reiserfs_get_block);
+	mpage_readahead(rac, reiserfs_get_block);
 }
 
 /*
@@ -2111,7 +2110,7 @@ int reiserfs_new_inode(struct reiserfs_transaction_handle *th,
 			journal_end(th);
 			goto out_inserted_sd;
 		}
-	} else if (inode->i_sb->s_flags & MS_POSIXACL) {
+	} else if (inode->i_sb->s_flags & SB_POSIXACL) {
 		reiserfs_warning(inode->i_sb, "jdm-13090",
 				 "ACLs aren't enabled in the fs, "
 				 "but vfs thinks they are!");
@@ -2585,9 +2584,7 @@ static int reiserfs_write_full_page(struct page *page,
 			clear_buffer_dirty(bh);
 			set_buffer_uptodate(bh);
 		} else if ((checked || buffer_dirty(bh)) &&
-		           (!buffer_mapped(bh) || (buffer_mapped(bh)
-						       && bh->b_blocknr ==
-						       0))) {
+			   (!buffer_mapped(bh) || bh->b_blocknr == 0)) {
 			/*
 			 * not mapped yet, or it points to a direct item, search
 			 * the btree for the mapping info, and log any direct
@@ -3283,13 +3280,14 @@ static ssize_t reiserfs_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
 	return ret;
 }
 
-int reiserfs_setattr(struct dentry *dentry, struct iattr *attr)
+int reiserfs_setattr(struct user_namespace *mnt_userns, struct dentry *dentry,
+		     struct iattr *attr)
 {
 	struct inode *inode = d_inode(dentry);
 	unsigned int ia_valid;
 	int error;
 
-	error = setattr_prepare(dentry, attr);
+	error = setattr_prepare(&init_user_ns, dentry, attr);
 	if (error)
 		return error;
 
@@ -3414,7 +3412,7 @@ int reiserfs_setattr(struct dentry *dentry, struct iattr *attr)
 	}
 
 	if (!error) {
-		setattr_copy(inode, attr);
+		setattr_copy(&init_user_ns, inode, attr);
 		mark_inode_dirty(inode);
 	}
 
@@ -3430,7 +3428,7 @@ out:
 const struct address_space_operations reiserfs_address_space_operations = {
 	.writepage = reiserfs_writepage,
 	.readpage = reiserfs_readpage,
-	.readpages = reiserfs_readpages,
+	.readahead = reiserfs_readahead,
 	.releasepage = reiserfs_releasepage,
 	.invalidatepage = reiserfs_invalidatepage,
 	.write_begin = reiserfs_write_begin,

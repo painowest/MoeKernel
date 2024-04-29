@@ -22,11 +22,10 @@ obj-$(CONFIG_DEVFREQ_GOV_CDSPL3)	+= governor_cdsp_l3.o
 
 # DEVFREQ Drivers
 obj-$(CONFIG_ARM_EXYNOS_BUS_DEVFREQ)	+= exynos-bus.o
+obj-$(CONFIG_ARM_IMX_BUS_DEVFREQ)	+= imx-bus.o
+obj-$(CONFIG_ARM_IMX8M_DDRC_DEVFREQ)	+= imx8m-ddrc.o
 obj-$(CONFIG_ARM_RK3399_DMC_DEVFREQ)	+= rk3399_dmc.o
-obj-$(CONFIG_ARM_TEGRA_DEVFREQ)		+= tegra-devfreq.o
-obj-$(CONFIG_QCOM_DEVFREQ_DEVBW)		+= devfreq_devbw.o
-obj-$(CONFIG_DEVFREQ_SIMPLE_DEV)	+= devfreq_simple_dev.o
-obj-$(CONFIG_DEVFREQ_SPDM)		+= devfreq_spdm.o devfreq_spdm_debugfs.o
+obj-$(CONFIG_ARM_TEGRA_DEVFREQ)		+= tegra30-devfreq.o
 
 # DEVFREQ Event Drivers
 obj-$(CONFIG_PM_DEVFREQ_EVENT)		+= event/

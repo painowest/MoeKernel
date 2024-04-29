@@ -1,10 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright 2007, Michael Ellerman, IBM Corporation.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * as published by the Free Software Foundation; either version
- * 2 of the License, or (at your option) any later version.
  */
 
 
@@ -16,8 +12,8 @@
 #include <linux/export.h>
 #include <linux/of_platform.h>
 #include <linux/slab.h>
+#include <linux/debugfs.h>
 
-#include <asm/debugfs.h>
 #include <asm/dcr.h>
 #include <asm/machdep.h>
 #include <asm/prom.h>
@@ -343,7 +339,7 @@ static int axon_msi_probe(struct platform_device *device)
 
 	pr_devel("axon_msi: setting up dn %pOF\n", dn);
 
-	msic = kzalloc(sizeof(struct axon_msic), GFP_KERNEL);
+	msic = kzalloc(sizeof(*msic), GFP_KERNEL);
 	if (!msic) {
 		printk(KERN_ERR "axon_msi: couldn't allocate msic for %pOF\n",
 		       dn);
@@ -485,10 +481,6 @@ void axon_msi_debug_setup(struct device_node *dn, struct axon_msic *msic)
 
 	snprintf(name, sizeof(name), "msic_%d", of_node_to_nid(dn));
 
-	if (!debugfs_create_file(name, 0600, powerpc_debugfs_root,
-				 msic, &fops_msic)) {
-		pr_devel("axon_msi: debugfs_create_file failed!\n");
-		return;
-	}
+	debugfs_create_file(name, 0600, arch_debugfs_dir, msic, &fops_msic);
 }
 #endif /* DEBUG */

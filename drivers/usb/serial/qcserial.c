@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Qualcomm Serial USB driver
  *
  *	Copyright (c) 2008 QUALCOMM Incorporated.
  *	Copyright (c) 2009 Greg Kroah-Hartman <gregkh@suse.de>
  *	Copyright (c) 2009 Novell Inc.
- *
- *	This program is free software; you can redistribute it and/or
- *	modify it under the terms of the GNU General Public License version
- *	2 as published by the Free Software Foundation.
- *
  */
 
 #include <linux/tty.h>
@@ -251,11 +247,11 @@ static int qcprobe(struct usb_serial *serial, const struct usb_device_id *id)
 		/* QDL mode */
 		/* Gobi 2000 has a single altsetting, older ones have two */
 		if (serial->interface->num_altsetting == 2)
-			intf = &serial->interface->altsetting[1];
+			intf = usb_altnum_to_altsetting(serial->interface, 1);
 		else if (serial->interface->num_altsetting > 2)
 			goto done;
 
-		if (intf->desc.bNumEndpoints == 2 &&
+		if (intf && intf->desc.bNumEndpoints == 2 &&
 		    usb_endpoint_is_bulk_in(&intf->endpoint[0].desc) &&
 		    usb_endpoint_is_bulk_out(&intf->endpoint[1].desc)) {
 			dev_dbg(dev, "QDL port found\n");
@@ -374,9 +370,8 @@ static int qcprobe(struct usb_serial *serial, const struct usb_device_id *id)
 		 * a specific function, while the subclass indicate a
 		 * specific firmware source
 		 *
-		 * This is a blacklist of functions known to be
-		 * non-serial.  The rest are assumed to be serial and
-		 * will be handled by this driver
+		 * This is a list of functions known to be non-serial.  The rest
+		 * are assumed to be serial and will be handled by this driver
 		 */
 		switch (intf->desc.bInterfaceProtocol) {
 			/* QMI combined (qmi_wwan) */

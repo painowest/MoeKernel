@@ -25,6 +25,7 @@
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
 #include <linux/slab.h>
+#include <linux/iversion.h>
 #include <linux/unicode.h>
 #include "ext4.h"
 #include "xattr.h"
@@ -32,6 +33,9 @@
 static int ext4_dx_readdir(struct file *, struct dir_context *);
 
 /**
+ * is_dx_dir() - check if a directory is using htree indexing
+ * @inode: directory inode
+ *
  * Check if the given dir-inode refers to an htree-indexed directory
  * (or a directory which could potentially get converted to use htree
  * indexing).
@@ -91,7 +95,7 @@ int __ext4_check_dir_entry(const char *function, unsigned int line,
 	else if (unlikely(rlen < ext4_dir_rec_len(de->name_len,
 							fake ? NULL : dir)))
 		error_msg = "rec_len is too small for name_len";
-	else if (unlikely(((char *) de - buf) + rlen > size))
+	else if (unlikely(next_offset > size))
 		error_msg = "directory entry overrun";
 	else if (unlikely(next_offset > size - ext4_dir_rec_len(1,
 						  has_csum ? NULL : dir) &&
@@ -130,17 +134,15 @@ static int ext4_readdir(struct file *file, struct dir_context *ctx)
 	struct buffer_head *bh = NULL;
 	struct fscrypt_str fstr = FSTR_INIT(NULL, 0);
 
-	if (IS_ENCRYPTED(inode)) {
-		err = fscrypt_get_encryption_info(inode);
-		if (err)
-			return err;
-	}
+	err = fscrypt_prepare_readdir(inode);
+	if (err)
+		return err;
 
 	if (is_dx_dir(inode)) {
 		err = ext4_dx_readdir(file, ctx);
-		if (err != ERR_BAD_DX_DIR) {
+		if (err != ERR_BAD_DX_DIR)
 			return err;
-		}
+
 		/* Can we just clear INDEX flag to ignore htree information? */
 		if (!ext4_has_metadata_csum(sb)) {
 			/*
@@ -160,7 +162,7 @@ static int ext4_readdir(struct file *file, struct dir_context *ctx)
 	}
 
 	if (IS_ENCRYPTED(inode)) {
-		err = fscrypt_fname_alloc_buffer(inode, EXT4_NAME_LEN, &fstr);
+		err = fscrypt_fname_alloc_buffer(EXT4_NAME_LEN, &fstr);
 		if (err < 0)
 			return err;
 	}
@@ -212,8 +214,7 @@ static int ext4_readdir(struct file *file, struct dir_context *ctx)
 
 		/* Check the checksum */
 		if (!buffer_verified(bh) &&
-		    !ext4_dirent_csum_verify(inode,
-				(struct ext4_dir_entry *)bh->b_data)) {
+		    !ext4_dirblock_csum_verify(inode, bh)) {
 			EXT4_ERROR_FILE(file, 0, "directory fails checksum "
 					"at offset %llu",
 					(unsigned long long)ctx->pos);
@@ -228,7 +229,7 @@ static int ext4_readdir(struct file *file, struct dir_context *ctx)
 		 * readdir(2), then we might be pointing to an invalid
 		 * dirent right now.  Scan from the start of the block
 		 * to make sure. */
-		if (file->f_version != inode->i_version) {
+		if (!inode_eq_iversion(inode, file->f_version)) {
 			for (i = 0; i < sb->s_blocksize && i < offset; ) {
 				de = (struct ext4_dir_entry_2 *)
 					(bh->b_data + i);
@@ -248,7 +249,7 @@ static int ext4_readdir(struct file *file, struct dir_context *ctx)
 			offset = i;
 			ctx->pos = (ctx->pos & ~(sb->s_blocksize - 1))
 				| offset;
-			file->f_version = inode->i_version;
+			file->f_version = inode_query_iversion(inode);
 		}
 
 		while (ctx->pos < inode->i_size
@@ -385,13 +386,15 @@ static loff_t ext4_dir_llseek(struct file *file, loff_t offset, int whence)
 {
 	struct inode *inode = file->f_mapping->host;
 	int dx_dir = is_dx_dir(inode);
-	loff_t htree_max = ext4_get_htree_eof(file);
+	loff_t ret, htree_max = ext4_get_htree_eof(file);
 
 	if (likely(dx_dir))
-		return generic_file_llseek_size(file, offset, whence,
+		ret = generic_file_llseek_size(file, offset, whence,
 						    htree_max, htree_max);
 	else
-		return ext4_llseek(file, offset, whence);
+		ret = ext4_llseek(file, offset, whence);
+	file->f_version = inode_peek_iversion(inode) - 1;
+	return ret;
 }
 
 /*
@@ -406,7 +409,7 @@ struct fname {
 	__u32		inode;
 	__u8		name_len;
 	__u8		file_type;
-	char		name[0];
+	char		name[];
 };
 
 /*
@@ -478,7 +481,6 @@ int ext4_htree_store_dirent(struct file *dir_file, __u32 hash,
 	new_fn->name_len = ent_name->len;
 	new_fn->file_type = dirent->file_type;
 	memcpy(new_fn->name, ent_name->name, ent_name->len);
-	new_fn->name[ent_name->len] = 0;
 
 	while (*p) {
 		parent = *p;
@@ -589,10 +591,10 @@ static int ext4_dx_readdir(struct file *file, struct dir_context *ctx)
 		 * cached entries.
 		 */
 		if ((!info->curr_node) ||
-		    (file->f_version != inode->i_version)) {
+		    !inode_eq_iversion(inode, file->f_version)) {
 			info->curr_node = NULL;
 			free_rb_tree_fname(&info->root);
-			file->f_version = inode->i_version;
+			file->f_version = inode_query_iversion(inode);
 			ret = ext4_htree_fill_tree(file, info->curr_hash,
 						   info->curr_minor_hash,
 						   &info->next_hash);
@@ -629,13 +631,6 @@ static int ext4_dx_readdir(struct file *file, struct dir_context *ctx)
 finished:
 	info->last_pos = ctx->pos;
 	return ret < 0 ? ret : 0;
-}
-
-static int ext4_dir_open(struct inode * inode, struct file * filp)
-{
-	if (IS_ENCRYPTED(inode))
-		return fscrypt_get_encryption_info(inode) ? -EACCES : 0;
-	return 0;
 }
 
 static int ext4_release_dir(struct inode *inode, struct file *filp)
@@ -679,6 +674,5 @@ const struct file_operations ext4_dir_operations = {
 	.compat_ioctl	= ext4_compat_ioctl,
 #endif
 	.fsync		= ext4_sync_file,
-	.open		= ext4_dir_open,
 	.release	= ext4_release_dir,
 };

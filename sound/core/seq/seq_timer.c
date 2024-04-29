@@ -1,23 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   ALSA sequencer Timer
  *   Copyright (c) 1998-1999 by Frank van de Pol <fvdpol@coil.demon.nl>
  *                              Jaroslav Kysela <perex@perex.cz>
- *
- *
- *   This program is free software; you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *   GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program; if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
- *
  */
 
 #include <sound/core.h>
@@ -191,14 +176,15 @@ int snd_seq_timer_set_tempo(struct snd_seq_timer * tmr, int tempo)
 	return 0;
 }
 
-/* set current ppq */
-int snd_seq_timer_set_ppq(struct snd_seq_timer * tmr, int ppq)
+/* set current tempo and ppq in a shot */
+int snd_seq_timer_set_tempo_ppq(struct snd_seq_timer *tmr, int tempo, int ppq)
 {
+	int changed;
 	unsigned long flags;
 
 	if (snd_BUG_ON(!tmr))
 		return -EINVAL;
-	if (ppq <= 0)
+	if (tempo <= 0 || ppq <= 0)
 		return -EINVAL;
 	spin_lock_irqsave(&tmr->lock, flags);
 	if (tmr->running && (ppq != tmr->ppq)) {
@@ -208,9 +194,11 @@ int snd_seq_timer_set_ppq(struct snd_seq_timer * tmr, int ppq)
 		pr_debug("ALSA: seq: cannot change ppq of a running timer\n");
 		return -EBUSY;
 	}
-
+	changed = (tempo != tmr->tempo) || (ppq != tmr->ppq);
+	tmr->tempo = tempo;
 	tmr->ppq = ppq;
-	snd_seq_timer_set_tick_resolution(tmr);
+	if (changed)
+		snd_seq_timer_set_tick_resolution(tmr);
 	spin_unlock_irqrestore(&tmr->lock, flags);
 	return 0;
 }
@@ -284,7 +272,13 @@ int snd_seq_timer_open(struct snd_seq_queue *q)
 		return -EINVAL;
 	if (tmr->alsa_id.dev_class != SNDRV_TIMER_CLASS_SLAVE)
 		tmr->alsa_id.dev_sclass = SNDRV_TIMER_SCLASS_SEQUENCER;
-	err = snd_timer_open(&t, str, &tmr->alsa_id, q->queue);
+	t = snd_timer_instance_new(str);
+	if (!t)
+		return -ENOMEM;
+	t->callback = snd_seq_timer_interrupt;
+	t->callback_data = q;
+	t->flags |= SNDRV_TIMER_IFLG_AUTO;
+	err = snd_timer_open(t, &tmr->alsa_id, q->queue);
 	if (err < 0 && tmr->alsa_id.dev_class != SNDRV_TIMER_CLASS_SLAVE) {
 		if (tmr->alsa_id.dev_class != SNDRV_TIMER_CLASS_GLOBAL ||
 		    tmr->alsa_id.device != SNDRV_TIMER_GLOBAL_SYSTEM) {
@@ -294,19 +288,25 @@ int snd_seq_timer_open(struct snd_seq_queue *q)
 			tid.dev_sclass = SNDRV_TIMER_SCLASS_SEQUENCER;
 			tid.card = -1;
 			tid.device = SNDRV_TIMER_GLOBAL_SYSTEM;
-			err = snd_timer_open(&t, str, &tid, q->queue);
+			err = snd_timer_open(t, &tid, q->queue);
 		}
 	}
 	if (err < 0) {
 		pr_err("ALSA: seq fatal error: cannot create timer (%i)\n", err);
+		snd_timer_instance_free(t);
 		return err;
 	}
-	t->callback = snd_seq_timer_interrupt;
-	t->callback_data = q;
-	t->flags |= SNDRV_TIMER_IFLG_AUTO;
 	spin_lock_irq(&tmr->lock);
-	tmr->timeri = t;
+	if (tmr->timeri)
+		err = -EBUSY;
+	else
+		tmr->timeri = t;
 	spin_unlock_irq(&tmr->lock);
+	if (err < 0) {
+		snd_timer_close(t);
+		snd_timer_instance_free(t);
+		return err;
+	}
 	return 0;
 }
 
@@ -322,8 +322,10 @@ int snd_seq_timer_close(struct snd_seq_queue *q)
 	t = tmr->timeri;
 	tmr->timeri = NULL;
 	spin_unlock_irq(&tmr->lock);
-	if (t)
+	if (t) {
 		snd_timer_close(t);
+		snd_timer_instance_free(t);
+	}
 	return 0;
 }
 
@@ -368,9 +370,7 @@ static int initialize_timer(struct snd_seq_timer *tmr)
 
 	tmr->ticks = 1;
 	if (!(t->hw.flags & SNDRV_TIMER_HW_SLAVE)) {
-		unsigned long r = t->hw.resolution;
-		if (! r && t->hw.c_resolution)
-			r = t->hw.c_resolution(t);
+		unsigned long r = snd_timer_resolution(tmr->timeri);
 		if (r) {
 			tmr->ticks = (unsigned int)(1000000000uL / (r * freq));
 			if (! tmr->ticks)

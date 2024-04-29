@@ -1,14 +1,10 @@
-/*
- * Register cache access API
- *
- * Copyright 2011 Wolfson Microelectronics plc
- *
- * Author: Dimitris Papastamos <dp@opensource.wolfsonmicro.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- */
+// SPDX-License-Identifier: GPL-2.0
+//
+// Register cache access API
+//
+// Copyright 2011 Wolfson Microelectronics plc
+//
+// Author: Dimitris Papastamos <dp@opensource.wolfsonmicro.com>
 
 #include <linux/bsearch.h>
 #include <linux/device.h>
@@ -72,7 +68,7 @@ static int regcache_hw_init(struct regmap *map)
 		map->cache_bypass = cache_bypass;
 		if (ret == 0) {
 			map->reg_defaults_raw = tmp_buf;
-			map->cache_free = 1;
+			map->cache_free = true;
 		} else {
 			kfree(tmp_buf);
 		}
@@ -505,7 +501,8 @@ EXPORT_SYMBOL_GPL(regcache_drop_region);
 void regcache_cache_only(struct regmap *map, bool enable)
 {
 	map->lock(map->lock_arg);
-	WARN_ON(map->cache_bypass && enable);
+	WARN_ON(map->cache_type != REGCACHE_NONE &&
+		map->cache_bypass && enable);
 	map->cache_only = enable;
 	trace_regmap_cache_only(map, enable);
 	map->unlock(map->lock_arg);
@@ -727,7 +724,7 @@ static int regcache_sync_block_raw_flush(struct regmap *map, const void **data,
 
 	map->cache_bypass = true;
 
-	ret = _regmap_raw_write(map, base, *data, count * val_bytes);
+	ret = _regmap_raw_write(map, base, *data, count * val_bytes, false);
 	if (ret)
 		dev_err(map->dev, "Unable to sync registers %#x-%#x. %d\n",
 			base, cur - map->reg_stride, ret);

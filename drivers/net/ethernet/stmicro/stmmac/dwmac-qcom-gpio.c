@@ -1,13 +1,5 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/* Copyright (c) 2021, The Linux Foundation. All rights reserved.
  */
 #include <linux/module.h>
 #include <linux/of.h>
@@ -24,8 +16,6 @@
 #define EMAC_VREG_RGMII_NAME "vreg_rgmii"
 #define EMAC_VREG_EMAC_PHY_NAME "vreg_emac_phy"
 #define EMAC_VREG_RGMII_IO_PADS_NAME "vreg_rgmii_io_pads"
-#define EMAC_PIN_PPS0 "dev-emac_pin_pps_0"
-
 
 static int setup_gpio_input_common
 	(struct device *dev, const char *name, int *gpio)
@@ -37,7 +27,7 @@ static int setup_gpio_input_common
 		if (ret >= 0) {
 			ret = gpio_request(*gpio, name);
 			if (ret) {
-				ETHQOSERR("%s: Can't get GPIO %s, ret = %d\n",
+				ETHQOSERR("Can't get GPIO %s, ret = %d\n",
 					  name, *gpio);
 				*gpio = -1;
 				return ret;
@@ -45,9 +35,8 @@ static int setup_gpio_input_common
 
 			ret = gpio_direction_input(*gpio);
 			if (ret) {
-				ETHQOSERR(
-				   "%s: Can't set GPIO %s direction, ret = %d\n",
-				   name, ret);
+				ETHQOSERR("failed GPIO %s direction ret=%d\n",
+					  name, ret);
 				return ret;
 			}
 		} else {
@@ -66,7 +55,7 @@ static int setup_gpio_input_common
 	return ret;
 }
 
-int ethqos_init_reqgulators(struct qcom_ethqos *ethqos)
+int ethqos_init_regulators(struct qcom_ethqos *ethqos)
 {
 	int ret = 0;
 
@@ -86,6 +75,25 @@ int ethqos_init_reqgulators(struct qcom_ethqos *ethqos)
 		}
 
 		ETHQOSDBG("Enabled <%s>\n", EMAC_GDSC_EMAC_NAME);
+	}
+
+	if (of_property_read_bool(ethqos->pdev->dev.of_node,
+				  "vreg_rgmii-supply")) {
+		ethqos->reg_rgmii =
+		devm_regulator_get(&ethqos->pdev->dev, EMAC_VREG_RGMII_NAME);
+		if (IS_ERR(ethqos->reg_rgmii)) {
+			ETHQOSERR("Can not get <%s>\n", EMAC_VREG_RGMII_NAME);
+			return PTR_ERR(ethqos->reg_rgmii);
+		}
+
+		ret = regulator_enable(ethqos->reg_rgmii);
+		if (ret) {
+			ETHQOSERR("Can not enable <%s>\n",
+				  EMAC_VREG_RGMII_NAME);
+			goto reg_error;
+		}
+
+		ETHQOSDBG("Enabled <%s>\n", EMAC_VREG_RGMII_NAME);
 	}
 
 	if (of_property_read_bool(ethqos->pdev->dev.of_node,
@@ -128,26 +136,6 @@ int ethqos_init_reqgulators(struct qcom_ethqos *ethqos)
 		ETHQOSDBG("Enabled <%s>\n", EMAC_VREG_RGMII_IO_PADS_NAME);
 	}
 
-	if (of_property_read_bool(ethqos->pdev->dev.of_node,
-				  "vreg_rgmii-supply") && (2500000 ==
-		   regulator_get_voltage(ethqos->reg_rgmii_io_pads))) {
-		ethqos->reg_rgmii =
-		devm_regulator_get(&ethqos->pdev->dev, EMAC_VREG_RGMII_NAME);
-		if (IS_ERR(ethqos->reg_rgmii)) {
-			ETHQOSERR("Can not get <%s>\n", EMAC_VREG_RGMII_NAME);
-			return PTR_ERR(ethqos->reg_rgmii);
-		}
-
-		ret = regulator_enable(ethqos->reg_rgmii);
-		if (ret) {
-			ETHQOSERR("Can not enable <%s>\n",
-				  EMAC_VREG_RGMII_NAME);
-			goto reg_error;
-		}
-
-		ETHQOSDBG("Enabled <%s>\n", EMAC_VREG_RGMII_NAME);
-	}
-
 	return ret;
 
 reg_error:
@@ -155,33 +143,31 @@ reg_error:
 	ethqos_disable_regulators(ethqos);
 	return ret;
 }
+EXPORT_SYMBOL(ethqos_init_regulators);
 
 void ethqos_disable_regulators(struct qcom_ethqos *ethqos)
 {
 	if (ethqos->reg_rgmii) {
 		regulator_disable(ethqos->reg_rgmii);
-		devm_regulator_put(ethqos->reg_rgmii);
 		ethqos->reg_rgmii = NULL;
 	}
 
 	if (ethqos->reg_emac_phy) {
 		regulator_disable(ethqos->reg_emac_phy);
-		devm_regulator_put(ethqos->reg_emac_phy);
 		ethqos->reg_emac_phy = NULL;
 	}
 
 	if (ethqos->reg_rgmii_io_pads) {
 		regulator_disable(ethqos->reg_rgmii_io_pads);
-		devm_regulator_put(ethqos->reg_rgmii_io_pads);
 		ethqos->reg_rgmii_io_pads = NULL;
 	}
 
 	if (ethqos->gdsc_emac) {
 		regulator_disable(ethqos->gdsc_emac);
-		devm_regulator_put(ethqos->gdsc_emac);
 		ethqos->gdsc_emac = NULL;
 	}
 }
+EXPORT_SYMBOL(ethqos_disable_regulators);
 
 void ethqos_reset_phy_enable_interrupt(struct qcom_ethqos *ethqos)
 {
@@ -191,24 +177,24 @@ void ethqos_reset_phy_enable_interrupt(struct qcom_ethqos *ethqos)
 	/* reset the phy so that it's ready */
 	if (priv->mii) {
 		ETHQOSERR("do mdio reset\n");
-		stmmac_mdio_reset(priv->mii);
+		priv->mii->reset(priv->mii);
 	}
 	/*Enable phy interrupt*/
-	if (phy_intr_en && phydev) {
+	if (priv->plat->phy_intr_en_extn_stm && phydev) {
 		ETHQOSDBG("PHY interrupt Mode enabled\n");
-		phydev->irq = PHY_IGNORE_INTERRUPT;
+		phydev->irq = PHY_MAC_INTERRUPT;
 		phydev->interrupts =  PHY_INTERRUPT_ENABLED;
 
 		if (phydev->drv->config_intr &&
 		    !phydev->drv->config_intr(phydev)) {
 			ETHQOSERR("config_phy_intr successful after phy on\n");
 		}
-		qcom_ethqos_request_phy_wol(priv->plat);
-	} else if (!phy_intr_en) {
+		priv->plat->request_phy_wol(priv->plat);
+	} else if (!priv->plat->phy_intr_en_extn_stm) {
 		phydev->irq = PHY_POLL;
 		ETHQOSDBG("PHY Polling Mode enabled\n");
 	} else {
-		ETHQOSERR("phydev is null , intr value=%d\n", phy_intr_en);
+		ETHQOSERR("phydev is null , intr value=%d\n", priv->plat->phy_intr_en_extn_stm);
 	}
 }
 
@@ -246,6 +232,7 @@ void ethqos_free_gpios(struct qcom_ethqos *ethqos)
 		gpio_free(ethqos->gpio_phy_intr_redirect);
 	ethqos->gpio_phy_intr_redirect = -1;
 }
+EXPORT_SYMBOL(ethqos_free_gpios);
 
 int ethqos_init_pinctrl(struct device *dev)
 {
@@ -265,13 +252,15 @@ int ethqos_init_pinctrl(struct device *dev)
 
 	num_names = of_property_count_strings(dev->of_node, "pinctrl-names");
 	if (num_names < 0) {
-		dev_err(dev, "Cannot parse pinctrl-names: %d\n", num_names);
+		dev_err(dev, "Cannot parse pinctrl-names: %d\n",
+			num_names);
 		return num_names;
 	}
 
 	for (i = 0; i < num_names; i++) {
-		ret = of_property_read_string_index(
-			dev->of_node, "pinctrl-names", i, &name);
+		ret = of_property_read_string_index(dev->of_node,
+						    "pinctrl-names",
+						    i, &name);
 
 		if (!strcmp(name, PINCTRL_STATE_DEFAULT))
 			continue;
@@ -283,7 +272,7 @@ int ethqos_init_pinctrl(struct device *dev)
 			return ret;
 		}
 
-		ETHQOSDBG("pinctrl_lookup_state %s succeded\n", name);
+		ETHQOSDBG("pinctrl_lookup_state %s succeeded\n", name);
 
 		ret = pinctrl_select_state(pinctrl, pinctrl_state);
 		if (ret) {
@@ -291,11 +280,12 @@ int ethqos_init_pinctrl(struct device *dev)
 			return ret;
 		}
 
-		ETHQOSDBG("pinctrl_select_state %s succeded\n", name);
+		ETHQOSDBG("pinctrl_select_state %s succeeded\n", name);
 	}
 
 	return ret;
 }
+EXPORT_SYMBOL(ethqos_init_pinctrl);
 
 int ethqos_init_gpio(struct qcom_ethqos *ethqos)
 {
@@ -309,8 +299,8 @@ int ethqos_init_gpio(struct qcom_ethqos *ethqos)
 		return ret;
 	}
 
-	ret = setup_gpio_input_common(
-			&ethqos->pdev->dev, "qcom,phy-intr-redirect",
+	ret = setup_gpio_input_common(&ethqos->pdev->dev,
+				      "qcom,phy-intr-redirect",
 			&ethqos->gpio_phy_intr_redirect);
 
 	if (ret) {
@@ -325,3 +315,6 @@ gpio_error:
 	ethqos_free_gpios(ethqos);
 	return ret;
 }
+EXPORT_SYMBOL(ethqos_init_gpio);
+
+MODULE_LICENSE("GPL v2");

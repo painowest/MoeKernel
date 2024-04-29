@@ -6,6 +6,7 @@
  *  Authors:	Andrey V. Savochkin <saw@msu.ru>
  */
 
+#include <linux/cache.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/slab.h>
@@ -51,7 +52,7 @@
  *		daddr: unchangeable
  */
 
-static struct kmem_cache *peer_cachep __read_mostly;
+static struct kmem_cache *peer_cachep __ro_after_init;
 
 void inet_peer_base_init(struct inet_peer_base *bp)
 {
@@ -64,7 +65,7 @@ EXPORT_SYMBOL_GPL(inet_peer_base_init);
 #define PEER_MAX_GC 32
 
 /* Exported for sysctl_net_ipv4.  */
-int inet_peer_threshold __read_mostly = 65536 + 128;	/* start to throw entries more
+int inet_peer_threshold __read_mostly;	/* start to throw entries more
 					 * aggressively at this stage */
 int inet_peer_minttl __read_mostly = 120 * HZ;	/* TTL under high load: 120 sec */
 int inet_peer_maxttl __read_mostly = 10 * 60 * HZ;	/* usual time to live: 10 min */
@@ -72,20 +73,13 @@ int inet_peer_maxttl __read_mostly = 10 * 60 * HZ;	/* usual time to live: 10 min
 /* Called from ip_output.c:ip_init  */
 void __init inet_initpeers(void)
 {
-	struct sysinfo si;
+	u64 nr_entries;
 
-	/* Use the straight interface to information about memory. */
-	si_meminfo(&si);
-	/* The values below were suggested by Alexey Kuznetsov
-	 * <kuznet@ms2.inr.ac.ru>.  I don't have any opinion about the values
-	 * myself.  --SAW
-	 */
-	if (si.totalram <= (32768*1024)/PAGE_SIZE)
-		inet_peer_threshold >>= 1; /* max pool size about 1MB on IA32 */
-	if (si.totalram <= (16384*1024)/PAGE_SIZE)
-		inet_peer_threshold >>= 1; /* about 512KB */
-	if (si.totalram <= (8192*1024)/PAGE_SIZE)
-		inet_peer_threshold >>= 2; /* about 128KB */
+	 /* 1% of physical memory */
+	nr_entries = div64_ul((u64)totalram_pages() << PAGE_SHIFT,
+			      100 * L1_CACHE_ALIGN(sizeof(struct inet_peer)));
+
+	inet_peer_threshold = clamp_val(nr_entries, 4096, 65536 + 128);
 
 	peer_cachep = kmem_cache_create("inet_peer_cache",
 			sizeof(struct inet_peer),
@@ -298,14 +292,17 @@ EXPORT_SYMBOL(inet_peer_xrlim_allow);
 
 void inetpeer_invalidate_tree(struct inet_peer_base *base)
 {
-	struct inet_peer *p, *n;
+	struct rb_node *p = rb_first(&base->rb_root);
 
-	rbtree_postorder_for_each_entry_safe(p, n, &base->rb_root, rb_node) {
-		inet_putpeer(p);
+	while (p) {
+		struct inet_peer *peer = rb_entry(p, struct inet_peer, rb_node);
+
+		p = rb_next(p);
+		rb_erase(&peer->rb_node, &base->rb_root);
+		inet_putpeer(peer);
 		cond_resched();
 	}
 
-	base->rb_root = RB_ROOT;
 	base->total = 0;
 }
 EXPORT_SYMBOL(inetpeer_invalidate_tree);

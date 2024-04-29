@@ -1,13 +1,7 @@
-/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2018-2019, 2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "%s:%s " fmt, KBUILD_MODNAME, __func__
@@ -95,7 +89,7 @@ static int cxip_lm_set_cur_state(struct thermal_cooling_device *cdev,
 	int ret = 0;
 
 	if (state > CXIP_LM_CDEV_MAX_STATE)
-		state = CXIP_LM_CDEV_MAX_STATE;
+		return -EINVAL;
 
 	if (cxip_dev->state == state)
 		return 0;
@@ -128,8 +122,10 @@ static int cxip_lm_cdev_remove(struct platform_device *pdev)
 		(struct cxip_lm_cooling_device *)dev_get_drvdata(&pdev->dev);
 
 	if (cxip_dev) {
-		if (cxip_dev->cool_dev)
+		if (cxip_dev->cool_dev) {
 			thermal_cooling_device_unregister(cxip_dev->cool_dev);
+			cxip_dev->cool_dev = NULL;
+		}
 
 		if (cxip_dev->cx_ip_reg_base)
 			cxip_lm_therm_vote_apply(cxip_dev->cx_ip_reg_base,
@@ -224,7 +220,7 @@ static int cxip_lm_cdev_probe(struct platform_device *pdev)
 	cxip_dev->state = true;
 	cxip_lm_therm_vote_apply(cxip_dev, cxip_dev->state);
 
-	strlcpy(cxip_dev->cdev_name, np->name, THERMAL_NAME_LENGTH);
+	strscpy(cxip_dev->cdev_name, np->name, THERMAL_NAME_LENGTH);
 	cxip_dev->cool_dev = thermal_of_cooling_device_register(
 					np, cxip_dev->cdev_name, cxip_dev,
 					&cxip_lm_device_ops);
@@ -256,4 +252,5 @@ static struct platform_driver cxip_lm_cdev_driver = {
 	.probe = cxip_lm_cdev_probe,
 	.remove = cxip_lm_cdev_remove,
 };
-builtin_platform_driver(cxip_lm_cdev_driver);
+module_platform_driver(cxip_lm_cdev_driver);
+MODULE_LICENSE("GPL v2");

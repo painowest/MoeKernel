@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  net/dccp/proto.c
  *
  *  An implementation of the DCCP protocol
  *  Arnaldo Carvalho de Melo <acme@conectiva.com.br>
- *
- *	This program is free software; you can redistribute it and/or modify it
- *	under the terms of the GNU General Public License version 2 as
- *	published by the Free Software Foundation.
  */
 
 #include <linux/dccp.h>
@@ -38,12 +35,15 @@
 #include "dccp.h"
 #include "feat.h"
 
+#define CREATE_TRACE_POINTS
+#include "trace.h"
+
 DEFINE_SNMP_STAT(struct dccp_mib, dccp_statistics) __read_mostly;
 
 EXPORT_SYMBOL_GPL(dccp_statistics);
 
-struct percpu_counter dccp_orphan_count;
-EXPORT_SYMBOL_GPL(dccp_orphan_count);
+DEFINE_PER_CPU(unsigned int, dccp_orphan_count);
+EXPORT_PER_CPU_SYMBOL_GPL(dccp_orphan_count);
 
 struct inet_hashinfo dccp_hashinfo;
 EXPORT_SYMBOL_GPL(dccp_hashinfo);
@@ -101,7 +101,7 @@ void dccp_set_state(struct sock *sk, const int state)
 		if (inet_csk(sk)->icsk_bind_hash != NULL &&
 		    !(sk->sk_userlocks & SOCK_BINDPORT_LOCK))
 			inet_put_port(sk);
-		/* fall through */
+		fallthrough;
 	default:
 		if (oldstate == DCCP_OPEN)
 			DCCP_DEC_STATS(DCCP_MIB_CURRESTAB);
@@ -110,7 +110,7 @@ void dccp_set_state(struct sock *sk, const int state)
 	/* Change state AFTER socket is unhashed to avoid closed
 	 * socket sitting in hash tables.
 	 */
-	sk->sk_state = state;
+	inet_sk_set_state(sk, state);
 }
 
 EXPORT_SYMBOL_GPL(dccp_set_state);
@@ -266,7 +266,6 @@ int dccp_disconnect(struct sock *sk, int flags)
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	struct inet_sock *inet = inet_sk(sk);
 	struct dccp_sock *dp = dccp_sk(sk);
-	int err = 0;
 	const int old_state = sk->sk_state;
 
 	if (old_state != DCCP_CLOSED)
@@ -309,8 +308,8 @@ int dccp_disconnect(struct sock *sk, int flags)
 
 	WARN_ON(inet->inet_num && !icsk->icsk_bind_hash);
 
-	sk->sk_error_report(sk);
-	return err;
+	sk_error_report(sk);
+	return 0;
 }
 
 EXPORT_SYMBOL_GPL(dccp_disconnect);
@@ -322,14 +321,18 @@ EXPORT_SYMBOL_GPL(dccp_disconnect);
  *	take care of normal races (between the test and the event) and we don't
  *	go look at any of the socket buffers directly.
  */
-unsigned int dccp_poll(struct file *file, struct socket *sock,
+__poll_t dccp_poll(struct file *file, struct socket *sock,
 		       poll_table *wait)
 {
-	unsigned int mask;
 	struct sock *sk = sock->sk;
+	__poll_t mask;
+	u8 shutdown;
+	int state;
 
-	sock_poll_wait(file, sk_sleep(sk), wait);
-	if (sk->sk_state == DCCP_LISTEN)
+	sock_poll_wait(file, sock, wait);
+
+	state = inet_sk_state_load(sk);
+	if (state == DCCP_LISTEN)
 		return inet_csk_listen_poll(sk);
 
 	/* Socket is not locked. We are protected from async events
@@ -338,22 +341,23 @@ unsigned int dccp_poll(struct file *file, struct socket *sock,
 	 */
 
 	mask = 0;
-	if (sk->sk_err)
-		mask = POLLERR;
+	if (READ_ONCE(sk->sk_err))
+		mask = EPOLLERR;
+	shutdown = READ_ONCE(sk->sk_shutdown);
 
-	if (sk->sk_shutdown == SHUTDOWN_MASK || sk->sk_state == DCCP_CLOSED)
-		mask |= POLLHUP;
-	if (sk->sk_shutdown & RCV_SHUTDOWN)
-		mask |= POLLIN | POLLRDNORM | POLLRDHUP;
+	if (shutdown == SHUTDOWN_MASK || state == DCCP_CLOSED)
+		mask |= EPOLLHUP;
+	if (shutdown & RCV_SHUTDOWN)
+		mask |= EPOLLIN | EPOLLRDNORM | EPOLLRDHUP;
 
 	/* Connected? */
-	if ((1 << sk->sk_state) & ~(DCCPF_REQUESTING | DCCPF_RESPOND)) {
+	if ((1 << state) & ~(DCCPF_REQUESTING | DCCPF_RESPOND)) {
 		if (atomic_read(&sk->sk_rmem_alloc) > 0)
-			mask |= POLLIN | POLLRDNORM;
+			mask |= EPOLLIN | EPOLLRDNORM;
 
-		if (!(sk->sk_shutdown & SEND_SHUTDOWN)) {
+		if (!(shutdown & SEND_SHUTDOWN)) {
 			if (sk_stream_is_writeable(sk)) {
-				mask |= POLLOUT | POLLWRNORM;
+				mask |= EPOLLOUT | EPOLLWRNORM;
 			} else {  /* send SIGIO later */
 				sk_set_bit(SOCKWQ_ASYNC_NOSPACE, sk);
 				set_bit(SOCK_NOSPACE, &sk->sk_socket->flags);
@@ -363,13 +367,12 @@ unsigned int dccp_poll(struct file *file, struct socket *sock,
 				 * IO signal will be lost.
 				 */
 				if (sk_stream_is_writeable(sk))
-					mask |= POLLOUT | POLLWRNORM;
+					mask |= EPOLLOUT | EPOLLWRNORM;
 			}
 		}
 	}
 	return mask;
 }
-
 EXPORT_SYMBOL_GPL(dccp_poll);
 
 int dccp_ioctl(struct sock *sk, int cmd, unsigned long arg)
@@ -382,6 +385,15 @@ int dccp_ioctl(struct sock *sk, int cmd, unsigned long arg)
 		goto out;
 
 	switch (cmd) {
+	case SIOCOUTQ: {
+		int amount = sk_wmem_alloc_get(sk);
+		/* Using sk_wmem_alloc here because sk_wmem_queued is not used by DCCP and
+		 * always 0, comparably to UDP.
+		 */
+
+		rc = put_user(amount, (int __user *)arg);
+	}
+		break;
 	case SIOCINQ: {
 		struct sk_buff *skb;
 		unsigned long amount = 0;
@@ -409,7 +421,7 @@ out:
 EXPORT_SYMBOL_GPL(dccp_ioctl);
 
 static int dccp_setsockopt_service(struct sock *sk, const __be32 service,
-				   char __user *optval, unsigned int optlen)
+				   sockptr_t optval, unsigned int optlen)
 {
 	struct dccp_sock *dp = dccp_sk(sk);
 	struct dccp_service_list *sl = NULL;
@@ -424,9 +436,8 @@ static int dccp_setsockopt_service(struct sock *sk, const __be32 service,
 			return -ENOMEM;
 
 		sl->dccpsl_nr = optlen / sizeof(u32) - 1;
-		if (copy_from_user(sl->dccpsl_list,
-				   optval + sizeof(service),
-				   optlen - sizeof(service)) ||
+		if (copy_from_sockptr_offset(sl->dccpsl_list, optval,
+				sizeof(service), optlen - sizeof(service)) ||
 		    dccp_list_has_service(sl, DCCP_SERVICE_INVALID_VALUE)) {
 			kfree(sl);
 			return -EFAULT;
@@ -480,7 +491,7 @@ static int dccp_setsockopt_cscov(struct sock *sk, int cscov, bool rx)
 }
 
 static int dccp_setsockopt_ccid(struct sock *sk, int type,
-				char __user *optval, unsigned int optlen)
+				sockptr_t optval, unsigned int optlen)
 {
 	u8 *val;
 	int rc = 0;
@@ -488,7 +499,7 @@ static int dccp_setsockopt_ccid(struct sock *sk, int type,
 	if (optlen < 1 || optlen > DCCP_FEAT_MAX_SP_VALS)
 		return -EINVAL;
 
-	val = memdup_user(optval, optlen);
+	val = memdup_sockptr(optval, optlen);
 	if (IS_ERR(val))
 		return PTR_ERR(val);
 
@@ -505,7 +516,7 @@ static int dccp_setsockopt_ccid(struct sock *sk, int type,
 }
 
 static int do_dccp_setsockopt(struct sock *sk, int level, int optname,
-		char __user *optval, unsigned int optlen)
+		sockptr_t optval, unsigned int optlen)
 {
 	struct dccp_sock *dp = dccp_sk(sk);
 	int val, err = 0;
@@ -527,7 +538,7 @@ static int do_dccp_setsockopt(struct sock *sk, int level, int optname,
 	if (optlen < (int)sizeof(int))
 		return -EINVAL;
 
-	if (get_user(val, (int __user *)optval))
+	if (copy_from_sockptr(&val, optval, sizeof(int)))
 		return -EFAULT;
 
 	if (optname == DCCP_SOCKOPT_SERVICE)
@@ -570,8 +581,8 @@ static int do_dccp_setsockopt(struct sock *sk, int level, int optname,
 	return err;
 }
 
-int dccp_setsockopt(struct sock *sk, int level, int optname,
-		    char __user *optval, unsigned int optlen)
+int dccp_setsockopt(struct sock *sk, int level, int optname, sockptr_t optval,
+		    unsigned int optlen)
 {
 	if (level != SOL_DCCP)
 		return inet_csk(sk)->icsk_af_ops->setsockopt(sk, level,
@@ -581,19 +592,6 @@ int dccp_setsockopt(struct sock *sk, int level, int optname,
 }
 
 EXPORT_SYMBOL_GPL(dccp_setsockopt);
-
-#ifdef CONFIG_COMPAT
-int compat_dccp_setsockopt(struct sock *sk, int level, int optname,
-			   char __user *optval, unsigned int optlen)
-{
-	if (level != SOL_DCCP)
-		return inet_csk_compat_setsockopt(sk, level, optname,
-						  optval, optlen);
-	return do_dccp_setsockopt(sk, level, optname, optval, optlen);
-}
-
-EXPORT_SYMBOL_GPL(compat_dccp_setsockopt);
-#endif
 
 static int dccp_getsockopt_service(struct sock *sk, int len,
 				   __be32 __user *optval,
@@ -703,19 +701,6 @@ int dccp_getsockopt(struct sock *sk, int level, int optname,
 
 EXPORT_SYMBOL_GPL(dccp_getsockopt);
 
-#ifdef CONFIG_COMPAT
-int compat_dccp_getsockopt(struct sock *sk, int level, int optname,
-			   char __user *optval, int __user *optlen)
-{
-	if (level != SOL_DCCP)
-		return inet_csk_compat_getsockopt(sk, level, optname,
-						  optval, optlen);
-	return do_dccp_getsockopt(sk, level, optname, optval, optlen);
-}
-
-EXPORT_SYMBOL_GPL(compat_dccp_getsockopt);
-#endif
-
 static int dccp_msghdr_parse(struct msghdr *msg, struct sk_buff *skb)
 {
 	struct cmsghdr *cmsg;
@@ -764,6 +749,8 @@ int dccp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 	struct sk_buff *skb;
 	int rc, size;
 	long timeo;
+
+	trace_dccp_probe(sk, len);
 
 	if (len > READ_ONCE(dp->dccps_mss_cache))
 		return -EMSGSIZE;
@@ -863,7 +850,7 @@ int dccp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int nonblock,
 		case DCCP_PKT_CLOSEREQ:
 			if (!(flags & MSG_PEEK))
 				dccp_finish_passive_close(sk);
-			/* fall through */
+			fallthrough;
 		case DCCP_PKT_RESET:
 			dccp_pr_debug("found fin (%s) ok!\n",
 				      dccp_packet_name(dh->dccph_type));
@@ -955,6 +942,7 @@ int inet_dccp_listen(struct socket *sock, int backlog)
 	if (!((1 << old_state) & (DCCPF_CLOSED | DCCPF_LISTEN)))
 		goto out;
 
+	WRITE_ONCE(sk->sk_max_ack_backlog, backlog);
 	/* Really, if the socket is already in listen state
 	 * we can only allow the backlog to be adjusted.
 	 */
@@ -967,7 +955,6 @@ int inet_dccp_listen(struct socket *sock, int backlog)
 		if (err)
 			goto out;
 	}
-	sk->sk_max_ack_backlog = backlog;
 	err = 0;
 
 out:
@@ -989,7 +976,7 @@ static void dccp_terminate_connection(struct sock *sk)
 	case DCCP_PARTOPEN:
 		dccp_pr_debug("Stop PARTOPEN timer (%p)\n", sk);
 		inet_csk_clear_xmit_timer(sk, ICSK_TIME_DACK);
-		/* fall through */
+		fallthrough;
 	case DCCP_OPEN:
 		dccp_send_close(sk, 1);
 
@@ -998,7 +985,7 @@ static void dccp_terminate_connection(struct sock *sk)
 			next_state = DCCP_ACTIVE_CLOSEREQ;
 		else
 			next_state = DCCP_CLOSING;
-		/* fall through */
+		fallthrough;
 	default:
 		dccp_set_state(sk, next_state);
 	}
@@ -1084,7 +1071,7 @@ adjudge_to_death:
 	bh_lock_sock(sk);
 	WARN_ON(sock_owned_by_user(sk));
 
-	percpu_counter_inc(sk->sk_prot->orphan_count);
+	this_cpu_inc(dccp_orphan_count);
 
 	/* Have we already been destroyed by a softirq or backlog? */
 	if (state != DCCP_CLOSED && sk->sk_state == DCCP_CLOSED)
@@ -1143,18 +1130,18 @@ static int __init dccp_init(void)
 	int rc;
 
 	BUILD_BUG_ON(sizeof(struct dccp_skb_cb) >
-		     FIELD_SIZEOF(struct sk_buff, cb));
-	rc = percpu_counter_init(&dccp_orphan_count, 0, GFP_KERNEL);
+		     sizeof_field(struct sk_buff, cb));
+	inet_hashinfo_init(&dccp_hashinfo);
+	rc = inet_hashinfo2_init_mod(&dccp_hashinfo);
 	if (rc)
 		goto out_fail;
 	rc = -ENOBUFS;
-	inet_hashinfo_init(&dccp_hashinfo);
 	dccp_hashinfo.bind_bucket_cachep =
 		kmem_cache_create("dccp_bind_bucket",
 				  sizeof(struct inet_bind_bucket), 0,
-				  SLAB_HWCACHE_ALIGN, NULL);
+				  SLAB_HWCACHE_ALIGN | SLAB_ACCOUNT, NULL);
 	if (!dccp_hashinfo.bind_bucket_cachep)
-		goto out_free_percpu;
+		goto out_free_hashinfo2;
 
 	/*
 	 * Size and allocate the main established and bind bucket
@@ -1250,8 +1237,8 @@ out_free_dccp_ehash:
 	free_pages((unsigned long)dccp_hashinfo.ehash, ehash_order);
 out_free_bind_bucket_cachep:
 	kmem_cache_destroy(dccp_hashinfo.bind_bucket_cachep);
-out_free_percpu:
-	percpu_counter_destroy(&dccp_orphan_count);
+out_free_hashinfo2:
+	inet_hashinfo2_free_mod(&dccp_hashinfo);
 out_fail:
 	dccp_hashinfo.bhash = NULL;
 	dccp_hashinfo.ehash = NULL;
@@ -1273,7 +1260,7 @@ static void __exit dccp_fini(void)
 	kmem_cache_destroy(dccp_hashinfo.bind_bucket_cachep);
 	dccp_ackvec_exit();
 	dccp_sysctl_exit();
-	percpu_counter_destroy(&dccp_orphan_count);
+	inet_hashinfo2_free_mod(&dccp_hashinfo);
 }
 
 module_init(dccp_init);

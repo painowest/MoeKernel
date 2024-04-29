@@ -1,23 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Driver for msm7k serial device and console
  *
  * Copyright (C) 2007 Google, Inc.
  * Author: Robert Love <rlove@google.com>
  * Copyright (c) 2011, Code Aurora Forum. All rights reserved.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
-
-#if defined(CONFIG_SERIAL_MSM_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
-# define SUPPORT_SYSRQ
-#endif
 
 #include <linux/kernel.h>
 #include <linux/atomic.h>
@@ -309,7 +297,7 @@ static void msm_request_tx_dma(struct msm_port *msm_port, resource_size_t base)
 	dma = &msm_port->tx_dma;
 
 	/* allocate DMA resources, if available */
-	dma->chan = dma_request_slave_channel_reason(dev, "tx");
+	dma->chan = dma_request_chan(dev, "tx");
 	if (IS_ERR(dma->chan))
 		goto no_tx;
 
@@ -352,7 +340,7 @@ static void msm_request_rx_dma(struct msm_port *msm_port, resource_size_t base)
 	dma = &msm_port->rx_dma;
 
 	/* allocate DMA resources, if available */
-	dma->chan = dma_request_slave_channel_reason(dev, "rx");
+	dma->chan = dma_request_chan(dev, "rx");
 	if (IS_ERR(dma->chan))
 		goto no_rx;
 
@@ -438,7 +426,6 @@ static void msm_complete_tx_dma(void *args)
 	struct circ_buf *xmit = &port->state->xmit;
 	struct msm_dma *dma = &msm_port->tx_dma;
 	struct dma_tx_state state;
-	enum dma_status status;
 	unsigned long flags;
 	unsigned int count;
 	u32 val;
@@ -449,7 +436,7 @@ static void msm_complete_tx_dma(void *args)
 	if (!dma->count)
 		goto done;
 
-	status = dmaengine_tx_status(dma->chan, dma->cookie, &state);
+	dmaengine_tx_status(dma->chan, dma->cookie, &state);
 
 	dma_unmap_single(port->dev, dma->phys, dma->count, dma->dir);
 
@@ -621,7 +608,7 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 				   UARTDM_RX_SIZE, dma->dir);
 	ret = dma_mapping_error(uart->dev, dma->phys);
 	if (ret)
-		return;
+		goto sw_mode;
 
 	dma->desc = dmaengine_prep_slave_single(dma->chan, dma->phys,
 						UARTDM_RX_SIZE, DMA_DEV_TO_MEM,
@@ -672,6 +659,22 @@ static void msm_start_rx_dma(struct msm_port *msm_port)
 	return;
 unmap:
 	dma_unmap_single(uart->dev, dma->phys, UARTDM_RX_SIZE, dma->dir);
+
+sw_mode:
+	/*
+	 * Switch from DMA to SW/FIFO mode. After clearing Rx BAM (UARTDM_DMEN),
+	 * receiver must be reset.
+	 */
+	msm_write(uart, UART_CR_CMD_RESET_RX, UART_CR);
+	msm_write(uart, UART_CR_RX_ENABLE, UART_CR);
+
+	msm_write(uart, UART_CR_CMD_RESET_STALE_INT, UART_CR);
+	msm_write(uart, 0xFFFFFF, UARTDM_DMRX);
+	msm_write(uart, UART_CR_CMD_STALE_EVENT_ENABLE, UART_CR);
+
+	/* Re-enable RX interrupts */
+	msm_port->imr |= (UART_IMR_RXLEV | UART_IMR_RXSTALE);
+	msm_write(uart, msm_port->imr, UART_IMR);
 }
 
 static void msm_stop_rx(struct uart_port *port)
@@ -695,6 +698,7 @@ static void msm_enable_ms(struct uart_port *port)
 }
 
 static void msm_handle_rx_dm(struct uart_port *port, unsigned int misr)
+	__must_hold(&port->lock)
 {
 	struct tty_port *tport = &port->state->port;
 	unsigned int sr;
@@ -756,9 +760,7 @@ static void msm_handle_rx_dm(struct uart_port *port, unsigned int misr)
 		count -= r_count;
 	}
 
-	spin_unlock(&port->lock);
 	tty_flip_buffer_push(tport);
-	spin_lock(&port->lock);
 
 	if (misr & (UART_IMR_RXSTALE))
 		msm_write(port, UART_CR_CMD_RESET_STALE_INT, UART_CR);
@@ -770,6 +772,7 @@ static void msm_handle_rx_dm(struct uart_port *port, unsigned int misr)
 }
 
 static void msm_handle_rx(struct uart_port *port)
+	__must_hold(&port->lock)
 {
 	struct tty_port *tport = &port->state->port;
 	unsigned int sr;
@@ -817,9 +820,7 @@ static void msm_handle_rx(struct uart_port *port)
 			tty_insert_flip_char(tport, c, flag);
 	}
 
-	spin_unlock(&port->lock);
 	tty_flip_buffer_push(tport);
-	spin_lock(&port->lock);
 }
 
 static void msm_handle_tx_pio(struct uart_port *port, unsigned int tx_count)
@@ -1536,7 +1537,7 @@ static void msm_poll_put_char(struct uart_port *port, unsigned char c)
 }
 #endif
 
-static struct uart_ops msm_uart_pops = {
+static const struct uart_ops msm_uart_pops = {
 	.tx_empty = msm_tx_empty,
 	.set_mctrl = msm_set_mctrl,
 	.get_mctrl = msm_get_mctrl,
@@ -1691,7 +1692,7 @@ static void msm_console_write(struct console *co, const char *s,
 }
 #endif
 
-static int __init msm_console_setup(struct console *co, char *options)
+static int msm_console_setup(struct console *co, char *options)
 {
 	struct uart_port *port;
 	int baud = 115200;
@@ -1847,6 +1848,7 @@ static int msm_serial_probe(struct platform_device *pdev)
 	if (unlikely(irq < 0))
 		return -ENXIO;
 	port->irq = irq;
+	port->has_sysrq = IS_ENABLED(CONFIG_SERIAL_MSM_CONSOLE);
 
 	platform_set_drvdata(pdev, port);
 
@@ -1869,8 +1871,7 @@ static const struct of_device_id msm_match_table[] = {
 };
 MODULE_DEVICE_TABLE(of, msm_match_table);
 
-#ifdef CONFIG_PM_SLEEP
-static int msm_serial_suspend(struct device *dev)
+static int __maybe_unused msm_serial_suspend(struct device *dev)
 {
 	struct msm_port *port = dev_get_drvdata(dev);
 
@@ -1879,7 +1880,7 @@ static int msm_serial_suspend(struct device *dev)
 	return 0;
 }
 
-static int msm_serial_resume(struct device *dev)
+static int __maybe_unused msm_serial_resume(struct device *dev)
 {
 	struct msm_port *port = dev_get_drvdata(dev);
 
@@ -1887,7 +1888,6 @@ static int msm_serial_resume(struct device *dev)
 
 	return 0;
 }
-#endif /* CONFIG_PM_SLEEP */
 
 static const struct dev_pm_ops msm_serial_dev_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(msm_serial_suspend, msm_serial_resume)

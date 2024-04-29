@@ -1,13 +1,6 @@
-/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -28,7 +21,7 @@
 #include <linux/io.h>
 #include <linux/platform_device.h>
 #include <linux/bitops.h>
-#include <soc/qcom/scm.h>
+#include <linux/qcom_scm.h>
 #include <soc/qcom/jtag.h>
 #ifdef CONFIG_ARM64
 #include <asm/debugv8.h>
@@ -51,8 +44,6 @@
 #define MAX_DBG_STATE_SIZE	(MAX_DBG_REGS * num_possible_cpus())
 
 #define OSLOCK_MAGIC		(0xC5ACCE55)
-#define GET_FEAT_VERSION_CMD	3
-#define TZ_DBG_ETM_FEAT_ID	(0x8)
 #define TZ_DBG_ETM_VER		(0x400000)
 
 static uint32_t msm_jtag_save_cntr[NR_CPUS];
@@ -375,6 +366,7 @@ static int dbg_write_arch64_wxr(uint64_t *state, int i, int j)
 static inline void dbg_save_state(int cpu)
 {
 	int i, j;
+	uint64_t lock = 0x1;
 
 	i = cpu * MAX_DBG_REGS;
 
@@ -385,7 +377,7 @@ static inline void dbg_save_state(int cpu)
 		 * process of saving debug registers. It prevents accidental
 		 * modification of the debug regs by the external debugger.
 		 */
-		dbg_write(0x1, OSLAR_EL1);
+		dbg_write(lock, OSLAR_EL1);
 		/* Ensure OS lock is set before proceeding */
 		isb();
 
@@ -402,7 +394,7 @@ static inline void dbg_save_state(int cpu)
 
 		/* Set the OS double lock */
 		isb();
-		dbg_write(0x1, OSDLR_EL1);
+		dbg_write(lock, OSDLR_EL1);
 		isb();
 		break;
 	default:
@@ -414,6 +406,7 @@ static inline void dbg_save_state(int cpu)
 static inline void dbg_restore_state(int cpu)
 {
 	int i, j;
+	uint64_t lock = 0x1;
 
 	i = cpu * MAX_DBG_REGS;
 
@@ -422,13 +415,13 @@ static inline void dbg_restore_state(int cpu)
 	case ARM_DEBUG_ARCH_V8:
 		/* Clear the OS double lock */
 		isb();
-		dbg_write(0x0, OSDLR_EL1);
+		dbg_write(~lock, OSDLR_EL1);
 		isb();
 
 		/* Set OS lock. Lock will already be set after power collapse
 		 * but this write is included to ensure it is set.
 		 */
-		dbg_write(0x1, OSLAR_EL1);
+		dbg_write(lock, OSLAR_EL1);
 		isb();
 
 		dbg_write(dbg.state[i++], MDSCR_EL1);
@@ -443,7 +436,7 @@ static inline void dbg_restore_state(int cpu)
 		dbg_write(dbg.state[i++], OSDTRTX_EL1);
 
 		isb();
-		dbg_write(0x0, OSLAR_EL1);
+		dbg_write(~lock, OSLAR_EL1);
 		isb();
 		break;
 	default:
@@ -760,6 +753,7 @@ static int dbg_write_arch32_wxr(uint32_t *state, int i, int j)
 static inline void dbg_save_state(int cpu)
 {
 	int i, j;
+	uint64_t lock = 0x1;
 
 	i = cpu * MAX_DBG_REGS;
 
@@ -787,7 +781,7 @@ static inline void dbg_save_state(int cpu)
 
 		/* Set the OS double lock */
 		isb();
-		dbg_write(0x1, DBGOSDLR);
+		dbg_write(lock, DBGOSDLR);
 		isb();
 		break;
 	default:
@@ -799,6 +793,7 @@ static inline void dbg_save_state(int cpu)
 static inline void dbg_restore_state(int cpu)
 {
 	int i, j;
+	uint64_t lock = 0x1;
 
 	i = cpu * MAX_DBG_REGS;
 
@@ -807,7 +802,7 @@ static inline void dbg_restore_state(int cpu)
 	case ARM_DEBUG_ARCH_V8:
 		/* Clear the OS double lock */
 		isb();
-		dbg_write(0x0, DBGOSDLR);
+		dbg_write(~lock, DBGOSDLR);
 		isb();
 
 		/* Set OS lock. Lock will already be set after power collapse
@@ -828,7 +823,7 @@ static inline void dbg_restore_state(int cpu)
 		dbg_write(dbg.state[i++], DBGDTRTXext);
 
 		isb();
-		dbg_write(0x0, DBGOSLAR);
+		dbg_write(~lock, DBGOSLAR);
 		isb();
 		break;
 	default:
@@ -868,7 +863,7 @@ static void dbg_init_arch_data(void)
  *
  * In all cases we will run on the same cpu for the entire duration.
  */
-void msm_jtag_save_state(void)
+void msm_jtag_save_state(bool is_hotcpu_cb)
 {
 	int cpu;
 
@@ -878,13 +873,14 @@ void msm_jtag_save_state(void)
 	/* ensure counter is updated before moving forward */
 	mb();
 
-	msm_jtag_etm_save_state();
+	if (!is_hotcpu_cb)
+		msm_jtag_etm_save_state();
 	if (dbg.save_restore_enabled)
 		dbg_save_state(cpu);
 }
 EXPORT_SYMBOL(msm_jtag_save_state);
 
-void msm_jtag_restore_state(void)
+void msm_jtag_restore_state(bool is_hotcpu_cb)
 {
 	int cpu;
 
@@ -910,7 +906,8 @@ void msm_jtag_restore_state(void)
 
 	if (dbg.save_restore_enabled)
 		dbg_restore_state(cpu);
-	msm_jtag_etm_restore_state();
+	if (!is_hotcpu_cb)
+		msm_jtag_etm_restore_state();
 }
 EXPORT_SYMBOL(msm_jtag_restore_state);
 
@@ -928,13 +925,13 @@ static inline bool dbg_arch_supported(uint8_t arch)
 
 static int jtag_hotcpu_save_callback(unsigned int cpu)
 {
-	msm_jtag_save_state();
+	msm_jtag_save_state(true);
 	return 0;
 }
 
 static int jtag_hotcpu_restore_callback(unsigned int cpu)
 {
-	msm_jtag_restore_state();
+	msm_jtag_restore_state(true);
 	return 0;
 }
 
@@ -943,11 +940,11 @@ static int jtag_cpu_pm_callback(struct notifier_block *nfb,
 {
 	switch (action) {
 	case CPU_PM_ENTER:
-		msm_jtag_save_state();
+		msm_jtag_save_state(false);
 		break;
 	case CPU_PM_ENTER_FAILED:
 	case CPU_PM_EXIT:
-		msm_jtag_restore_state();
+		msm_jtag_restore_state(false);
 		break;
 	}
 	return NOTIFY_OK;
@@ -960,18 +957,15 @@ static struct notifier_block jtag_cpu_pm_notifier = {
 static int __init msm_jtag_dbg_init(void)
 {
 	int ret;
-	struct scm_desc desc = {0};
+	u64 version;
 
 	/* This will run on core0 so use it to populate parameters */
 	dbg_init_arch_data();
 
 	if (dbg_arch_supported(dbg.arch)) {
-		desc.args[0] = TZ_DBG_ETM_FEAT_ID;
-		desc.arginfo = SCM_ARGS(1);
-		ret = scm_call2(SCM_SIP_FNID(SCM_SVC_INFO,
-				GET_FEAT_VERSION_CMD), &desc);
+		ret = qcom_scm_get_jtag_etm_feat_id(&version);
 		if (!ret) {
-			if (desc.ret[0] < TZ_DBG_ETM_VER)
+			if (version < TZ_DBG_ETM_VER)
 				dbg.save_restore_enabled = true;
 			else {
 				pr_info("dbg save-restore supported by TZ\n");

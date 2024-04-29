@@ -5,14 +5,14 @@
 #include <linux/list.h>
 #include <linux/stddef.h>
 #include <linux/spinlock.h>
+#include <linux/wait.h>
 #include <asm/current.h>
 
 /*
- * Simple wait queues
- *
- * While these are very similar to regular wait queues (wait.h) the most
- * important difference is that the simple waitqueue allows for deterministic
- * behaviour -- IOW it has strictly bounded IRQ and lock hold times.
+ * Simple waitqueues are semantically very different to regular wait queues
+ * (wait.h). The most important difference is that the simple waitqueue allows
+ * for deterministic behaviour -- IOW it has strictly bounded IRQ and lock hold
+ * times.
  *
  * Mainly, this is accomplished by two things. Firstly not allowing swake_up_all
  * from IRQ disabled, and dropping the lock upon every wakeup, giving a higher
@@ -26,7 +26,7 @@
  *    sleeper state.
  *
  *  - the !exclusive mode; because that leads to O(n) wakeups, everything is
- *    exclusive.
+ *    exclusive. As such swake_up_one will only ever awake _one_ waiter.
  *
  *  - custom wake callback functions; because you cannot give any guarantees
  *    about random code. This also allows swait to be used in RT, such that
@@ -102,7 +102,7 @@ extern void __init_swait_queue_head(struct swait_queue_head *q, const char *name
  *      CPU0 - waker                    CPU1 - waiter
  *
  *                                      for (;;) {
- *      @cond = true;                     prepare_to_swait(&wq_head, &wait, state);
+ *      @cond = true;                     prepare_to_swait_exclusive(&wq_head, &wait, state);
  *      smp_mb();                         // smp_mb() from set_current_state()
  *      if (swait_active(wq_head))        if (@cond)
  *        wake_up(wq_head);                      break;
@@ -144,12 +144,11 @@ static inline bool swq_has_sleeper(struct swait_queue_head *wq)
 	return swait_active(wq);
 }
 
-extern void swake_up(struct swait_queue_head *q);
+extern void swake_up_one(struct swait_queue_head *q);
 extern void swake_up_all(struct swait_queue_head *q);
 extern void swake_up_locked(struct swait_queue_head *q);
 
-extern void __prepare_to_swait(struct swait_queue_head *q, struct swait_queue *wait);
-extern void prepare_to_swait(struct swait_queue_head *q, struct swait_queue *wait, int state);
+extern void prepare_to_swait_exclusive(struct swait_queue_head *q, struct swait_queue *wait, int state);
 extern long prepare_to_swait_event(struct swait_queue_head *q, struct swait_queue *wait, int state);
 
 extern void __finish_swait(struct swait_queue_head *q, struct swait_queue *wait);
@@ -184,7 +183,7 @@ __out:	__ret;								\
 	(void)___swait_event(wq, condition, TASK_UNINTERRUPTIBLE, 0,	\
 			    schedule())
 
-#define swait_event(wq, condition)					\
+#define swait_event_exclusive(wq, condition)				\
 do {									\
 	if (condition)							\
 		break;							\
@@ -196,7 +195,7 @@ do {									\
 		      TASK_UNINTERRUPTIBLE, timeout,			\
 		      __ret = schedule_timeout(__ret))
 
-#define swait_event_timeout(wq, condition, timeout)			\
+#define swait_event_timeout_exclusive(wq, condition, timeout)		\
 ({									\
 	long __ret = timeout;						\
 	if (!___wait_cond_timeout(condition))				\
@@ -208,7 +207,7 @@ do {									\
 	___swait_event(wq, condition, TASK_INTERRUPTIBLE, 0,		\
 		      schedule())
 
-#define swait_event_interruptible(wq, condition)			\
+#define swait_event_interruptible_exclusive(wq, condition)		\
 ({									\
 	int __ret = 0;							\
 	if (!(condition))						\
@@ -221,7 +220,7 @@ do {									\
 		      TASK_INTERRUPTIBLE, timeout,			\
 		      __ret = schedule_timeout(__ret))
 
-#define swait_event_interruptible_timeout(wq, condition, timeout)	\
+#define swait_event_interruptible_timeout_exclusive(wq, condition, timeout)\
 ({									\
 	long __ret = timeout;						\
 	if (!___wait_cond_timeout(condition))				\
@@ -234,7 +233,7 @@ do {									\
 	(void)___swait_event(wq, condition, TASK_IDLE, 0, schedule())
 
 /**
- * swait_event_idle - wait without system load contribution
+ * swait_event_idle_exclusive - wait without system load contribution
  * @wq: the waitqueue to wait on
  * @condition: a C expression for the event to wait for
  *
@@ -245,7 +244,7 @@ do {									\
  * condition and doesn't want to contribute to system load. Signals are
  * ignored.
  */
-#define swait_event_idle(wq, condition)					\
+#define swait_event_idle_exclusive(wq, condition)			\
 do {									\
 	if (condition)							\
 		break;							\
@@ -258,7 +257,7 @@ do {									\
 		       __ret = schedule_timeout(__ret))
 
 /**
- * swait_event_idle_timeout - wait up to timeout without load contribution
+ * swait_event_idle_timeout_exclusive - wait up to timeout without load contribution
  * @wq: the waitqueue to wait on
  * @condition: a C expression for the event to wait for
  * @timeout: timeout at which we'll give up in jiffies
@@ -276,7 +275,7 @@ do {									\
  * or the remaining jiffies (at least 1) if the @condition evaluated
  * to %true before the @timeout elapsed.
  */
-#define swait_event_idle_timeout(wq, condition, timeout)		\
+#define swait_event_idle_timeout_exclusive(wq, condition, timeout)	\
 ({									\
 	long __ret = timeout;						\
 	if (!___wait_cond_timeout(condition))				\

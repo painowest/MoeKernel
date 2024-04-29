@@ -13,7 +13,6 @@
 extern void cpu_init(void);
 
 void soft_restart(unsigned long);
-extern void (*arm_pm_restart)(enum reboot_mode reboot_mode, const char *cmd);
 extern void (*arm_pm_idle)(void);
 
 #ifdef CONFIG_HARDEN_BRANCH_PREDICTOR
@@ -39,11 +38,6 @@ static inline void harden_branch_predictor(void)
 extern unsigned int user_debug;
 extern char* (*arch_read_hardware_id)(void);
 const char * __init arch_read_machine_name(void);
-
-static inline int handle_guest_sea(phys_addr_t addr, unsigned int esr)
-{
-	return -1;
-}
 
 #endif /* !__ASSEMBLY__ */
 

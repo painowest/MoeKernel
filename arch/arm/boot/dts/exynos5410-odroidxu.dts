@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Hardkernel Odroid XU board device tree source
  *
  * Copyright (c) 2013 Samsung Electronics Co., Ltd.
  *		http://www.samsung.com
  * Copyright (c) 2016 Krzysztof Kozlowski
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 /dts-v1/;
@@ -21,6 +18,10 @@
 / {
 	model = "Hardkernel Odroid XU";
 	compatible = "hardkernel,odroid-xu", "samsung,exynos5410", "samsung,exynos5";
+
+	aliases {
+		ethernet = &ethernet;
+	};
 
 	memory@40000000 {
 		device_type = "memory";
@@ -41,8 +42,6 @@
 	fan0: pwm-fan {
 		compatible = "pwm-fan";
 		pwms = <&pwm 0 20972 0>;
-		cooling-min-state = <0>;
-		cooling-max-state = <3>;
 		#cooling-cells = <2>;
 		cooling-levels = <0 130 170 230>;
 	};
@@ -54,7 +53,7 @@
 		#clock-cells = <0>;
 	};
 
-	firmware@02073000 {
+	firmware@2073000 {
 		compatible = "samsung,secure-firmware";
 		reg = <0x02073000 0x1000>;
 	};
@@ -90,6 +89,11 @@
 	};
 };
 
+&adc {
+	vdd-supply = <&ldo10_reg>;
+	status = "okay";
+};
+
 &audi2s0 {
 	status = "okay";
 };
@@ -109,10 +113,10 @@
 	assigned-clock-parents = <&clock CLK_FOUT_EPLL>,
 			<&clock_audss EXYNOS_MOUT_AUDSS>;
 
-	assigned-clock-rates =  <0>,
-				<0>,
-				<96000000>,
-				<19200000>;
+	assigned-clock-rates = <0>,
+			       <0>,
+			       <96000000>,
+			       <19200000>;
 };
 
 &cpu0_thermal {
@@ -163,13 +167,13 @@
 	samsung,i2c-max-bus-freq = <400000>;
 	status = "okay";
 
-	usb3503: usb-hub@08 {
+	usb3503: usb-hub@8 {
 		compatible = "smsc,usb3503";
 		reg = <0x08>;
 
 		intn-gpios = <&gpx0 7 GPIO_ACTIVE_HIGH>;
 		connect-gpios = <&gpx0 6 GPIO_ACTIVE_HIGH>;
-		reset-gpios = <&gpx1 4 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpx1 4 GPIO_ACTIVE_LOW>;
 		initial-mode = <1>;
 
 		clock-names = "refclk";
@@ -177,7 +181,7 @@
 		refclk-frequency = <24000000>;
 	};
 
-	max77802: pmic@09 {
+	max77802: pmic@9 {
 		compatible = "maxim,max77802";
 		reg = <0x9>;
 		interrupt-parent = <&gpx0>;
@@ -185,6 +189,7 @@
 		pinctrl-names = "default";
 		pinctrl-0 = <&max77802_irq>, <&pmic_dvs_1>, <&pmic_dvs_2>,
 			    <&pmic_dvs_3>;
+		wakeup-source;
 		#clock-cells = <1>;
 
 		inl1-supply = <&buck5_reg>;
@@ -499,7 +504,7 @@
 
 &i2c_1 {
 	status = "okay";
-	max98090: max98090@10 {
+	max98090: audio-codec@10 {
 		compatible = "maxim,max98090";
 		reg = <0x10>;
 		interrupt-parent = <&gpj3>;
@@ -534,7 +539,7 @@
 	samsung,dw-mshc-sdr-timing = <0 4>;
 	samsung,dw-mshc-ddr-timing = <0 2>;
 	pinctrl-names = "default";
-	pinctrl-0 = <&sd2_clk &sd2_cmd &sd2_cd &sd2_bus1 &sd2_bus4>;
+	pinctrl-0 = <&sd2_clk &sd2_cmd &sd2_cd &sd2_bus1 &sd2_bus4 &sd2_wp>;
 	bus-width = <4>;
 	cap-sd-highspeed;
 	vmmc-supply = <&ldo21_reg>;
@@ -547,6 +552,14 @@
 		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+
+	sd2_wp: sd2-wp {
+		samsung,pins = "gpm5-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		/* Pin is floating so be sure to disable write-protect */
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV4>;
 	};
 
 	pmic_dvs_3: pmic-dvs-3 {
@@ -629,6 +642,16 @@
 	vtmu-supply = <&ldo10_reg>;
 };
 
+&usb3_0_oc {
+	/* External pull up */
+	samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+};
+
+&usb3_1_oc {
+	/* External pull up */
+	samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+};
+
 &usbdrd_dwc3_0 {
 	dr_mode = "peripheral";
 };
@@ -645,4 +668,15 @@
 &usbdrd3_1 {
 	vdd33-supply = <&ldo12_reg>;
 	vdd10-supply = <&ldo15_reg>;
+};
+
+&usbhost2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	ethernet: usbether@2 {
+		compatible = "usb0424,9730";
+		reg = <2>;
+		local-mac-address = [00 00 00 00 00 00]; /* Filled in by a bootloader */
+	};
 };

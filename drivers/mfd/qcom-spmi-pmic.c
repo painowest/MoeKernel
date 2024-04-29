@@ -1,15 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2014-2015, 2017-2019, The Linux Foundation.
+ * Copyright (c) 2014-2015, 2017-2020, The Linux Foundation.
  * All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -17,6 +10,7 @@
 #include <linux/spmi.h>
 #include <linux/regmap.h>
 #include <linux/of_platform.h>
+#include <linux/qti-regmap-debugfs.h>
 
 #define PMIC_REV2		0x101
 #define PMIC_REV3		0x102
@@ -40,6 +34,13 @@
 #define PM8916_SUBTYPE		0x0b
 #define PM8004_SUBTYPE		0x0c
 #define PM8909_SUBTYPE		0x0d
+#define PM8950_SUBTYPE		0x10
+#define PMI8950_SUBTYPE		0x11
+#define PM8998_SUBTYPE		0x14
+#define PMI8998_SUBTYPE		0x15
+#define PM8005_SUBTYPE		0x18
+#define PM660L_SUBTYPE		0x1A
+#define PM660_SUBTYPE		0x1B
 
 static const struct of_device_id pmic_spmi_id_table[] = {
 	{ .compatible = "qcom,spmi-pmic", .data = (void *)COMMON_SUBTYPE },
@@ -56,6 +57,13 @@ static const struct of_device_id pmic_spmi_id_table[] = {
 	{ .compatible = "qcom,pm8916",    .data = (void *)PM8916_SUBTYPE },
 	{ .compatible = "qcom,pm8004",    .data = (void *)PM8004_SUBTYPE },
 	{ .compatible = "qcom,pm8909",    .data = (void *)PM8909_SUBTYPE },
+	{ .compatible = "qcom,pm8950",    .data = (void *)PM8950_SUBTYPE },
+	{ .compatible = "qcom,pmi8950",   .data = (void *)PMI8950_SUBTYPE },
+	{ .compatible = "qcom,pm8998",    .data = (void *)PM8998_SUBTYPE },
+	{ .compatible = "qcom,pmi8998",   .data = (void *)PMI8998_SUBTYPE },
+	{ .compatible = "qcom,pm8005",    .data = (void *)PM8005_SUBTYPE },
+	{ .compatible = "qcom,pm660l",    .data = (void *)PM660L_SUBTYPE },
+	{ .compatible = "qcom,pm660",     .data = (void *)PM660_SUBTYPE },
 	{ }
 };
 
@@ -139,6 +147,8 @@ static int pmic_spmi_probe(struct spmi_device *sdev)
 	if (IS_ERR(regmap))
 		return PTR_ERR(regmap);
 
+	devm_regmap_qti_debugfs_register(&sdev->dev, regmap);
+
 	/* Only the first slave id for a PMIC contains this information */
 	if (sdev->usid % 2 == 0)
 		pmic_spmi_show_revid(regmap, &sdev->dev);
@@ -148,8 +158,11 @@ static int pmic_spmi_probe(struct spmi_device *sdev)
 
 MODULE_DEVICE_TABLE(of, pmic_spmi_id_table);
 
+static void pmic_spmi_remove(struct spmi_device *sdev) {}
+
 static struct spmi_driver pmic_spmi_driver = {
 	.probe = pmic_spmi_probe,
+	.remove = pmic_spmi_remove,
 	.driver = {
 		.name = "pmic-spmi",
 		.of_match_table = pmic_spmi_id_table,
@@ -162,6 +175,12 @@ static int __init pmic_spmi_init(void)
 	return spmi_driver_register(&pmic_spmi_driver);
 }
 arch_initcall(pmic_spmi_init);
+
+static void __exit pmic_spmi_exit(void)
+{
+	spmi_driver_unregister(&pmic_spmi_driver);
+}
+module_exit(pmic_spmi_exit);
 
 MODULE_DESCRIPTION("Qualcomm SPMI PMIC driver");
 MODULE_ALIAS("spmi:spmi-pmic");

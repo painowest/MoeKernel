@@ -1,30 +1,5 @@
-/*******************************************************************************
-
-  Intel 10 Gigabit PCI Express Linux driver
-  Copyright(c) 1999 - 2016 Intel Corporation.
-
-  This program is free software; you can redistribute it and/or modify it
-  under the terms and conditions of the GNU General Public License,
-  version 2, as published by the Free Software Foundation.
-
-  This program is distributed in the hope it will be useful, but WITHOUT
-  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
-  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
-  more details.
-
-  You should have received a copy of the GNU General Public License along with
-  this program; if not, write to the Free Software Foundation, Inc.,
-  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
-
-  The full GNU General Public License is included in this distribution in
-  the file called "COPYING".
-
-  Contact Information:
-  Linux NICS <linux.nics@intel.com>
-  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
-  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
-
-*******************************************************************************/
+// SPDX-License-Identifier: GPL-2.0
+/* Copyright(c) 1999 - 2018 Intel Corporation. */
 
 #include <linux/pci.h>
 #include <linux/delay.h>
@@ -89,8 +64,7 @@ bool ixgbe_device_supports_autoneg_fc(struct ixgbe_hw *hw)
 			hw->mac.ops.check_link(hw, &speed, &link_up, false);
 			/* if link is down, assume supported */
 			if (link_up)
-				supported = speed == IXGBE_LINK_SPEED_1GB_FULL ?
-				true : false;
+				supported = speed == IXGBE_LINK_SPEED_1GB_FULL;
 			else
 				supported = true;
 		}
@@ -119,6 +93,7 @@ bool ixgbe_device_supports_autoneg_fc(struct ixgbe_hw *hw)
 		default:
 			break;
 		}
+		break;
 	default:
 		break;
 	}
@@ -171,7 +146,7 @@ s32 ixgbe_setup_fc_generic(struct ixgbe_hw *hw)
 		if (ret_val)
 			return ret_val;
 
-		/* fall through - only backplane uses autoc */
+		fallthrough; /* only backplane uses autoc */
 	case ixgbe_media_type_fiber:
 		reg = IXGBE_READ_REG(hw, IXGBE_PCS1GANA);
 
@@ -1613,6 +1588,7 @@ static void ixgbe_shift_out_eeprom_bits(struct ixgbe_hw *hw, u16 data,
 /**
  *  ixgbe_shift_in_eeprom_bits - Shift data bits in from the EEPROM
  *  @hw: pointer to hardware structure
+ *  @count: number of bits to shift
  **/
 static u16 ixgbe_shift_in_eeprom_bits(struct ixgbe_hw *hw, u16 count)
 {
@@ -1667,7 +1643,7 @@ static void ixgbe_raise_eeprom_clk(struct ixgbe_hw *hw, u32 *eec)
 /**
  *  ixgbe_lower_eeprom_clk - Lowers the EEPROM's clock input.
  *  @hw: pointer to hardware structure
- *  @eecd: EECD's current value
+ *  @eec: EEC's current value
  **/
 static void ixgbe_lower_eeprom_clk(struct ixgbe_hw *hw, u32 *eec)
 {
@@ -2047,7 +2023,7 @@ static s32 ixgbe_mta_vector(struct ixgbe_hw *hw, u8 *mc_addr)
 /**
  *  ixgbe_set_mta - Set bit-vector in multicast table
  *  @hw: pointer to hardware structure
- *  @hash_value: Multicast address hash value
+ *  @mc_addr: Multicast address
  *
  *  Sets the bit-vector in the multicast table.
  **/
@@ -2732,7 +2708,7 @@ s32 ixgbe_disable_rx_buff_generic(struct ixgbe_hw *hw)
 }
 
 /**
- *  ixgbe_enable_rx_buff - Enables the receive data path
+ *  ixgbe_enable_rx_buff_generic - Enables the receive data path
  *  @hw: pointer to hardware structure
  *
  *  Enables the receive data path
@@ -3054,14 +3030,14 @@ s32 ixgbe_set_vmdq_generic(struct ixgbe_hw *hw, u32 rar, u32 vmdq)
 }
 
 /**
+ *  ixgbe_set_vmdq_san_mac_generic - Associate VMDq pool index with a rx address
+ *  @hw: pointer to hardware struct
+ *  @vmdq: VMDq pool index
+ *
  *  This function should only be involved in the IOV mode.
  *  In IOV mode, Default pool is next pool after the number of
  *  VFs advertized and not 0.
  *  MPSAR table needs to be updated for SAN_MAC RAR [hw->mac.san_mac_rar_index]
- *
- *  ixgbe_set_vmdq_san_mac - Associate default VMDq pool index with a rx address
- *  @hw: pointer to hardware struct
- *  @vmdq: VMDq pool index
  **/
 s32 ixgbe_set_vmdq_san_mac_generic(struct ixgbe_hw *hw, u32 vmdq)
 {
@@ -3096,6 +3072,8 @@ s32 ixgbe_init_uta_tables_generic(struct ixgbe_hw *hw)
  *  ixgbe_find_vlvf_slot - find the vlanid or the first empty slot
  *  @hw: pointer to hardware structure
  *  @vlan: VLAN id to write to VLAN filter
+ *  @vlvf_bypass: true to find vlanid only, false returns first empty slot if
+ *		  vlanid not found
  *
  *  return the VLVF index where this VLAN id should be placed
  *
@@ -3486,7 +3464,7 @@ void ixgbe_set_mac_anti_spoofing(struct ixgbe_hw *hw, bool enable, int vf)
  *  ixgbe_set_vlan_anti_spoofing - Enable/Disable VLAN anti-spoofing
  *  @hw: pointer to hardware structure
  *  @enable: enable or disable switch for VLAN anti-spoofing
- *  @pf: Virtual Function pool - VF Pool to set for VLAN anti-spoofing
+ *  @vf: Virtual Function pool - VF Pool to set for VLAN anti-spoofing
  *
  **/
 void ixgbe_set_vlan_anti_spoofing(struct ixgbe_hw *hw, bool enable, int vf)
@@ -3556,7 +3534,7 @@ void ixgbe_set_rxpba_generic(struct ixgbe_hw *hw,
 		rxpktsize <<= IXGBE_RXPBSIZE_SHIFT;
 		for (; i < (num_pb / 2); i++)
 			IXGBE_WRITE_REG(hw, IXGBE_RXPBSIZE(i), rxpktsize);
-		/* fall through - configure remaining packet buffers */
+		fallthrough; /* configure remaining packet buffers */
 	case (PBA_STRATEGY_EQUAL):
 		/* Divide the remaining Rx packet buffer evenly among the TCs */
 		rxpktsize = (pbsize / (num_pb - i)) << IXGBE_RXPBSIZE_SHIFT;
@@ -3658,7 +3636,7 @@ s32 ixgbe_hic_unlocked(struct ixgbe_hw *hw, u32 *buffer, u32 length,
 	 */
 	for (i = 0; i < dword_len; i++)
 		IXGBE_WRITE_REG_ARRAY(hw, IXGBE_FLEX_MNG,
-				      i, cpu_to_le32(buffer[i]));
+				      i, (__force u32)cpu_to_le32(buffer[i]));
 
 	/* Setting this bit tells the ARC that a new command is pending. */
 	IXGBE_WRITE_REG(hw, IXGBE_HICR, hicr | IXGBE_HICR_C);
@@ -3700,10 +3678,8 @@ s32 ixgbe_host_interface_command(struct ixgbe_hw *hw, void *buffer,
 				 bool return_data)
 {
 	u32 hdr_size = sizeof(struct ixgbe_hic_hdr);
-	union {
-		struct ixgbe_hic_hdr hdr;
-		u32 u32arr[1];
-	} *bp = buffer;
+	struct ixgbe_hic_hdr *hdr = buffer;
+	u32 *u32arr = buffer;
 	u16 buf_len, dword_len;
 	s32 status;
 	u32 bi;
@@ -3729,12 +3705,12 @@ s32 ixgbe_host_interface_command(struct ixgbe_hw *hw, void *buffer,
 
 	/* first pull in the header so we know the buffer length */
 	for (bi = 0; bi < dword_len; bi++) {
-		bp->u32arr[bi] = IXGBE_READ_REG_ARRAY(hw, IXGBE_FLEX_MNG, bi);
-		le32_to_cpus(&bp->u32arr[bi]);
+		u32arr[bi] = IXGBE_READ_REG_ARRAY(hw, IXGBE_FLEX_MNG, bi);
+		le32_to_cpus(&u32arr[bi]);
 	}
 
 	/* If there is any thing in data position pull it in */
-	buf_len = bp->hdr.buf_len;
+	buf_len = hdr->buf_len;
 	if (!buf_len)
 		goto rel_out;
 
@@ -3749,8 +3725,8 @@ s32 ixgbe_host_interface_command(struct ixgbe_hw *hw, void *buffer,
 
 	/* Pull in the rest of the buffer (bi is where we left off) */
 	for (; bi <= dword_len; bi++) {
-		bp->u32arr[bi] = IXGBE_READ_REG_ARRAY(hw, IXGBE_FLEX_MNG, bi);
-		le32_to_cpus(&bp->u32arr[bi]);
+		u32arr[bi] = IXGBE_READ_REG_ARRAY(hw, IXGBE_FLEX_MNG, bi);
+		le32_to_cpus(&u32arr[bi]);
 	}
 
 rel_out:
@@ -3919,7 +3895,7 @@ static s32 ixgbe_get_ets_data(struct ixgbe_hw *hw, u16 *ets_cfg,
 }
 
 /**
- *  ixgbe_get_thermal_sensor_data - Gathers thermal sensor data
+ *  ixgbe_get_thermal_sensor_data_generic - Gathers thermal sensor data
  *  @hw: pointer to hardware structure
  *
  *  Returns the thermal sensor data structure
@@ -4038,6 +4014,117 @@ s32 ixgbe_init_thermal_sensor_thresh_generic(struct ixgbe_hw *hw)
 	return 0;
 }
 
+/**
+ *  ixgbe_get_orom_version - Return option ROM from EEPROM
+ *
+ *  @hw: pointer to hardware structure
+ *  @nvm_ver: pointer to output structure
+ *
+ *  if valid option ROM version, nvm_ver->or_valid set to true
+ *  else nvm_ver->or_valid is false.
+ **/
+void ixgbe_get_orom_version(struct ixgbe_hw *hw,
+			    struct ixgbe_nvm_version *nvm_ver)
+{
+	u16 offset, eeprom_cfg_blkh, eeprom_cfg_blkl;
+
+	nvm_ver->or_valid = false;
+	/* Option Rom may or may not be present.  Start with pointer */
+	hw->eeprom.ops.read(hw, NVM_OROM_OFFSET, &offset);
+
+	/* make sure offset is valid */
+	if (offset == 0x0 || offset == NVM_INVALID_PTR)
+		return;
+
+	hw->eeprom.ops.read(hw, offset + NVM_OROM_BLK_HI, &eeprom_cfg_blkh);
+	hw->eeprom.ops.read(hw, offset + NVM_OROM_BLK_LOW, &eeprom_cfg_blkl);
+
+	/* option rom exists and is valid */
+	if ((eeprom_cfg_blkl | eeprom_cfg_blkh) == 0x0 ||
+	    eeprom_cfg_blkl == NVM_VER_INVALID ||
+	    eeprom_cfg_blkh == NVM_VER_INVALID)
+		return;
+
+	nvm_ver->or_valid = true;
+	nvm_ver->or_major = eeprom_cfg_blkl >> NVM_OROM_SHIFT;
+	nvm_ver->or_build = (eeprom_cfg_blkl << NVM_OROM_SHIFT) |
+			    (eeprom_cfg_blkh >> NVM_OROM_SHIFT);
+	nvm_ver->or_patch = eeprom_cfg_blkh & NVM_OROM_PATCH_MASK;
+}
+
+/**
+ *  ixgbe_get_oem_prod_version - Etrack ID from EEPROM
+ *  @hw: pointer to hardware structure
+ *  @nvm_ver: pointer to output structure
+ *
+ *  if valid OEM product version, nvm_ver->oem_valid set to true
+ *  else nvm_ver->oem_valid is false.
+ **/
+void ixgbe_get_oem_prod_version(struct ixgbe_hw *hw,
+				struct ixgbe_nvm_version *nvm_ver)
+{
+	u16 rel_num, prod_ver, mod_len, cap, offset;
+
+	nvm_ver->oem_valid = false;
+	hw->eeprom.ops.read(hw, NVM_OEM_PROD_VER_PTR, &offset);
+
+	/* Return is offset to OEM Product Version block is invalid */
+	if (offset == 0x0 || offset == NVM_INVALID_PTR)
+		return;
+
+	/* Read product version block */
+	hw->eeprom.ops.read(hw, offset, &mod_len);
+	hw->eeprom.ops.read(hw, offset + NVM_OEM_PROD_VER_CAP_OFF, &cap);
+
+	/* Return if OEM product version block is invalid */
+	if (mod_len != NVM_OEM_PROD_VER_MOD_LEN ||
+	    (cap & NVM_OEM_PROD_VER_CAP_MASK) != 0x0)
+		return;
+
+	hw->eeprom.ops.read(hw, offset + NVM_OEM_PROD_VER_OFF_L, &prod_ver);
+	hw->eeprom.ops.read(hw, offset + NVM_OEM_PROD_VER_OFF_H, &rel_num);
+
+	/* Return if version is invalid */
+	if ((rel_num | prod_ver) == 0x0 ||
+	    rel_num == NVM_VER_INVALID || prod_ver == NVM_VER_INVALID)
+		return;
+
+	nvm_ver->oem_major = prod_ver >> NVM_VER_SHIFT;
+	nvm_ver->oem_minor = prod_ver & NVM_VER_MASK;
+	nvm_ver->oem_release = rel_num;
+	nvm_ver->oem_valid = true;
+}
+
+/**
+ *  ixgbe_get_etk_id - Return Etrack ID from EEPROM
+ *
+ *  @hw: pointer to hardware structure
+ *  @nvm_ver: pointer to output structure
+ *
+ *  word read errors will return 0xFFFF
+ **/
+void ixgbe_get_etk_id(struct ixgbe_hw *hw,
+		      struct ixgbe_nvm_version *nvm_ver)
+{
+	u16 etk_id_l, etk_id_h;
+
+	if (hw->eeprom.ops.read(hw, NVM_ETK_OFF_LOW, &etk_id_l))
+		etk_id_l = NVM_VER_INVALID;
+	if (hw->eeprom.ops.read(hw, NVM_ETK_OFF_HI, &etk_id_h))
+		etk_id_h = NVM_VER_INVALID;
+
+	/* The word order for the version format is determined by high order
+	 * word bit 15.
+	 */
+	if ((etk_id_h & NVM_ETK_VALID) == 0) {
+		nvm_ver->etk_id = etk_id_h;
+		nvm_ver->etk_id |= (etk_id_l << NVM_ETK_SHIFT);
+	} else {
+		nvm_ver->etk_id = etk_id_l;
+		nvm_ver->etk_id |= (etk_id_h << NVM_ETK_SHIFT);
+	}
+}
+
 void ixgbe_disable_rx_generic(struct ixgbe_hw *hw)
 {
 	u32 rxctrl;
@@ -4091,8 +4178,8 @@ bool ixgbe_mng_present(struct ixgbe_hw *hw)
 		return false;
 
 	fwsm = IXGBE_READ_REG(hw, IXGBE_FWSM(hw));
-	fwsm &= IXGBE_FWSM_MODE_MASK;
-	return fwsm == IXGBE_FWSM_FW_MODE_PT;
+
+	return !!(fwsm & IXGBE_FWSM_FW_MODE_PT);
 }
 
 /**

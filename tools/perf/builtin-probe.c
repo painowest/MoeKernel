@@ -1,24 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * builtin-probe.c
  *
  * Builtin probe command: Set up probe events by C expression
  *
  * Written by Masami Hiramatsu <mhiramat@redhat.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
- *
  */
 #include <sys/utsname.h>
 #include <sys/types.h>
@@ -30,20 +16,22 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "perf.h"
 #include "builtin.h"
-#include "util/util.h"
+#include "namespaces.h"
+#include "util/build-id.h"
 #include "util/strlist.h"
 #include "util/strfilter.h"
-#include "util/symbol.h"
+#include "util/symbol_conf.h"
 #include "util/debug.h"
 #include <subcmd/parse-options.h>
 #include "util/probe-finder.h"
 #include "util/probe-event.h"
 #include "util/probe-file.h"
+#include <linux/string.h>
+#include <linux/zalloc.h>
 
 #define DEFAULT_VAR_FILTER "!__k???tab_* & !__crc_*"
-#define DEFAULT_FUNC_FILTER "!_*"
+#define DEFAULT_FUNC_FILTER "!_* & !*@plt"
 #define DEFAULT_LIST_FILTER "*"
 
 /* Session management structure */
@@ -81,8 +69,7 @@ static int parse_probe_event(const char *str)
 		params.target_used = true;
 	}
 
-	if (params.nsi)
-		pev->nsi = nsinfo__get(params.nsi);
+	pev->nsi = nsinfo__get(params.nsi);
 
 	/* Parse a perf-probe command into event */
 	ret = parse_perf_probe_command(str, pev);
@@ -360,7 +347,10 @@ static int perf_add_probe_events(struct perf_probe_event *pevs, int npevs)
 		goto out_cleanup;
 
 	if (params.command == 'D') {	/* it shows definition */
-		ret = show_probe_trace_events(pevs, npevs);
+		if (probe_conf.bootconfig)
+			ret = show_bootconfig_events(pevs, npevs);
+		else
+			ret = show_probe_trace_events(pevs, npevs);
 		goto out_cleanup;
 	}
 
@@ -465,7 +455,8 @@ static int perf_del_probe_events(struct strfilter *filter)
 		ret = probe_file__del_strlist(kfd, klist);
 		if (ret < 0)
 			goto error;
-	}
+	} else if (ret == -ENOMEM)
+		goto error;
 
 	ret2 = probe_file__get_events(ufd, filter, ulist);
 	if (ret2 == 0) {
@@ -475,7 +466,8 @@ static int perf_del_probe_events(struct strfilter *filter)
 		ret2 = probe_file__del_strlist(ufd, ulist);
 		if (ret2 < 0)
 			goto error;
-	}
+	} else if (ret2 == -ENOMEM)
+		goto error;
 
 	if (ret == -ENOENT && ret2 == -ENOENT)
 		pr_warning("\"%s\" does not hit any event.\n", str);
@@ -592,6 +584,8 @@ __cmd_probe(int argc, const char **argv)
 		   "Look for files with symbols relative to this directory"),
 	OPT_CALLBACK(0, "target-ns", NULL, "pid",
 		     "target pid for namespace contexts", opt_set_target_ns),
+	OPT_BOOLEAN(0, "bootconfig", &probe_conf.bootconfig,
+		    "Output probe definition with bootconfig format"),
 	OPT_END()
 	};
 	int ret;
@@ -703,6 +697,11 @@ __cmd_probe(int argc, const char **argv)
 		}
 		break;
 	case 'D':
+		if (probe_conf.bootconfig && params.uprobes) {
+			pr_err("  Error: --bootconfig doesn't support uprobes.\n");
+			return -EINVAL;
+		}
+		__fallthrough;
 	case 'a':
 
 		/* Ensure the last given target is used */

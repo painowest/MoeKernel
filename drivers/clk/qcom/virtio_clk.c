@@ -1,13 +1,6 @@
-/* Copyright (c) 2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "%s: " fmt, __func__
@@ -61,11 +54,13 @@ static int virtio_clk_prepare(struct clk_hw *hw)
 	unsigned int len;
 	int ret = 0;
 
+	pr_debug("%s\n", clk_hw_get_name(hw));
+
 	req = kzalloc(sizeof(struct virtio_clk_msg), GFP_KERNEL);
 	if (!req)
 		return -ENOMEM;
 
-	strlcpy(req->name, clk_hw_get_name(hw), sizeof(req->name));
+	strscpy(req->name, clk_hw_get_name(hw), sizeof(req->name));
 	req->id = cpu_to_virtio32(vclk->vdev, v->clk_id);
 	req->type = cpu_to_virtio32(vclk->vdev, VIRTIO_CLK_T_ENABLE);
 	sg_init_one(sg, req, sizeof(*req));
@@ -108,11 +103,13 @@ static void virtio_clk_unprepare(struct clk_hw *hw)
 	unsigned int len;
 	int ret = 0;
 
+	pr_debug("%s\n", clk_hw_get_name(hw));
+
 	req = kzalloc(sizeof(struct virtio_clk_msg), GFP_KERNEL);
 	if (!req)
 		return;
 
-	strlcpy(req->name, clk_hw_get_name(hw), sizeof(req->name));
+	strscpy(req->name, clk_hw_get_name(hw), sizeof(req->name));
 	req->id = cpu_to_virtio32(vclk->vdev, v->clk_id);
 	req->type = cpu_to_virtio32(vclk->vdev, VIRTIO_CLK_T_DISABLE);
 	sg_init_one(sg, req, sizeof(*req));
@@ -156,11 +153,14 @@ static int virtio_clk_set_rate(struct clk_hw *hw,
 	unsigned int len;
 	int ret = 0;
 
+	pr_debug("%s, rate: %lu, parent_rate: %lu\n", clk_hw_get_name(hw),
+			rate, parent_rate);
+
 	req = kzalloc(sizeof(struct virtio_clk_msg), GFP_KERNEL);
 	if (!req)
 		return -ENOMEM;
 
-	strlcpy(req->name, clk_hw_get_name(hw), sizeof(req->name));
+	strscpy(req->name, clk_hw_get_name(hw), sizeof(req->name));
 	req->id = cpu_to_virtio32(vclk->vdev, v->clk_id);
 	req->type = cpu_to_virtio32(vclk->vdev, VIRTIO_CLK_T_SET_RATE);
 	req->data[0] = cpu_to_virtio32(vclk->vdev, rate);
@@ -205,11 +205,13 @@ static long virtio_clk_round_rate(struct clk_hw *hw, unsigned long rate,
 	unsigned int len;
 	int ret = 0;
 
+	pr_debug("%s, rate: %lu\n", clk_hw_get_name(hw), rate);
+
 	req = kzalloc(sizeof(struct virtio_clk_msg), GFP_KERNEL);
 	if (!req)
 		return 0;
 
-	strlcpy(req->name, clk_hw_get_name(hw), sizeof(req->name));
+	strscpy(req->name, clk_hw_get_name(hw), sizeof(req->name));
 	req->id = cpu_to_virtio32(vclk->vdev, v->clk_id);
 	req->type = cpu_to_virtio32(vclk->vdev, VIRTIO_CLK_T_ROUND_RATE);
 	req->data[0] = cpu_to_virtio32(vclk->vdev, rate);
@@ -264,7 +266,7 @@ static unsigned long virtio_clk_get_rate(struct clk_hw *hw,
 	if (!req)
 		return 0;
 
-	strlcpy(req->name, clk_hw_get_name(hw), sizeof(req->name));
+	strscpy(req->name, clk_hw_get_name(hw), sizeof(req->name));
 	req->id = cpu_to_virtio32(vclk->vdev, v->clk_id);
 	req->type = cpu_to_virtio32(vclk->vdev, VIRTIO_CLK_T_GET_RATE);
 	sg_init_one(sg, req, sizeof(*req));
@@ -291,7 +293,11 @@ static unsigned long virtio_clk_get_rate(struct clk_hw *hw,
 	}
 
 	if (rsp->result) {
-		pr_err("%s: error response (%d)\n", clk_hw_get_name(hw),
+		/*
+		 * Some clocks do not support getting rate.
+		 * If getting clock rate is failing, return 0.
+		 */
+		pr_debug("%s: error response (%d)\n", clk_hw_get_name(hw),
 				rsp->result);
 		ret = 0;
 	} else
@@ -304,7 +310,7 @@ out:
 	return ret;
 }
 
-static int virtio_clk_set_flags(struct clk_hw *hw, unsigned int flags)
+static int virtio_clk_set_parent(struct clk_hw *hw, u8 index)
 {
 	struct clk_virtio *v = to_clk_virtio(hw);
 	struct virtio_clk *vclk = v->vclk;
@@ -313,14 +319,16 @@ static int virtio_clk_set_flags(struct clk_hw *hw, unsigned int flags)
 	unsigned int len;
 	int ret = 0;
 
+	pr_debug("%s, parent index: %d\n", clk_hw_get_name(hw), index);
+
 	req = kzalloc(sizeof(struct virtio_clk_msg), GFP_KERNEL);
 	if (!req)
 		return 0;
 
-	strlcpy(req->name, clk_hw_get_name(hw), sizeof(req->name));
+	strscpy(req->name, clk_hw_get_name(hw), sizeof(req->name));
 	req->id = cpu_to_virtio32(vclk->vdev, v->clk_id);
-	req->type = cpu_to_virtio32(vclk->vdev, VIRTIO_CLK_T_SET_FLAGS);
-	req->data[0] = cpu_to_virtio32(vclk->vdev, flags);
+	req->type = cpu_to_virtio32(vclk->vdev, VIRTIO_CLK_T_SET_PARENT);
+	req->data[0] = cpu_to_virtio32(vclk->vdev, index);
 	sg_init_one(sg, req, sizeof(*req));
 
 	mutex_lock(&vclk->lock);
@@ -340,16 +348,22 @@ static int virtio_clk_set_flags(struct clk_hw *hw, unsigned int flags)
 	if (!rsp) {
 		pr_err("%s: fail to get virtqueue buffer\n",
 				clk_hw_get_name(hw));
-		ret = -EIO;
+		ret = 0;
 		goto out;
 	}
 
 	ret = virtio32_to_cpu(vclk->vdev, rsp->result);
+
 out:
 	mutex_unlock(&vclk->lock);
 	kfree(req);
 
 	return ret;
+}
+
+static u8 virtio_clk_get_parent(struct clk_hw *hw)
+{
+	return U8_MAX;
 }
 
 static const struct clk_ops clk_virtio_ops = {
@@ -358,7 +372,8 @@ static const struct clk_ops clk_virtio_ops = {
 	.set_rate	= virtio_clk_set_rate,
 	.round_rate	= virtio_clk_round_rate,
 	.recalc_rate	= virtio_clk_get_rate,
-	.set_flags	= virtio_clk_set_flags,
+	.set_parent	= virtio_clk_set_parent,
+	.get_parent	= virtio_clk_get_parent,
 };
 
 static int
@@ -371,12 +386,14 @@ __virtio_reset(struct reset_controller_dev *rcdev, unsigned long id,
 	unsigned int len;
 	int ret = 0;
 
+	pr_debug("%s, action: %d\n", vclk->desc->reset_names[id], action);
+
 	req = kzalloc(sizeof(struct virtio_clk_msg), GFP_KERNEL);
 	if (!req)
 		return -ENOMEM;
 
 	if (vclk->desc && vclk->desc->reset_names[id])
-		strlcpy(req->name, vclk->desc->reset_names[id],
+		strscpy(req->name, vclk->desc->reset_names[id],
 				sizeof(req->name));
 	req->id = cpu_to_virtio32(vclk->vdev, id);
 	req->type = cpu_to_virtio32(vclk->vdev, VIRTIO_CLK_T_RESET);
@@ -464,9 +481,9 @@ static int virtclk_init_vqs(struct virtio_clk *vclk)
 static const struct virtio_cc_map clk_virtio_map_table[] = {
 	{ .cc_name = "sm8150-gcc", .desc = &clk_virtio_sm8150_gcc, },
 	{ .cc_name = "sm8150-scc", .desc = &clk_virtio_sm8150_scc, },
-	{ .cc_name = "sm6150-gcc", .desc = &clk_virtio_sm6150_gcc, },
-	{ .cc_name = "sm6150-scc", .desc = &clk_virtio_sm6150_scc, },
 	{ .cc_name = "sa8195p-gcc", .desc = &clk_virtio_sa8195p_gcc, },
+	{ .cc_name = "direwolf-gcc", .desc = &clk_virtio_direwolf_gcc, },
+	{ .cc_name = "lemans-gcc", .desc = &clk_virtio_lemans_gcc, },
 	{ }
 };
 
@@ -577,12 +594,14 @@ static int virtio_clk_probe(struct virtio_device *vdev)
 
 	if (desc) {
 		for (i = 0; i < vclk->num_clks; i++) {
-			if (!desc->clk_names[i])
+			if (!desc->clks[i].name)
 				continue;
 
 			virtio_clks[i].clk_id = i;
 			virtio_clks[i].vclk = vclk;
-			init.name = desc->clk_names[i];
+			init.name = desc->clks[i].name;
+			init.parent_names = desc->clks[i].parent_names;
+			init.num_parents = desc->clks[i].num_parents;
 			virtio_clks[i].hw.init = &init;
 			ret = devm_clk_hw_register(&vdev->dev,
 					&virtio_clks[i].hw);
@@ -609,7 +628,7 @@ static int virtio_clk_probe(struct virtio_device *vdev)
 		}
 	}
 
-	ret = of_clk_add_hw_provider(vdev->dev.parent->of_node,
+	ret = devm_of_clk_add_hw_provider(vdev->dev.parent,
 			of_clk_hw_virtio_get, vclk);
 	if (ret) {
 		dev_err(&vdev->dev, "failed to add clock provider\n");
@@ -633,7 +652,6 @@ static int virtio_clk_probe(struct virtio_device *vdev)
 	return 0;
 
 err_rst_register:
-	of_clk_del_provider(vdev->dev.parent->of_node);
 err_clk_register:
 err_kcalloc:
 err_find_desc:

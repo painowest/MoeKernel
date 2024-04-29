@@ -1,19 +1,12 @@
-/* Copyright (c) 2016-2017, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0-only
+/* Copyright (c) 2016-2021, The Linux Foundation. All rights reserved. */
+/* Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved. */
 
 #define pr_fmt(fmt) "%s: " fmt, __func__
 
 #include <linux/bitops.h>
 #include <linux/err.h>
+#include <linux/ipc_logging.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -21,12 +14,17 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/suspend.h>
+#include <linux/regulator/debug-regulator.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
 #include <linux/regulator/of_regulator.h>
+#include <linux/regulator/proxy-consumer.h>
+
 #include <soc/qcom/cmd-db.h>
 #include <soc/qcom/rpmh.h>
-#include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+
+#include <dt-bindings/regulator/qcom,rpmh-regulator-levels.h>
 
 /**
  * enum rpmh_regulator_type - supported RPMh accelerator types
@@ -119,6 +117,8 @@ enum rpmh_regulator_reg_index {
  */
 #define RPMH_ARC_MAX_LEVELS		16
 
+#define RPMH_REGULATOR_LEVEL_OFF	0
+
 /* Min and max limits of VRM resource request parameters */
 #define RPMH_VRM_MIN_UV			0
 #define RPMH_VRM_MAX_UV			8191000
@@ -131,6 +131,16 @@ enum rpmh_regulator_reg_index {
 
 /* XOB voting registers are found in the VRM hardware module */
 #define CMD_DB_HW_XOB			CMD_DB_HW_VRM
+
+#define IPC_LOG_PAGES			10
+
+#define rpmh_reg_dbg(fmt, ...) \
+	do { \
+		ipc_log_string(rpmh_reg_ipc_log, fmt, ##__VA_ARGS__); \
+		pr_debug(fmt, ##__VA_ARGS__); \
+	} while (0)
+
+static void *rpmh_reg_ipc_log;
 
 /**
  * struct rpmh_regulator_request - rpmh request data
@@ -173,7 +183,6 @@ struct rpmh_vreg;
  *				the bootloader.
  * @addr:			Base address of the regulator resource within
  *				an RPMh accelerator
- * @rpmh_client:		Handle used for rpmh communications
  * @lock:			Mutex lock used for locking between regulators
  *				common to a single aggregated resource
  * @regulator_type:		RPMh accelerator type for this regulator
@@ -185,9 +194,7 @@ struct rpmh_vreg;
  *				consumer voltage levels (i.e.
  *				RPMH_REGULATOR_LEVEL_*).  These values are read
  *				out of the AUX data found in command DB for a
- *				given ARC resource.  Note that the values in
- *				this array are equal to those read from AUX data
- *				+ RPMH_REGULATOR_LEVEL_OFFSET.
+ *				given ARC resource.
  * @level_count:		The number of valid entries in the level array
  * @always_wait_for_ack:	Boolean flag indicating if a request must always
  *				wait for an ACK from RPMh before continuing even
@@ -203,10 +210,6 @@ struct rpmh_vreg;
  *				from the active set request.  After that point,
  *				the sleep set requests must always be sent for
  *				a given resource.
- * @use_awake_state:		Boolean flag indicating that active set requests
- *				should be made using the awake state instead of
- *				the active-only state.  This should be used for
- *				RSC's which do not have an AMC.
  * @vreg:			Array of rpmh regulator structs representing the
  *				individual regulators sharing the aggregated
  *				regulator resource.
@@ -214,6 +217,8 @@ struct rpmh_vreg;
  * @mode:			An array of modes supported by an RPMh VRM
  *				regulator resource.
  * @mode_count:			The number of entries in the mode array.
+ * @disable_pmic_mode:		PMIC mode optionally set when aggregated regulator resource
+ *				gets disabled, overriding existing aggregated mode.
  * @aggr_req_active:		Aggregated active set RPMh accelerator register
  *				request
  * @aggr_req_sleep:		Aggregated sleep set RPMh accelerator register
@@ -223,7 +228,6 @@ struct rpmh_aggr_vreg {
 	struct device			*dev;
 	const char			*resource_name;
 	u32				addr;
-	struct rpmh_client		*rpmh_client;
 	struct mutex			lock;
 	enum rpmh_regulator_type	regulator_type;
 	enum rpmh_regulator_hw_type	regulator_hw_type;
@@ -232,11 +236,12 @@ struct rpmh_aggr_vreg {
 	bool				always_wait_for_ack;
 	bool				next_wait_for_ack;
 	bool				sleep_request_sent;
-	bool				use_awake_state;
+	bool				enable_regulator_deepsleep;
 	struct rpmh_vreg		*vreg;
 	int				vreg_count;
 	struct rpmh_regulator_mode	*mode;
 	int				mode_count;
+	int				disable_pmic_mode;
 	struct rpmh_regulator_request	aggr_req_active;
 	struct rpmh_regulator_request	aggr_req_sleep;
 };
@@ -481,7 +486,6 @@ static const char *const rpmh_regulator_state_names[] = {
 	[RPMH_SLEEP_STATE]		= "sleep ",
 	[RPMH_WAKE_ONLY_STATE]		= "wake  ",
 	[RPMH_ACTIVE_ONLY_STATE]	= "active",
-	[RPMH_AWAKE_STATE]		= "awake ",
 };
 
 static const char *const rpmh_regulator_vrm_param_names[] = {
@@ -498,6 +502,27 @@ static const char *const rpmh_regulator_arc_param_names[] = {
 static const char *const rpmh_regulator_xob_param_names[] = {
 	[RPMH_REGULATOR_REG_XOB_ENABLE]		= "en",
 };
+
+static const int max_reg_index_map[] = {
+	[RPMH_REGULATOR_TYPE_VRM] = RPMH_REGULATOR_REG_VRM_MAX,
+	[RPMH_REGULATOR_TYPE_ARC] = RPMH_REGULATOR_REG_ARC_MAX,
+	[RPMH_REGULATOR_TYPE_XOB] = RPMH_REGULATOR_REG_XOB_MAX,
+};
+
+/**
+ * rpmh_regulator_get_max_reg_index() - return the number of registers
+ *		associated with the rpmh resource
+ * @aggr_vreg:		Pointer to the aggregated rpmh regulator resource
+ *
+ * Return: max number of registers for the aggr_vreg rpmh resource
+ */
+static int rpmh_regulator_get_max_reg_index(struct rpmh_aggr_vreg *aggr_vreg)
+{
+	if (aggr_vreg->regulator_type >= ARRAY_SIZE(max_reg_index_map))
+		return -EINVAL;
+	else
+		return max_reg_index_map[aggr_vreg->regulator_type];
+}
 
 /**
  * rpmh_regulator_req() - print the rpmh regulator request to the kernel log
@@ -528,15 +553,15 @@ static void rpmh_regulator_req(struct rpmh_vreg *vreg,
 	switch (aggr_vreg->regulator_type) {
 	case RPMH_REGULATOR_TYPE_VRM:
 		max_reg_index = RPMH_REGULATOR_REG_VRM_MAX;
-		param_name =  rpmh_regulator_vrm_param_names;
+		param_name = rpmh_regulator_vrm_param_names;
 		break;
 	case RPMH_REGULATOR_TYPE_ARC:
 		max_reg_index = RPMH_REGULATOR_REG_ARC_REAL_MAX;
-		param_name =  rpmh_regulator_arc_param_names;
+		param_name = rpmh_regulator_arc_param_names;
 		break;
 	case RPMH_REGULATOR_TYPE_XOB:
 		max_reg_index = RPMH_REGULATOR_REG_XOB_MAX;
-		param_name =  rpmh_regulator_xob_param_names;
+		param_name = rpmh_regulator_xob_param_names;
 		break;
 	default:
 		return;
@@ -584,7 +609,7 @@ static void rpmh_regulator_req(struct rpmh_vreg *vreg,
 		}
 	}
 
-	pr_debug("%s\n", buf);
+	rpmh_reg_dbg("%s\n", buf);
 }
 
 /**
@@ -622,6 +647,123 @@ static void rpmh_regulator_handle_arc_enable(struct rpmh_aggr_vreg *aggr_vreg,
 	req->valid &= ~BIT(RPMH_REGULATOR_REG_ARC_PSEUDO_ENABLE);
 }
 
+static void rpmh_regulator_handle_disable_mode(struct rpmh_aggr_vreg *aggr_vreg,
+					     struct rpmh_regulator_request *req)
+{
+	if (aggr_vreg->regulator_type != RPMH_REGULATOR_TYPE_VRM
+	   || aggr_vreg->disable_pmic_mode <= 0)
+		return;
+
+	if ((req->valid & BIT(RPMH_REGULATOR_REG_ENABLE))
+	   && !req->reg[RPMH_REGULATOR_REG_ENABLE]) {
+		req->reg[RPMH_REGULATOR_REG_VRM_MODE] = aggr_vreg->disable_pmic_mode;
+		req->valid |= RPMH_REGULATOR_REG_VRM_MODE;
+	}
+}
+
+/**
+ * rpmh_regulator_aggregate_requests() - aggregate the requests from all
+ *		regulators associated with an RPMh resource
+ * @aggr_vreg:		Pointer to the aggregated rpmh regulator resource
+ * @req_active:		Pointer to active set request output
+ * @req_sleep:		Pointer to sleep set request output
+ *
+ * This function aggregates the requests from the different regulators
+ * associated with the aggr_vreg resource independently in both the active set
+ * and sleep set.  The aggregated results are stored in req_active and
+ * req_sleep.
+ *
+ * Return: none
+ */
+static void rpmh_regulator_aggregate_requests(struct rpmh_aggr_vreg *aggr_vreg,
+				struct rpmh_regulator_request *req_active,
+				struct rpmh_regulator_request *req_sleep)
+{
+	int i, j, max_reg_index;
+
+	max_reg_index = rpmh_regulator_get_max_reg_index(aggr_vreg);
+	/*
+	 * Perform max aggregration of each register value across all regulators
+	 * which use this RPMh resource.
+	 */
+	for (i = 0; i < aggr_vreg->vreg_count; i++) {
+		if (aggr_vreg->vreg[i].set_active) {
+			for (j = 0; j < max_reg_index; j++)
+				req_active->reg[j] = max(req_active->reg[j],
+						aggr_vreg->vreg[i].req.reg[j]);
+			req_active->valid |= aggr_vreg->vreg[i].req.valid;
+		}
+		if (aggr_vreg->vreg[i].set_sleep) {
+			for (j = 0; j < max_reg_index; j++)
+				req_sleep->reg[j] = max(req_sleep->reg[j],
+						aggr_vreg->vreg[i].req.reg[j]);
+			req_sleep->valid |= aggr_vreg->vreg[i].req.valid;
+		}
+	}
+
+	rpmh_regulator_handle_arc_enable(aggr_vreg, req_active);
+	rpmh_regulator_handle_arc_enable(aggr_vreg, req_sleep);
+	rpmh_regulator_handle_disable_mode(aggr_vreg, req_active);
+	rpmh_regulator_handle_disable_mode(aggr_vreg, req_sleep);
+}
+
+static void swap_cmds(struct tcs_cmd *cmd1, struct tcs_cmd *cmd2)
+{
+	struct tcs_cmd cmd_temp;
+
+	if (cmd1 == cmd2)
+		return;
+
+	cmd_temp = *cmd1;
+	*cmd1 = *cmd2;
+	*cmd2 = cmd_temp;
+}
+
+/**
+ * rpmh_regulator_reorder_cmds() - reorder tcs commands to ensure safe regulator
+ *		state transitions
+ * @aggr_vreg:		Pointer to the aggregated rpmh regulator resource
+ * @cmd:		TCS command array
+ * @len:		Number of elements in 'cmd' array
+ *
+ * LDO regulators can accidentally trigger over-current protection (OCP) when
+ * RPMh regulator requests are processed if the commands in the request are in
+ * an order that temporarily places the LDO in an incorrect state.  For example,
+ * if an LDO is disabled with mode=LPM, then executing the request
+ * [en=ON, mode=HPM] can trigger OCP after the first command is executed since
+ * it will result in the overall state: en=ON, mode=LPM.  This issue can be
+ * avoided by reordering the commands: [mode=HPM, en=ON].
+ *
+ * This function reorders the request command sequence to avoid invalid
+ * transient LDO states.
+ *
+ * Return: none
+ */
+static void rpmh_regulator_reorder_cmds(struct rpmh_aggr_vreg *aggr_vreg,
+					struct tcs_cmd *cmd, int len)
+{
+	enum rpmh_regulator_reg_index reg_index;
+	int i;
+
+	if (len == 1 || aggr_vreg->regulator_type != RPMH_REGULATOR_TYPE_VRM)
+		return;
+
+	for (i = 0; i < len; i++) {
+		reg_index = (cmd[i].addr - aggr_vreg->addr) >> 2;
+
+		if (reg_index == RPMH_REGULATOR_REG_VRM_ENABLE) {
+			if (cmd[i].data) {
+				/* Move enable command to end */
+				swap_cmds(&cmd[i], &cmd[len - 1]);
+			} else {
+				/* Move disable command to start */
+				swap_cmds(&cmd[i], &cmd[0]);
+			}
+			break;
+		}
+	}
+}
+
 /**
  * rpmh_regulator_send_aggregate_requests() - aggregate the requests from all
  *		regulators associated with an RPMh resource and send the request
@@ -650,41 +792,9 @@ rpmh_regulator_send_aggregate_requests(struct rpmh_vreg *vreg)
 	enum rpmh_state state;
 	u32 sent_mask;
 
-	switch (aggr_vreg->regulator_type) {
-	case RPMH_REGULATOR_TYPE_VRM:
-		max_reg_index = RPMH_REGULATOR_REG_VRM_MAX;
-		break;
-	case RPMH_REGULATOR_TYPE_ARC:
-		max_reg_index = RPMH_REGULATOR_REG_ARC_MAX;
-		break;
-	case RPMH_REGULATOR_TYPE_XOB:
-		max_reg_index = RPMH_REGULATOR_REG_XOB_MAX;
-		break;
-	default:
-		return -EINVAL;
-	}
+	max_reg_index = rpmh_regulator_get_max_reg_index(aggr_vreg);
 
-	/*
-	 * Perform max aggregration of each register value across all regulators
-	 * which use this RPMh resource.
-	 */
-	for (i = 0; i < aggr_vreg->vreg_count; i++) {
-		if (aggr_vreg->vreg[i].set_active) {
-			for (j = 0; j < max_reg_index; j++)
-				req_active.reg[j] = max(req_active.reg[j],
-						aggr_vreg->vreg[i].req.reg[j]);
-			req_active.valid |= aggr_vreg->vreg[i].req.valid;
-		}
-		if (aggr_vreg->vreg[i].set_sleep) {
-			for (j = 0; j < max_reg_index; j++)
-				req_sleep.reg[j] = max(req_sleep.reg[j],
-						aggr_vreg->vreg[i].req.reg[j]);
-			req_sleep.valid |= aggr_vreg->vreg[i].req.valid;
-		}
-	}
-
-	rpmh_regulator_handle_arc_enable(aggr_vreg, &req_active);
-	rpmh_regulator_handle_arc_enable(aggr_vreg, &req_sleep);
+	rpmh_regulator_aggregate_requests(aggr_vreg, &req_active, &req_sleep);
 
 	/*
 	 * Check if the aggregated sleep set parameter values differ from the
@@ -700,7 +810,7 @@ rpmh_regulator_send_aggregate_requests(struct rpmh_vreg *vreg)
 				 * all parameters are specified in the wake-only
 				 * state request.
 				 */
-				resend_active = !aggr_vreg->use_awake_state;
+				resend_active = true;
 				break;
 			}
 		}
@@ -720,6 +830,7 @@ rpmh_regulator_send_aggregate_requests(struct rpmh_vreg *vreg)
 					!= req_sleep.reg[i])) {
 				cmd[j].addr = aggr_vreg->addr + i * 4;
 				cmd[j].data = req_sleep.reg[i];
+				cmd[j].wait = true;
 				j++;
 				sent_mask |= BIT(i);
 			}
@@ -727,7 +838,9 @@ rpmh_regulator_send_aggregate_requests(struct rpmh_vreg *vreg)
 
 		/* Send the rpmh command if any register values differ. */
 		if (j > 0) {
-			rc = rpmh_write_async(aggr_vreg->rpmh_client,
+			rpmh_regulator_reorder_cmds(aggr_vreg, cmd, j);
+
+			rc = rpmh_write_async(aggr_vreg->dev,
 					RPMH_SLEEP_STATE, cmd, j);
 			if (rc) {
 				aggr_vreg_err(aggr_vreg, "sleep state rpmh_write_async() failed, rc=%d\n",
@@ -756,6 +869,7 @@ rpmh_regulator_send_aggregate_requests(struct rpmh_vreg *vreg)
 				!= req_active.reg[i] || resend_active)) {
 			cmd[j].addr = aggr_vreg->addr + i * 4;
 			cmd[j].data = req_active.reg[i];
+			cmd[j].wait = true;
 			j++;
 			sent_mask |= BIT(i);
 
@@ -771,10 +885,11 @@ rpmh_regulator_send_aggregate_requests(struct rpmh_vreg *vreg)
 
 	/* Send the rpmh command if any register values differ. */
 	if (j > 0) {
-		if (sleep_set_differs && !aggr_vreg->use_awake_state) {
+		rpmh_regulator_reorder_cmds(aggr_vreg, cmd, j);
+
+		if (sleep_set_differs) {
 			state = RPMH_WAKE_ONLY_STATE;
-			rc = rpmh_write_async(aggr_vreg->rpmh_client, state,
-						cmd, j);
+			rc = rpmh_write_async(aggr_vreg->dev, state, cmd, j);
 			if (rc) {
 				aggr_vreg_err(aggr_vreg, "%s state rpmh_write_async() failed, rc=%d\n",
 					rpmh_regulator_state_names[state], rc);
@@ -784,12 +899,11 @@ rpmh_regulator_send_aggregate_requests(struct rpmh_vreg *vreg)
 				&aggr_vreg->aggr_req_active, sent_mask, state);
 		}
 
-		state = aggr_vreg->use_awake_state ? RPMH_AWAKE_STATE
-					  : RPMH_ACTIVE_ONLY_STATE;
+		state = RPMH_ACTIVE_ONLY_STATE;
 		if (wait_for_ack)
-			rc = rpmh_write(aggr_vreg->rpmh_client, state, cmd, j);
+			rc = rpmh_write(aggr_vreg->dev, state, cmd, j);
 		else
-			rc = rpmh_write_async(aggr_vreg->rpmh_client, state,
+			rc = rpmh_write_async(aggr_vreg->dev, state,
 						cmd, j);
 		if (rc) {
 			aggr_vreg_err(aggr_vreg, "%s state rpmh_write() failed, rc=%d\n",
@@ -804,6 +918,30 @@ rpmh_regulator_send_aggregate_requests(struct rpmh_vreg *vreg)
 	}
 
 	return 0;
+}
+
+static int rpmh_vreg_send_ds_requests(struct rpmh_aggr_vreg *aggr_vreg)
+{
+	int rc;
+
+	if (!aggr_vreg->enable_regulator_deepsleep) {
+		pr_debug("clients are handling regulator votes during deepsleep\n");
+		return 0;
+	}
+
+	mutex_lock(&aggr_vreg->lock);
+
+	aggr_vreg->aggr_req_active.valid = 0;
+	aggr_vreg->aggr_req_sleep.valid = 0;
+
+	rc = rpmh_regulator_send_aggregate_requests(&aggr_vreg->vreg[0]);
+
+	if (rc)
+		aggr_vreg_err(aggr_vreg, "error while re-sending request, rc=%d\n",
+				rc);
+	mutex_unlock(&aggr_vreg->lock);
+
+	return rc;
 }
 
 /**
@@ -1257,43 +1395,27 @@ static const struct regulator_ops *rpmh_regulator_ops[] = {
 static int
 rpmh_regulator_load_arc_level_mapping(struct rpmh_aggr_vreg *aggr_vreg)
 {
-	int i, j, len, rc;
-	u8 *buf;
+	size_t len = 0;
+	int i, j;
+	const u8 *buf;
 
-	len = cmd_db_get_aux_data_len(aggr_vreg->resource_name);
-	if (len < 0) {
-		aggr_vreg_err(aggr_vreg, "could not get ARC aux data len, rc=%d\n",
-			len);
-		return len;
+	buf = cmd_db_read_aux_data(aggr_vreg->resource_name, &len);
+	if (IS_ERR(buf)) {
+		aggr_vreg_err(aggr_vreg, "could not retrieve ARC aux data, rc=%ld\n",
+				PTR_ERR(buf));
+		return PTR_ERR(buf);
 	} else if (len == 0) {
 		aggr_vreg_err(aggr_vreg, "ARC level mapping data missing in command db\n");
 		return -EINVAL;
 	} else if (len > RPMH_ARC_MAX_LEVELS * RPMH_ARC_LEVEL_SIZE) {
-		aggr_vreg_err(aggr_vreg, "more ARC levels defined than allowed: %d > %d\n",
+		aggr_vreg_err(aggr_vreg, "more ARC levels defined than allowed: %zd > %d\n",
 			len, RPMH_ARC_MAX_LEVELS * RPMH_ARC_LEVEL_SIZE);
 		return -EINVAL;
 	} else if (len % RPMH_ARC_LEVEL_SIZE) {
-		aggr_vreg_err(aggr_vreg, "invalid ARC aux data size: %d\n",
+		aggr_vreg_err(aggr_vreg, "invalid ARC aux data size: %zd\n",
 			len);
 		return -EINVAL;
 	}
-
-	buf = kzalloc(len, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	rc = cmd_db_get_aux_data(aggr_vreg->resource_name, buf, len);
-	if (rc < 0) {
-		aggr_vreg_err(aggr_vreg, "could not retrieve ARC aux data, rc=%d\n",
-			rc);
-		goto done;
-	} else if (rc != len) {
-		aggr_vreg_err(aggr_vreg, "could not retrieve all ARC aux data, %d != %d\n",
-			rc, len);
-		rc = -EINVAL;
-		goto done;
-	}
-	rc = 0;
 
 	aggr_vreg->level_count = len / RPMH_ARC_LEVEL_SIZE;
 
@@ -1311,15 +1433,11 @@ rpmh_regulator_load_arc_level_mapping(struct rpmh_aggr_vreg *aggr_vreg)
 			break;
 		}
 
-		/* Add consumer offset to avoid voltage = 0. */
-		aggr_vreg->level[i] += RPMH_REGULATOR_LEVEL_OFFSET;
 		aggr_vreg_debug(aggr_vreg, "ARC hlvl=%2d --> vlvl=%4u\n",
 				i, aggr_vreg->level[i]);
 	}
 
-done:
-	kfree(buf);
-	return rc;
+	return 0;
 }
 
 /**
@@ -1339,9 +1457,10 @@ static int rpmh_regulator_parse_vrm_modes(struct rpmh_aggr_vreg *aggr_vreg)
 	const struct rpmh_regulator_mode *map;
 	const char *prop;
 	int i, len, rc;
-	u32 *buf;
+	u32 *buf, disable_mode;
 
 	aggr_vreg->regulator_hw_type = RPMH_REGULATOR_HW_TYPE_UNKNOWN;
+	aggr_vreg->disable_pmic_mode = -EINVAL;
 
 	/* qcom,regulator-type is optional */
 	prop = "qcom,regulator-type";
@@ -1386,6 +1505,23 @@ static int rpmh_regulator_parse_vrm_modes(struct rpmh_aggr_vreg *aggr_vreg)
 	}
 
 	map = rpmh_regulator_mode_map[aggr_vreg->regulator_hw_type];
+
+	prop = "qcom,disable-mode";
+	if (!of_property_read_u32(node, prop, &disable_mode)) {
+		if (disable_mode >= RPMH_REGULATOR_MODE_COUNT) {
+			aggr_vreg_err(aggr_vreg, "qcom,disable-mode value %u is invalid\n",
+				disable_mode);
+			return -EINVAL;
+		}
+
+		if (!map[disable_mode].framework_mode) {
+			aggr_vreg_err(aggr_vreg, "qcom,disable-mode value %u is invalid for regulator type = %s\n",
+				disable_mode, type);
+			return -EINVAL;
+		}
+
+		aggr_vreg->disable_pmic_mode = map[disable_mode].pmic_mode;
+	}
 
 	/* qcom,supported-modes is optional */
 	prop = "qcom,supported-modes";
@@ -1660,7 +1796,8 @@ static int rpmh_regulator_init_vreg_supply(struct rpmh_vreg *vreg)
 		return -ENOMEM;
 	scnprintf(buf, len, "%s-parent-supply", vreg->rdesc.name);
 
-	if (of_find_property(vreg->aggr_vreg->dev->of_node, buf, NULL)) {
+	if (of_find_property(vreg->aggr_vreg->dev->of_node, buf, NULL) ||
+	    of_find_property(vreg->of_node, buf, NULL)) {
 		kfree(buf);
 
 		len = strlen(vreg->rdesc.name) + 10;
@@ -1670,6 +1807,9 @@ static int rpmh_regulator_init_vreg_supply(struct rpmh_vreg *vreg)
 		scnprintf(buf, len, "%s-parent", vreg->rdesc.name);
 
 		vreg->rdesc.supply_name = buf;
+	} else if (of_find_property(vreg->of_node, "vin-supply", NULL)) {
+		kfree(buf);
+		vreg->rdesc.supply_name = "vin";
 	} else {
 		kfree(buf);
 	}
@@ -1806,12 +1946,22 @@ static int rpmh_regulator_init_vreg(struct rpmh_vreg *vreg)
 		return rc;
 	}
 
+	rc = devm_regulator_proxy_consumer_register(dev, vreg->of_node);
+	if (rc)
+		vreg_err(vreg, "failed to register proxy consumer, rc=%d\n",
+			rc);
+
+	rc = devm_regulator_debug_register(dev, vreg->rdev);
+	if (rc)
+		vreg_err(vreg, "failed to register debug regulator, rc=%d\n",
+			rc);
+
 	vreg_debug(vreg, "successfully registered; set=%s\n",
 		vreg->set_active && vreg->set_sleep
 			? "active + sleep"
 			: vreg->set_active ? "active" : "sleep");
 
-	return rc;
+	return 0;
 }
 
 static const struct of_device_id rpmh_regulator_match_table[] = {
@@ -1876,24 +2026,13 @@ static int rpmh_regulator_probe(struct platform_device *pdev)
 		return rc;
 	}
 
-	aggr_vreg->use_awake_state = of_property_read_bool(node,
-							"qcom,use-awake-state");
-
-	rc = cmd_db_ready();
-	if (rc) {
-		if (rc != -EPROBE_DEFER)
-			aggr_vreg_err(aggr_vreg, "Command DB not available, rc=%d\n",
-				rc);
-		return rc;
-	}
-
-	aggr_vreg->addr = cmd_db_get_addr(aggr_vreg->resource_name);
+	aggr_vreg->addr = cmd_db_read_addr(aggr_vreg->resource_name);
 	if (!aggr_vreg->addr) {
 		aggr_vreg_err(aggr_vreg, "could not find RPMh address for resource\n");
 		return -ENODEV;
 	}
 
-	sid = cmd_db_get_slave_id(aggr_vreg->resource_name);
+	sid = cmd_db_read_slave_id(aggr_vreg->resource_name);
 	if (sid < 0) {
 		aggr_vreg_err(aggr_vreg, "could not find RPMh slave id for resource, rc=%d\n",
 			sid);
@@ -1917,28 +2056,22 @@ static int rpmh_regulator_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	aggr_vreg->rpmh_client = rpmh_get_byindex(pdev, 0);
-	if (IS_ERR(aggr_vreg->rpmh_client)) {
-		rc = PTR_ERR(aggr_vreg->rpmh_client);
-		if (rc != -EPROBE_DEFER)
-			aggr_vreg_err(aggr_vreg, "failed to request RPMh client, rc=%d\n",
-				rc);
-		return rc;
-	}
+	if (of_find_node_by_name(node, "qcom,regulator_deepsleep"))
+		aggr_vreg->enable_regulator_deepsleep = true;
 
 	if (aggr_vreg->regulator_type == RPMH_REGULATOR_TYPE_ARC) {
 		rc = rpmh_regulator_load_arc_level_mapping(aggr_vreg);
 		if (rc) {
 			aggr_vreg_err(aggr_vreg, "could not load arc level mapping, rc=%d\n",
 				rc);
-			goto free_client;
+			return rc;
 		}
 	} else if (aggr_vreg->regulator_type == RPMH_REGULATOR_TYPE_VRM) {
 		rc = rpmh_regulator_parse_vrm_modes(aggr_vreg);
 		if (rc) {
 			aggr_vreg_err(aggr_vreg, "could not parse vrm mode mapping, rc=%d\n",
 				rc);
-			goto free_client;
+			return rc;
 		}
 	}
 
@@ -1949,7 +2082,7 @@ static int rpmh_regulator_probe(struct platform_device *pdev)
 	if (rc) {
 		aggr_vreg_err(aggr_vreg, "failed to allocate regulator subnode array, rc=%d\n",
 			rc);
-		goto free_client;
+		return rc;
 	}
 
 	for (i = 0; i < aggr_vreg->vreg_count; i++) {
@@ -1958,7 +2091,7 @@ static int rpmh_regulator_probe(struct platform_device *pdev)
 			pr_err("unable to initialize rpmh-regulator vreg %s for resource %s, rc=%d\n",
 				aggr_vreg->vreg[i].rdesc.name,
 				aggr_vreg->resource_name, rc);
-			goto free_client;
+			return rc;
 		}
 	}
 
@@ -1970,7 +2103,7 @@ static int rpmh_regulator_probe(struct platform_device *pdev)
 			aggr_vreg_err(aggr_vreg, "error while sending default request, rc=%d\n",
 				rc);
 			mutex_unlock(&aggr_vreg->lock);
-			goto free_client;
+			return rc;
 		}
 		mutex_unlock(&aggr_vreg->lock);
 	}
@@ -1987,39 +2120,72 @@ static int rpmh_regulator_probe(struct platform_device *pdev)
 					? "VRM" : "XOB"));
 
 	return rc;
-
-free_client:
-	rpmh_release(aggr_vreg->rpmh_client);
-
-	return rc;
 }
 
-static int rpmh_regulator_remove(struct platform_device *pdev)
+static int rpmh_vreg_freeze(struct device *dev)
 {
-	struct rpmh_aggr_vreg *aggr_vreg = platform_get_drvdata(pdev);
-
-	rpmh_release(aggr_vreg->rpmh_client);
+	pr_debug("Entering hibernation via Rpmh_regulator freeze\n");
 
 	return 0;
 }
 
+static int rpmh_vreg_restore(struct device *dev)
+{
+	struct rpmh_aggr_vreg *aggr_vreg = dev_get_drvdata(dev);
+
+	pr_debug("Resuming from hibernation via Rpmh_regulator restore\n");
+	rpmh_vreg_send_ds_requests(aggr_vreg);
+
+	return 0;
+}
+
+static int rpmh_vreg_suspend(struct device *dev)
+{
+#ifdef CONFIG_DEEPSLEEP
+	if (pm_suspend_via_firmware())
+		pr_debug("Entering Deepsleep via Rpmh_regulator suspend\n");
+#endif
+	return 0;
+}
+
+static int rpmh_vreg_resume(struct device *dev)
+{
+#ifdef CONFIG_DEEPSLEEP
+	if (pm_suspend_via_firmware()) {
+		pr_debug("Resuming Deepsleep via Rpmh_regulator resume\n");
+		rpmh_vreg_restore(dev);
+	}
+#endif
+	return 0;
+}
+
+static const struct dev_pm_ops rpmh_vreg_pm_ops = {
+	.suspend = rpmh_vreg_suspend,
+	.resume  = rpmh_vreg_resume,
+	.freeze  = rpmh_vreg_freeze,
+	.restore = rpmh_vreg_restore,
+};
+
 static struct platform_driver rpmh_regulator_driver = {
-	.driver		= {
+	.driver = {
 		.name		= "qcom,rpmh-regulator",
 		.of_match_table	= rpmh_regulator_match_table,
-		.owner		= THIS_MODULE,
+		.sync_state	= regulator_proxy_consumer_sync_state,
+		.pm		= &rpmh_vreg_pm_ops,
 	},
-	.probe		= rpmh_regulator_probe,
-	.remove		= rpmh_regulator_remove,
+	.probe = rpmh_regulator_probe,
 };
 
 static int rpmh_regulator_init(void)
 {
+	rpmh_reg_ipc_log = ipc_log_context_create(IPC_LOG_PAGES, "rpmh_regulator", 0);
 	return platform_driver_register(&rpmh_regulator_driver);
 }
 
 static void rpmh_regulator_exit(void)
 {
+	if (rpmh_reg_ipc_log)
+		ipc_log_context_destroy(rpmh_reg_ipc_log);
 	platform_driver_unregister(&rpmh_regulator_driver);
 }
 

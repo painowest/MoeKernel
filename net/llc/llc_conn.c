@@ -284,8 +284,8 @@ out:;
 /**
  *	llc_conn_remove_acked_pdus - Removes acknowledged pdus from tx queue
  *	@sk: active connection
- *	nr: NR
- *	how_many_unacked: size of pdu_unack_q after removing acked pdus
+ *	@nr: NR
+ *	@how_many_unacked: size of pdu_unack_q after removing acked pdus
  *
  *	Removes acknowledged pdus from transmit queue (pdu_unack_q). Returns
  *	the number of pdus that removed from queue.
@@ -813,7 +813,7 @@ void llc_conn_handler(struct llc_sap *sap, struct sk_buff *skb)
 	else {
 		dprintk("%s: adding to backlog...\n", __func__);
 		llc_set_backlog_type(skb, LLC_PACKET);
-		if (sk_add_backlog(sk, skb, sk->sk_rcvbuf))
+		if (sk_add_backlog(sk, skb, READ_ONCE(sk->sk_rcvbuf)))
 			goto drop_unlock;
 	}
 out:
@@ -884,20 +884,16 @@ static void llc_sk_init(struct sock *sk)
 	llc->inc_cntr = llc->dec_cntr = 2;
 	llc->dec_step = llc->connect_step = 1;
 
-	setup_timer(&llc->ack_timer.timer, llc_conn_ack_tmr_cb,
-			(unsigned long)sk);
+	timer_setup(&llc->ack_timer.timer, llc_conn_ack_tmr_cb, 0);
 	llc->ack_timer.expire	      = sysctl_llc2_ack_timeout;
 
-	setup_timer(&llc->pf_cycle_timer.timer, llc_conn_pf_cycle_tmr_cb,
-			(unsigned long)sk);
+	timer_setup(&llc->pf_cycle_timer.timer, llc_conn_pf_cycle_tmr_cb, 0);
 	llc->pf_cycle_timer.expire	   = sysctl_llc2_p_timeout;
 
-	setup_timer(&llc->rej_sent_timer.timer, llc_conn_rej_tmr_cb,
-			(unsigned long)sk);
+	timer_setup(&llc->rej_sent_timer.timer, llc_conn_rej_tmr_cb, 0);
 	llc->rej_sent_timer.expire	   = sysctl_llc2_rej_timeout;
 
-	setup_timer(&llc->busy_state_timer.timer, llc_conn_busy_tmr_cb,
-			(unsigned long)sk);
+	timer_setup(&llc->busy_state_timer.timer, llc_conn_busy_tmr_cb, 0);
 	llc->busy_state_timer.expire	     = sysctl_llc2_busy_timeout;
 
 	llc->n2 = 2;   /* max retransmit */
@@ -910,8 +906,11 @@ static void llc_sk_init(struct sock *sk)
 
 /**
  *	llc_sk_alloc - Allocates LLC sock
+ *	@net: network namespace
  *	@family: upper layer protocol family
  *	@priority: for allocation (%GFP_KERNEL, %GFP_ATOMIC, etc)
+ *	@prot: struct proto associated with this new sock instance
+ *	@kern: is this to be a kernel socket?
  *
  *	Allocates a LLC sock and initializes it. Returns the new LLC sock
  *	or %NULL if there's no memory available for one
@@ -955,7 +954,7 @@ void llc_sk_stop_all_timers(struct sock *sk, bool sync)
 
 /**
  *	llc_sk_free - Frees a LLC socket
- *	@sk - socket to free
+ *	@sk: - socket to free
  *
  *	Frees a LLC socket
  */

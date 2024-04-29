@@ -1,13 +1,6 @@
-/* Copyright (c) 2014-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -31,11 +24,11 @@
 #include <linux/cpu.h>
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
-#include <soc/qcom/scm.h>
+#include <linux/qcom_scm.h>
+#include <linux/msm_rtb.h>
 #include <soc/qcom/jtag.h>
 #include <asm/smp_plat.h>
 #include <asm/etmv4x.h>
-#include <soc/qcom/socinfo.h>
 
 #define CORESIGHT_LAR		(0xFB0)
 
@@ -424,7 +417,7 @@ static inline void etm_mm_restore_state(struct etm_ctx *etmdata)
 			etm_os_lock(etmdata);
 		}
 
-		if (!(etmdata->state[0] & BIT(0))) {
+		if (!(etmdata->state[i++] & BIT(0))) {
 			etm_os_unlock(etmdata);
 			break;
 		}
@@ -507,7 +500,7 @@ static inline void etm_mm_restore_state(struct etm_ctx *etmdata)
 
 static inline void etm_clk_disable(void)
 {
-	uint32_t cpmr;
+	uint64_t cpmr;
 
 	isb();
 	cpmr = trc_readl(CPMR_EL1);
@@ -517,7 +510,7 @@ static inline void etm_clk_disable(void)
 
 static inline void etm_clk_enable(void)
 {
-	uint32_t cpmr;
+	uint64_t cpmr;
 
 	cpmr = trc_readl(CPMR_EL1);
 	cpmr  |= ETM_CPMR_CLKEN;
@@ -903,6 +896,7 @@ static int etm_read_sscr(uint64_t *state, int i, int j)
 static inline void etm_si_save_state(struct etm_ctx *etmdata)
 {
 	int i, j, count;
+	uint64_t lock = 0x1;
 
 	i = 0;
 	/* Ensure all writes are complete before saving ETM registers */
@@ -915,7 +909,7 @@ static inline void etm_si_save_state(struct etm_ctx *etmdata)
 	switch (etmdata->arch) {
 	case ETM_ARCH_V4_2:
 	case ETM_ARCH_V4:
-		trc_write(0x1, ETMOSLAR);
+		trc_write(lock, ETMOSLAR);
 		isb();
 
 		/* poll until programmers' model becomes stable */
@@ -1362,6 +1356,7 @@ static int etm_write_sscr(uint64_t *state, int i, int j)
 static inline void etm_si_restore_state(struct etm_ctx *etmdata)
 {
 	int i, j;
+	uint64_t lock = 0x1;
 
 	i = 0;
 
@@ -1376,7 +1371,7 @@ static inline void etm_si_restore_state(struct etm_ctx *etmdata)
 		/* check OS lock is locked */
 		if (BVAL(trc_readl(ETMOSLSR), 1) != 1) {
 			pr_err_ratelimited("OS lock is unlocked\n");
-			trc_write(0x1, ETMOSLAR);
+			trc_write(lock, ETMOSLAR);
 			isb();
 		}
 
@@ -1421,7 +1416,7 @@ static inline void etm_si_restore_state(struct etm_ctx *etmdata)
 		trc_write(etmdata->state[i++], ETMPRGCTLR);
 
 		isb();
-		trc_write(0x0, ETMOSLAR);
+		trc_write(~lock, ETMOSLAR);
 		break;
 	default:
 		pr_err_ratelimited("unsupported etm arch %d in %s\n",
@@ -1438,8 +1433,7 @@ void msm_jtag_etm_save_state(void)
 
 	cpu = raw_smp_processor_id();
 
-	if (!etm[cpu] || etm[cpu]->save_restore_disabled
-				|| hibernation_freeze)
+	if (!etm[cpu] || etm[cpu]->save_restore_disabled)
 		return;
 
 	if (etm[cpu]->save_restore_enabled) {
@@ -1457,8 +1451,7 @@ void msm_jtag_etm_restore_state(void)
 
 	cpu = raw_smp_processor_id();
 
-	if (!etm[cpu] || etm[cpu]->save_restore_disabled
-				|| hibernation_freeze)
+	if (!etm[cpu] || etm[cpu]->save_restore_disabled)
 		return;
 
 	/*
@@ -1542,8 +1535,8 @@ static int jtag_mm_etm_starting(unsigned int cpu)
 
 static int jtag_mm_etm_online(unsigned int cpu)
 {
-	struct scm_desc desc = {0};
 	int ret;
+	u64 version;
 
 	if (!etm[cpu])
 		return 0;
@@ -1554,12 +1547,9 @@ static int jtag_mm_etm_online(unsigned int cpu)
 		return 0;
 	}
 	if (etm_arch_supported(etm[cpu]->arch)) {
-		desc.args[0] = TZ_DBG_ETM_FEAT_ID;
-		desc.arginfo = SCM_ARGS(1);
-		ret = scm_call2(SCM_SIP_FNID(SCM_SVC_INFO,
-				GET_FEAT_VERSION_CMD), &desc);
+		ret = qcom_scm_get_jtag_etm_feat_id(&version);
 		if (!ret) {
-			if (desc.ret[0] < TZ_DBG_ETM_VER)
+			if (version < TZ_DBG_ETM_VER)
 				etm[cpu]->save_restore_enabled = true;
 			else
 				pr_info("etm save-restore supported by TZ\n");
@@ -1572,28 +1562,13 @@ static int jtag_mm_etm_online(unsigned int cpu)
 	return 0;
 }
 
-static bool skip_etm_save_restore(void)
-{
-	uint32_t id;
-	uint32_t version;
-
-	id = socinfo_get_id();
-	version = socinfo_get_version();
-
-	if (id == HW_SOC_ID_M8953 && SOCINFO_VERSION_MAJOR(version) == 1 &&
-	    SOCINFO_VERSION_MINOR(version) == 0)
-		return true;
-
-	return false;
-}
-
 static int jtag_mm_etm_probe(struct platform_device *pdev, uint32_t cpu)
 {
 	struct etm_ctx *etmdata;
 	struct resource *res;
 	struct device *dev = &pdev->dev;
-	struct scm_desc desc = {0};
 	int ret;
+	u64 version;
 
 	/* Allocate memory per cpu */
 	etmdata = devm_kzalloc(dev, sizeof(struct etm_ctx), GFP_KERNEL);
@@ -1614,9 +1589,6 @@ static int jtag_mm_etm_probe(struct platform_device *pdev, uint32_t cpu)
 	etmdata->save_restore_disabled = of_property_read_bool(
 					 pdev->dev.of_node,
 					 "qcom,save-restore-disable");
-
-	if (skip_etm_save_restore())
-		etmdata->save_restore_disabled = 1;
 
 	/* Allocate etm state save space per core */
 	etmdata->state = devm_kzalloc(dev,
@@ -1650,12 +1622,9 @@ static int jtag_mm_etm_probe(struct platform_device *pdev, uint32_t cpu)
 	mutex_lock(&etmdata->mutex);
 	if (etmdata->init && !etmdata->enable) {
 		if (etm_arch_supported(etmdata->arch)) {
-			desc.args[0] = TZ_DBG_ETM_FEAT_ID;
-			desc.arginfo = SCM_ARGS(1);
-			ret = scm_call2(SCM_SIP_FNID(SCM_SVC_INFO,
-					GET_FEAT_VERSION_CMD), &desc);
+			ret = qcom_scm_get_jtag_etm_feat_id(&version);
 			if (!ret) {
-				if (desc.ret[0] < TZ_DBG_ETM_VER)
+				if (version < TZ_DBG_ETM_VER)
 					etmdata->save_restore_enabled = true;
 				else
 					pr_info("etm save-restore supported by TZ\n");
@@ -1726,54 +1695,6 @@ static int jtag_mm_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static void msm_jtag_etm_save_state_hib(void *unused_info)
-{
-	msm_jtag_etm_save_state();
-}
-
-static void msm_jtag_etm_restore_state_hib(void *unused_info)
-{
-	msm_jtag_etm_restore_state();
-}
-
-static int jtag_mm_freeze(struct device *dev)
-{
-	int cpu;
-
-	if (hibernation_freeze)
-		return 0;
-	get_online_cpus();
-	on_each_cpu(msm_jtag_etm_save_state_hib,
-				NULL, true);
-	for_each_online_cpu(cpu)
-		clk_disable_unprepare(clock[cpu]);
-	put_online_cpus();
-	hibernation_freeze = true;
-	return 0;
-}
-
-static int jtag_mm_restore(struct device *dev)
-{
-	int cpu;
-
-	if (!hibernation_freeze)
-		return 0;
-	get_online_cpus();
-	for_each_online_cpu(cpu)
-		clk_prepare_enable(clock[cpu]);
-	on_each_cpu(msm_jtag_etm_restore_state_hib,
-					NULL, true);
-	put_online_cpus();
-	hibernation_freeze = false;
-	return 0;
-}
-
-static const struct dev_pm_ops jtag_mm_pm_ops = {
-	.freeze = jtag_mm_freeze,
-	.restore = jtag_mm_restore,
-	.thaw = jtag_mm_restore,
-};
-
 static const struct of_device_id msm_qdss_mm_match[] = {
 	{ .compatible = "qcom,jtagv8-mm"},
 	{}
@@ -1784,9 +1705,7 @@ static struct platform_driver jtag_mm_driver = {
 	.remove         = jtag_mm_remove,
 	.driver         = {
 		.name   = "msm-jtagv8-mm",
-		.owner	= THIS_MODULE,
 		.of_match_table	= msm_qdss_mm_match,
-		.pm = &jtag_mm_pm_ops,
 		},
 };
 

@@ -63,6 +63,17 @@ struct clk_omap_reg {
  * @auto_recal_bit: bitshift of the driftguard enable bit in @control_reg
  * @recal_en_bit: bitshift of the PRM_IRQENABLE_* bit for recalibration IRQs
  * @recal_st_bit: bitshift of the PRM_IRQSTATUS_* bit for recalibration IRQs
+ * @ssc_deltam_reg: register containing the DPLL SSC frequency spreading
+ * @ssc_modfreq_reg: register containing the DPLL SSC modulation frequency
+ * @ssc_modfreq_mant_mask: mask of the mantissa component in @ssc_modfreq_reg
+ * @ssc_modfreq_exp_mask: mask of the exponent component in @ssc_modfreq_reg
+ * @ssc_enable_mask: mask of the DPLL SSC enable bit in @control_reg
+ * @ssc_downspread_mask: mask of the DPLL SSC low frequency only bit in
+ *                       @control_reg
+ * @ssc_modfreq: the DPLL SSC frequency modulation in kHz
+ * @ssc_deltam: the DPLL SSC frequency spreading in permille (10th of percent)
+ * @ssc_downspread: require the only low frequency spread of the DPLL in SSC
+ *                   mode
  * @flags: DPLL type/features (see below)
  *
  * Possible values for @flags:
@@ -110,6 +121,17 @@ struct dpll_data {
 	u8			auto_recal_bit;
 	u8			recal_en_bit;
 	u8			recal_st_bit;
+	struct clk_omap_reg	ssc_deltam_reg;
+	struct clk_omap_reg	ssc_modfreq_reg;
+	u32			ssc_deltam_int_mask;
+	u32			ssc_deltam_frac_mask;
+	u32			ssc_modfreq_mant_mask;
+	u32			ssc_modfreq_exp_mask;
+	u32                     ssc_enable_mask;
+	u32                     ssc_downspread_mask;
+	u32                     ssc_modfreq;
+	u32                     ssc_deltam;
+	bool                    ssc_downspread;
 	u8			flags;
 };
 
@@ -153,12 +175,14 @@ struct clk_hw_omap {
 	u8			fixed_div;
 	struct clk_omap_reg	enable_reg;
 	u8			enable_bit;
-	u8			flags;
+	unsigned long		flags;
 	struct clk_omap_reg	clksel_reg;
 	struct dpll_data	*dpll_data;
 	const char		*clkdm_name;
 	struct clockdomain	*clkdm;
 	const struct clk_hw_omap_ops	*ops;
+	u32			context;
+	int			autoidle_count;
 };
 
 /*
@@ -203,6 +227,7 @@ enum {
 	TI_CLKM_PRM,
 	TI_CLKM_SCRM,
 	TI_CLKM_CTRL,
+	TI_CLKM_CTRL_AUX,
 	TI_CLKM_PLLSS,
 	CLK_MAX_MEMMAPS
 };
@@ -211,6 +236,7 @@ enum {
  * struct ti_clk_ll_ops - low-level ops for clocks
  * @clk_readl: pointer to register read function
  * @clk_writel: pointer to register write function
+ * @clk_rmw: pointer to register read-modify-write function
  * @clkdm_clk_enable: pointer to clockdomain enable function
  * @clkdm_clk_disable: pointer to clockdomain disable function
  * @clkdm_lookup: pointer to clockdomain lookup function
@@ -226,6 +252,7 @@ enum {
 struct ti_clk_ll_ops {
 	u32	(*clk_readl)(const struct clk_omap_reg *reg);
 	void	(*clk_writel)(u32 val, const struct clk_omap_reg *reg);
+	void	(*clk_rmw)(u32 val, u32 mask, const struct clk_omap_reg *reg);
 	int	(*clkdm_clk_enable)(struct clockdomain *clkdm, struct clk *clk);
 	int	(*clkdm_clk_disable)(struct clockdomain *clkdm,
 				     struct clk *clk);
@@ -238,6 +265,7 @@ struct ti_clk_ll_ops {
 
 #define to_clk_hw_omap(_hw) container_of(_hw, struct clk_hw_omap, hw)
 
+bool omap2_clk_is_hw_omap(struct clk_hw *hw);
 int omap2_clk_disable_autoidle_all(void);
 int omap2_clk_enable_autoidle_all(void);
 int omap2_clk_allow_idle(struct clk *clk);
@@ -287,9 +315,17 @@ struct ti_clk_features {
 #define TI_CLK_DPLL4_DENY_REPROGRAM		BIT(1)
 #define TI_CLK_DISABLE_CLKDM_CONTROL		BIT(2)
 #define TI_CLK_ERRATA_I810			BIT(3)
+#define TI_CLK_CLKCTRL_COMPAT			BIT(4)
+#define TI_CLK_DEVICE_TYPE_GP			BIT(5)
 
 void ti_clk_setup_features(struct ti_clk_features *features);
 const struct ti_clk_features *ti_clk_get_features(void);
+bool ti_clk_is_in_standby(struct clk *clk);
+int omap3_noncore_dpll_save_context(struct clk_hw *hw);
+void omap3_noncore_dpll_restore_context(struct clk_hw *hw);
+
+int omap3_core_dpll_save_context(struct clk_hw *hw);
+void omap3_core_dpll_restore_context(struct clk_hw *hw);
 
 extern const struct clk_hw_omap_ops clkhwops_omap2xxx_dpll;
 

@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2014-2015,2017-2018, The Linux Foundation. All rights reserved.
- *
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
  * only version 2 as published by the Free Software Foundation.
@@ -105,6 +106,7 @@ struct qbam_pipe {
  *
  * @direction is a producer or consumer (MEM => DEV or DEV => MEM)
  * @pending_desc next set of transfer to process
+ * @lock mutex lock
  * @error last error that took place on the current pending_desc
  */
 struct qbam_channel {
@@ -118,9 +120,11 @@ struct qbam_channel {
 	struct mutex			lock;
 	int				error;
 };
+
 #define DMA_TO_QBAM_CHAN(dma_chan) \
 			container_of(dma_chan, struct qbam_channel, chan)
-#define qbam_err(qbam_dev, fmt ...) dev_err(qbam_dev->dma_dev.dev, fmt)
+
+#define qbam_err(qbam_dev, fmt ...) dev_err((qbam_dev)->dma_dev.dev, fmt)
 
 /*  qbam_disconnect_chan - disconnect a channel */
 static int qbam_disconnect_chan(struct qbam_channel *qbam_chan)
@@ -139,8 +143,8 @@ static int qbam_disconnect_chan(struct qbam_channel *qbam_chan)
 	ret = sps_set_config(pipe_handle, &pipe_config_no_irq);
 	if (ret)
 		qbam_err(qbam_dev,
-			"error:%d sps_set_config(pipe:%d) before disconnect\n",
-			ret, qbam_chan->bam_pipe.index);
+			 "error:%d sps_set_config(pipe:%d) before disconnect\n",
+			 ret, qbam_chan->bam_pipe.index);
 
 	ret = sps_disconnect(pipe_handle);
 	if (ret)
@@ -159,34 +163,35 @@ static void qbam_free_chan(struct dma_chan *chan)
 	mutex_lock(&qbam_chan->lock);
 	if (qbam_disconnect_chan(qbam_chan))
 		qbam_err(qbam_dev,
-			"error free_chan() failed to disconnect(pipe:%d)\n",
-			qbam_chan->bam_pipe.index);
+			 "error free_chan() failed to disconnect(pipe:%d)\n",
+			 qbam_chan->bam_pipe.index);
 	qbam_chan->pending_desc.sgl = NULL;
 	qbam_chan->pending_desc.sg_len = 0;
 	mutex_unlock(&qbam_chan->lock);
 }
 
 static struct dma_chan *qbam_dma_xlate(struct of_phandle_args *dma_spec,
-							struct of_dma *of)
+				       struct of_dma *of)
 {
 	struct qbam_device  *qbam_dev  = of->of_dma_data;
 	struct qbam_channel *qbam_chan;
 	u32 channel_index;
 	u32 num_descriptors;
+	int ret = 0;
 
 	if (dma_spec->args_count != QBAM_OF_SLAVE_N_ARGS) {
 		qbam_err(qbam_dev,
-			"invalid number of dma arguments, expect:%d got:%d\n",
-			QBAM_OF_SLAVE_N_ARGS, dma_spec->args_count);
+			 "invalid number of dma arguments, expect:%d got:%d\n",
+			 QBAM_OF_SLAVE_N_ARGS, dma_spec->args_count);
 		return NULL;
-	};
+	}
 
 	channel_index = dma_spec->args[0];
 
 	if (channel_index >= QBAM_MAX_CHANNELS) {
 		qbam_err(qbam_dev,
-			"error: channel_index:%d out of bounds",
-			channel_index);
+			 "error: channel_index:%d out of bounds",
+			 channel_index);
 		return NULL;
 	}
 	qbam_chan = qbam_dev->channels[channel_index];
@@ -197,10 +202,10 @@ static struct dma_chan *qbam_dma_xlate(struct of_phandle_args *dma_spec,
 	}
 
 	num_descriptors = dma_spec->args[1];
-	if (!num_descriptors || (num_descriptors > QBAM_MAX_DESCRIPTORS)) {
+	if (!num_descriptors || num_descriptors > QBAM_MAX_DESCRIPTORS) {
 		qbam_err(qbam_dev,
-			"invalid number of descriptors, range[1..%d] got:%d\n",
-			QBAM_MAX_DESCRIPTORS, num_descriptors);
+			 "invalid number of descriptors, range[1..%d] got:%d\n",
+			 QBAM_MAX_DESCRIPTORS, num_descriptors);
 		return NULL;
 	}
 
@@ -219,6 +224,13 @@ static struct dma_chan *qbam_dma_xlate(struct of_phandle_args *dma_spec,
 
 	/* init dma_chan */
 	qbam_chan->chan.device = &qbam_dev->dma_dev;
+	ret = dma_async_device_channel_register(qbam_chan->chan.device,
+						&qbam_chan->chan);
+	if (ret < 0) {
+		qbam_err(qbam_dev, "error: dma_async_device_channel_register ret: %d\n", ret);
+		kfree(qbam_chan);
+		return NULL;
+	}
 	dma_cookie_init(&qbam_chan->chan);
 	qbam_chan->chan.client_count                 = 1;
 	/* init qbam_chan */
@@ -237,7 +249,7 @@ static struct dma_chan *qbam_dma_xlate(struct of_phandle_args *dma_spec,
 }
 
 static enum dma_status qbam_tx_status(struct dma_chan *chan,
-			dma_cookie_t cookie, struct dma_tx_state *state)
+				      dma_cookie_t cookie, struct dma_tx_state *state)
 {
 	struct qbam_channel *qbam_chan = DMA_TO_QBAM_CHAN(chan);
 	struct qbam_async_tx_descriptor	*qbam_desc = &qbam_chan->pending_desc;
@@ -292,10 +304,10 @@ static int qbam_init_bam_handle(struct qbam_device *qbam_dev)
 	if (IS_ERR(qbam_dev->regs)) {
 		qbam_err(qbam_dev, "error:%ld ioremap(phy:0x%lx len:0x%lx)\n",
 			 PTR_ERR(qbam_dev->regs),
-			 (ulong) qbam_dev->mem_resource->start,
-			 (ulong) resource_size(qbam_dev->mem_resource));
+			 (ulong)qbam_dev->mem_resource->start,
+			 (ulong)resource_size(qbam_dev->mem_resource));
 		return PTR_ERR(qbam_dev->regs);
-	};
+	}
 
 	bam_props.phys_addr		= qbam_dev->mem_resource->start;
 	bam_props.virt_addr		= qbam_dev->regs;
@@ -307,14 +319,13 @@ static int qbam_init_bam_handle(struct qbam_device *qbam_dev)
 	if (ret)
 		qbam_err(qbam_dev, "error:%d sps_register_bam_device\n"
 			 "(phy:0x%lx virt:0x%lx irq:%d)\n",
-			 ret, (ulong) bam_props.phys_addr,
-			 (ulong) bam_props.virt_addr, qbam_dev->irq);
+			 ret, (ulong)bam_props.phys_addr,
+			 (ulong)bam_props.virt_addr, qbam_dev->irq);
 	else
 		qbam_dev->deregister_required = true;
 
 	return ret;
 }
-
 
 static int qbam_alloc_chan(struct dma_chan *chan)
 {
@@ -393,7 +404,7 @@ need_disconnect:
  * @cfg only cares about cfg->direction
  */
 static int qbam_slave_cfg(struct dma_chan *chan,
-						struct dma_slave_config *cfg)
+			  struct dma_slave_config *cfg)
 {
 	int ret = 0;
 	struct qbam_channel *qbam_chan = DMA_TO_QBAM_CHAN(chan);
@@ -410,7 +421,7 @@ static int qbam_slave_cfg(struct dma_chan *chan,
 		goto cfg_done;
 
 	ret = sps_get_config(qbam_chan->bam_pipe.handle,
-						&qbam_chan->bam_pipe.cfg);
+			     &qbam_chan->bam_pipe.cfg);
 	if (ret) {
 		qbam_err(qbam_dev, "error:%d sps_get_config(0x%p)\n",
 			 ret, qbam_chan->bam_pipe.handle);
@@ -441,16 +452,16 @@ static int qbam_slave_cfg(struct dma_chan *chan,
 						  GFP_KERNEL);
 	if (!pipe_cfg->desc.base) {
 		qbam_err(qbam_dev,
-			"error dma_alloc_coherent(desc-sz:%llu * n-descs:%d)\n",
-			(u64) sizeof(struct sps_iovec),
-			qbam_chan->bam_pipe.num_descriptors);
+			 "error dma_alloc_coherent(desc-sz:%llu * n-descs:%d)\n",
+			 (u64)sizeof(struct sps_iovec),
+			 qbam_chan->bam_pipe.num_descriptors);
 		return -ENOMEM;
 	}
 cfg_done:
 	ret = qbam_connect_chan(qbam_chan);
 	if (ret)
 		dmam_free_coherent(qbam_dev->dma_dev.dev, pipe_cfg->desc.size,
-				 pipe_cfg->desc.base, pipe_cfg->desc.phys_base);
+				   pipe_cfg->desc.base, pipe_cfg->desc.phys_base);
 
 	return ret;
 }
@@ -501,9 +512,11 @@ static dma_cookie_t qbam_tx_submit(struct dma_async_tx_descriptor *dma_desc)
  * @return the newly created descriptor or negative ERR_PTR() on error
  */
 static struct dma_async_tx_descriptor *qbam_prep_slave_sg(struct dma_chan *chan,
-	struct scatterlist *sgl, unsigned int sg_len,
-	enum dma_transfer_direction direction, unsigned long flags,
-	void *context)
+							  struct scatterlist *sgl,
+							  unsigned int sg_len,
+							  enum dma_transfer_direction direction,
+							  unsigned long flags,
+							  void *context)
 {
 	struct qbam_channel *qbam_chan = DMA_TO_QBAM_CHAN(chan);
 	struct qbam_device *qbam_dev = qbam_chan->qbam_dev;
@@ -511,8 +524,8 @@ static struct dma_async_tx_descriptor *qbam_prep_slave_sg(struct dma_chan *chan,
 
 	if (qbam_chan->direction != direction) {
 		qbam_err(qbam_dev,
-			"invalid dma transfer direction expected:%d given:%d\n",
-			qbam_chan->direction, direction);
+			 "invalid dma transfer direction expected:%d given:%d\n",
+			 qbam_chan->direction, direction);
 		return ERR_PTR(-EINVAL);
 	}
 
@@ -541,28 +554,27 @@ static void qbam_issue_pending(struct dma_chan *chan)
 	mutex_lock(&qbam_chan->lock);
 	if (!qbam_chan->pending_desc.sgl) {
 		qbam_err(qbam_dev,
-		   "error %s() no pending descriptor pipe:%d\n",
-		   __func__, qbam_chan->bam_pipe.index);
+			 "error %s() no pending descriptor pipe:%d\n",
+			 __func__, qbam_chan->bam_pipe.index);
 		mutex_unlock(&qbam_chan->lock);
 		return;
 	}
 
 	for_each_sg(qbam_desc->sgl, sg, qbam_desc->sg_len, i) {
-
 		/* Add BAM flags only on the last buffer */
 		bool is_last_buf = (i == ((qbam_desc->sg_len) - 1));
 
 		ret = sps_transfer_one(qbam_chan->bam_pipe.handle,
-					sg_dma_address(sg), sg_dma_len(sg),
-					qbam_desc,
+				       sg_dma_address(sg), sg_dma_len(sg),
+				       qbam_desc,
 					(is_last_buf ? qbam_desc->flags : 0));
 		if (ret < 0) {
 			qbam_chan->error = ret;
 
 			qbam_err(qbam_dev, "erorr:%d sps_transfer_one\n"
-				"(addr:0x%lx len:%d flags:0x%lx pipe:%d)\n",
-				ret, (ulong) sg_dma_address(sg), sg_dma_len(sg),
-				qbam_desc->flags, qbam_chan->bam_pipe.index);
+				 "(addr:0x%lx len:%d flags:0x%lx pipe:%d)\n",
+				 ret, (ulong)sg_dma_address(sg), sg_dma_len(sg),
+				 qbam_desc->flags, qbam_chan->bam_pipe.index);
 			break;
 		}
 	}
@@ -584,8 +596,8 @@ static int qbam_deregister_bam_dev(struct qbam_device *qbam_dev)
 	ret = sps_deregister_bam_device(qbam_dev->handle);
 	if (ret)
 		qbam_err(qbam_dev,
-			"error:%d sps_deregister_bam_device(hndl:0x%lx) failed",
-			ret, qbam_dev->handle);
+			 "error:%d sps_deregister_bam_device(hndl:0x%lx) failed",
+			 ret, qbam_dev->handle);
 	return ret;
 }
 
@@ -594,7 +606,7 @@ static void qbam_pipes_free(struct qbam_device *qbam_dev)
 	struct qbam_channel *qbam_chan_cur, *qbam_chan_next;
 
 	list_for_each_entry_safe(qbam_chan_cur, qbam_chan_next,
-			&qbam_dev->dma_dev.channels, chan.device_node) {
+				 &qbam_dev->dma_dev.channels, chan.device_node) {
 		mutex_lock(&qbam_chan_cur->lock);
 		qbam_free_chan(&qbam_chan_cur->chan);
 		sps_free_endpoint(qbam_chan_cur->bam_pipe.handle);
@@ -709,7 +721,6 @@ static struct platform_driver qbam_driver = {
 	.remove = qbam_remove,
 	.driver = {
 		.name = "qcom-sps-dma",
-		.owner = THIS_MODULE,
 		.of_match_table = qbam_of_match,
 	},
 };

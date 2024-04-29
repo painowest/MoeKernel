@@ -5,9 +5,11 @@
 
 #include <linux/elf.h>
 #include <linux/uaccess.h>
+
 #include <asm-generic/sections.h>
 
 extern char __head_end[];
+extern char __srwx_boundary[];
 
 #ifdef __powerpc64__
 
@@ -17,13 +19,12 @@ extern char __end_interrupts[];
 extern char __prom_init_toc_start[];
 extern char __prom_init_toc_end[];
 
-static inline int in_kernel_text(unsigned long addr)
-{
-	if (addr >= (unsigned long)_stext && addr < (unsigned long)__init_end)
-		return 1;
-
-	return 0;
-}
+#ifdef CONFIG_PPC_POWERNV
+extern char start_real_trampolines[];
+extern char end_real_trampolines[];
+extern char start_virt_trampolines[];
+extern char end_virt_trampolines[];
+#endif
 
 static inline unsigned long kernel_toc_addr(void)
 {
@@ -54,27 +55,28 @@ static inline int overlaps_kernel_text(unsigned long start, unsigned long end)
 		(unsigned long)_stext < end;
 }
 
-static inline int overlaps_kvm_tmp(unsigned long start, unsigned long end)
-{
-#ifdef CONFIG_KVM_GUEST
-	extern char kvm_tmp[];
-	return start < (unsigned long)kvm_tmp &&
-		(unsigned long)&kvm_tmp[1024 * 1024] < end;
-#else
-	return 0;
-#endif
-}
-
 #ifdef PPC64_ELF_ABI_v1
+
+#define HAVE_DEREFERENCE_FUNCTION_DESCRIPTOR 1
+
 #undef dereference_function_descriptor
 static inline void *dereference_function_descriptor(void *ptr)
 {
 	struct ppc64_opd_entry *desc = ptr;
 	void *p;
 
-	if (!probe_kernel_address(&desc->funcaddr, p))
+	if (!get_kernel_nofault(p, (void *)&desc->funcaddr))
 		ptr = p;
 	return ptr;
+}
+
+#undef dereference_kernel_function_descriptor
+static inline void *dereference_kernel_function_descriptor(void *ptr)
+{
+	if (ptr < (void *)__start_opd || ptr >= (void *)__end_opd)
+		return ptr;
+
+	return dereference_function_descriptor(ptr);
 }
 #endif /* PPC64_ELF_ABI_v1 */
 

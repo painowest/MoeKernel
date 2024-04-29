@@ -24,8 +24,8 @@
 #include <linux/slab.h>
 #include <linux/delay.h>
 
+#include <drm/drm_print.h>
 #include <drm/drm_scdc_helper.h>
-#include <drm/drmP.h>
 
 /**
  * DOC: scdc helpers
@@ -125,7 +125,7 @@ ssize_t drm_scdc_write(struct i2c_adapter *adapter, u8 offset,
 EXPORT_SYMBOL(drm_scdc_write);
 
 /**
- * drm_scdc_check_scrambling_status - what is status of scrambling?
+ * drm_scdc_get_scrambling_status - what is status of scrambling?
  * @adapter: I2C adapter for DDC channel
  *
  * Reads the scrambler status over SCDC, and checks the
@@ -134,7 +134,6 @@ EXPORT_SYMBOL(drm_scdc_write);
  * Returns:
  * True if the scrambling is enabled, false otherwise.
  */
-
 bool drm_scdc_get_scrambling_status(struct i2c_adapter *adapter)
 {
 	u8 status;
@@ -142,7 +141,7 @@ bool drm_scdc_get_scrambling_status(struct i2c_adapter *adapter)
 
 	ret = drm_scdc_readb(adapter, SCDC_SCRAMBLER_STATUS, &status);
 	if (ret < 0) {
-		DRM_ERROR("Failed to read scrambling status, error %d\n", ret);
+		DRM_DEBUG_KMS("Failed to read scrambling status: %d\n", ret);
 		return false;
 	}
 
@@ -162,7 +161,6 @@ EXPORT_SYMBOL(drm_scdc_get_scrambling_status);
  * Returns:
  * True if scrambling is set/reset successfully, false otherwise.
  */
-
 bool drm_scdc_set_scrambling(struct i2c_adapter *adapter, bool enable)
 {
 	u8 config;
@@ -170,7 +168,7 @@ bool drm_scdc_set_scrambling(struct i2c_adapter *adapter, bool enable)
 
 	ret = drm_scdc_readb(adapter, SCDC_TMDS_CONFIG, &config);
 	if (ret < 0) {
-		DRM_ERROR("Failed to read tmds config, err=%d\n", ret);
+		DRM_DEBUG_KMS("Failed to read TMDS config: %d\n", ret);
 		return false;
 	}
 
@@ -181,7 +179,7 @@ bool drm_scdc_set_scrambling(struct i2c_adapter *adapter, bool enable)
 
 	ret = drm_scdc_writeb(adapter, SCDC_TMDS_CONFIG, config);
 	if (ret < 0) {
-		DRM_ERROR("Failed to enable scrambling, error %d\n", ret);
+		DRM_DEBUG_KMS("Failed to enable scrambling: %d\n", ret);
 		return false;
 	}
 
@@ -225,7 +223,7 @@ bool drm_scdc_set_high_tmds_clock_ratio(struct i2c_adapter *adapter, bool set)
 
 	ret = drm_scdc_readb(adapter, SCDC_TMDS_CONFIG, &config);
 	if (ret < 0) {
-		DRM_ERROR("Failed to read tmds config, err=%d\n", ret);
+		DRM_DEBUG_KMS("Failed to read TMDS config: %d\n", ret);
 		return false;
 	}
 
@@ -236,14 +234,14 @@ bool drm_scdc_set_high_tmds_clock_ratio(struct i2c_adapter *adapter, bool set)
 
 	ret = drm_scdc_writeb(adapter, SCDC_TMDS_CONFIG, config);
 	if (ret < 0) {
-		DRM_ERROR("Failed to set TMDS clock ratio, error %d\n", ret);
+		DRM_DEBUG_KMS("Failed to set TMDS clock ratio: %d\n", ret);
 		return false;
 	}
 
 	/*
 	 * The spec says that a source should wait minimum 1ms and maximum
 	 * 100ms after writing the TMDS config for clock ratio. Lets allow a
-	 * wait of upto 2ms here.
+	 * wait of up to 2ms here.
 	 */
 	usleep_range(1000, 2000);
 	return true;

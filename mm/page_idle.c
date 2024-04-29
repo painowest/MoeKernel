@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/init.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/fs.h>
 #include <linux/sysfs.h>
 #include <linux/kobject.h>
+#include <linux/memory_hotplug.h>
 #include <linux/mm.h>
 #include <linux/mmzone.h>
 #include <linux/pagemap.h>
@@ -30,24 +31,16 @@
  */
 static struct page *page_idle_get_page(unsigned long pfn)
 {
-	struct page *page;
-	struct zone *zone;
+	struct page *page = pfn_to_online_page(pfn);
 
-	if (!pfn_valid(pfn))
-		return NULL;
-
-	page = pfn_to_page(pfn);
 	if (!page || !PageLRU(page) ||
 	    !get_page_unless_zero(page))
 		return NULL;
 
-	zone = page_zone(page);
-	spin_lock_irq(zone_lru_lock(zone));
 	if (unlikely(!PageLRU(page))) {
 		put_page(page);
 		page = NULL;
 	}
-	spin_unlock_irq(zone_lru_lock(zone));
 	return page;
 }
 
@@ -95,10 +88,10 @@ static bool page_idle_clear_pte_refs_one(struct page *page,
 static void page_idle_clear_pte_refs(struct page *page)
 {
 	/*
-	 * Since rwc.arg is unused, rwc is effectively immutable, so we
-	 * can make it static const to save some cycles and stack.
+	 * Since rwc.try_lock is unused, rwc is effectively immutable, so we
+	 * can make it static to save some cycles and stack.
 	 */
-	static const struct rmap_walk_control rwc = {
+	static struct rmap_walk_control rwc = {
 		.rmap_one = page_idle_clear_pte_refs_one,
 		.anon_lock = page_lock_anon_vma_read,
 	};
@@ -201,7 +194,7 @@ static ssize_t page_idle_bitmap_write(struct file *file, struct kobject *kobj,
 }
 
 static struct bin_attribute page_idle_bitmap_attr =
-		__BIN_ATTR(bitmap, S_IRUSR | S_IWUSR,
+		__BIN_ATTR(bitmap, 0600,
 			   page_idle_bitmap_read, page_idle_bitmap_write, 0);
 
 static struct bin_attribute *page_idle_bin_attrs[] = {
@@ -213,16 +206,6 @@ static const struct attribute_group page_idle_attr_group = {
 	.bin_attrs = page_idle_bin_attrs,
 	.name = "page_idle",
 };
-
-#ifndef CONFIG_64BIT
-static bool need_page_idle(void)
-{
-	return true;
-}
-struct page_ext_operations page_idle_ops = {
-	.need = need_page_idle,
-};
-#endif
 
 static int __init page_idle_init(void)
 {

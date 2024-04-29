@@ -1,5 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0-only WITH Linux-syscall-note */
+/*
+ * Copyright (c) 2018, 2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
+ */
+
 #ifndef __QG_H__
 #define __QG_H__
+
+#include <linux/types.h>
 
 #define MAX_FIFO_LENGTH		16
 
@@ -21,7 +29,7 @@ enum qg {
 	QG_FULL_SOC,
 	QG_CLEAR_LEARNT_DATA,
 	QG_SYS_SOC,
-	QG_RESERVED_10,
+	QG_V_IBAT,
 	QG_MAX,
 };
 
@@ -34,6 +42,7 @@ enum qg {
 #define QG_FULL_SOC QG_FULL_SOC
 #define QG_CLEAR_LEARNT_DATA QG_CLEAR_LEARNT_DATA
 #define QG_SYS_SOC QG_SYS_SOC
+#define QG_V_IBAT QG_V_IBAT
 
 struct fifo_data {
 	unsigned int			v;
@@ -44,7 +53,7 @@ struct fifo_data {
 
 struct qg_param {
 	unsigned int			data;
-	bool				valid;
+	_Bool				valid;
 };
 
 struct qg_kernel_data {

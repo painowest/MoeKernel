@@ -1,17 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AFE4404 Heart Rate Monitors and Low-Cost Pulse Oximeters
  *
- * Copyright (C) 2015-2016 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2015-2016 Texas Instruments Incorporated - https://www.ti.com/
  *	Andrew F. Davis <afd@ti.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
  */
 
 #include <linux/device.h>
@@ -332,7 +324,6 @@ static const struct iio_info afe4404_iio_info = {
 	.attrs = &afe440x_attribute_group,
 	.read_raw = afe4404_read_raw,
 	.write_raw = afe4404_write_raw,
-	.driver_module = THIS_MODULE,
 };
 
 static irqreturn_t afe4404_trigger_handler(int irq, void *private)
@@ -359,7 +350,6 @@ err:
 }
 
 static const struct iio_trigger_ops afe4404_trigger_ops = {
-	.owner = THIS_MODULE,
 };
 
 /* Default timings from data-sheet */
@@ -531,7 +521,6 @@ static int afe4404_probe(struct i2c_client *client,
 	}
 
 	indio_dev->modes = INDIO_DIRECT_MODE;
-	indio_dev->dev.parent = afe->dev;
 	indio_dev->channels = afe4404_channels;
 	indio_dev->num_channels = ARRAY_SIZE(afe4404_channels);
 	indio_dev->name = AFE4404_DRIVER_NAME;
@@ -541,7 +530,7 @@ static int afe4404_probe(struct i2c_client *client,
 		afe->trig = devm_iio_trigger_alloc(afe->dev,
 						   "%s-dev%d",
 						   indio_dev->name,
-						   indio_dev->id);
+						   iio_device_id(indio_dev));
 		if (!afe->trig) {
 			dev_err(afe->dev, "Unable to allocate IIO trigger\n");
 			ret = -ENOMEM;
@@ -551,7 +540,6 @@ static int afe4404_probe(struct i2c_client *client,
 		iio_trigger_set_drvdata(afe->trig, indio_dev);
 
 		afe->trig->ops = &afe4404_trigger_ops;
-		afe->trig->dev.parent = afe->dev;
 
 		ret = iio_trigger_register(afe->trig);
 		if (ret) {

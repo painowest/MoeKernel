@@ -1,11 +1,8 @@
-/*
+/* SPDX-License-Identifier: GPL-2.0
+ *
  * include/asm-sh/spinlock-cas.h
  *
  * Copyright (C) 2015 SEI
- *
- * This file is subject to the terms and conditions of the GNU General Public
- * License.  See the file "COPYING" in the main directory of this archive
- * for more details.
  */
 #ifndef __ASM_SH_SPINLOCK_CAS_H
 #define __ASM_SH_SPINLOCK_CAS_H
@@ -51,18 +48,6 @@ static inline int arch_spin_trylock(arch_spinlock_t *lock)
  * needs to get a irq-safe write-lock, but readers can get non-irqsafe
  * read-locks.
  */
-
-/**
- * read_can_lock - would read_trylock() succeed?
- * @lock: the rwlock in question.
- */
-#define arch_read_can_lock(x)	((x)->lock > 0)
-
-/**
- * write_can_lock - would write_trylock() succeed?
- * @lock: the rwlock in question.
- */
-#define arch_write_can_lock(x)	((x)->lock == RW_LOCK_BIAS)
 
 static inline void arch_read_lock(arch_rwlock_t *rw)
 {

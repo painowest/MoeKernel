@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * AArch64 KGDB support
  *
@@ -5,18 +6,6 @@
  *
  * Copyright (C) 2013 Cavium Inc.
  * Author: Vijaya Kumar K <vijaya.kumar@caviumnetworks.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/bug.h>
@@ -28,6 +17,7 @@
 
 #include <asm/debug-monitors.h>
 #include <asm/insn.h>
+#include <asm/patching.h>
 #include <asm/traps.h>
 
 struct dbg_reg_def_t dbg_reg_def[DBG_MAX_REG_NUM] = {
@@ -138,14 +128,25 @@ int dbg_set_reg(int regno, void *mem, struct pt_regs *regs)
 void
 sleeping_thread_to_gdb_regs(unsigned long *gdb_regs, struct task_struct *task)
 {
-	struct pt_regs *thread_regs;
+	struct cpu_context *cpu_context = &task->thread.cpu_context;
 
 	/* Initialize to zero */
 	memset((char *)gdb_regs, 0, NUMREGBYTES);
-	thread_regs = task_pt_regs(task);
-	memcpy((void *)gdb_regs, (void *)thread_regs->regs, GP_REG_BYTES);
-	/* Special case for PSTATE (check comments in asm/kgdb.h for details) */
-	dbg_get_reg(33, gdb_regs + GP_REG_BYTES, thread_regs);
+
+	gdb_regs[19] = cpu_context->x19;
+	gdb_regs[20] = cpu_context->x20;
+	gdb_regs[21] = cpu_context->x21;
+	gdb_regs[22] = cpu_context->x22;
+	gdb_regs[23] = cpu_context->x23;
+	gdb_regs[24] = cpu_context->x24;
+	gdb_regs[25] = cpu_context->x25;
+	gdb_regs[26] = cpu_context->x26;
+	gdb_regs[27] = cpu_context->x27;
+	gdb_regs[28] = cpu_context->x28;
+	gdb_regs[29] = cpu_context->fp;
+
+	gdb_regs[31] = cpu_context->sp;
+	gdb_regs[32] = cpu_context->pc;
 }
 
 void kgdb_arch_set_pc(struct pt_regs *regs, unsigned long pc)
@@ -279,18 +280,6 @@ static struct step_hook kgdb_step_hook = {
 	.fn		= kgdb_step_brk_fn
 };
 
-static void kgdb_call_nmi_hook(void *ignored)
-{
-	kgdb_nmicallback(raw_smp_processor_id(), get_irq_regs());
-}
-
-void kgdb_roundup_cpus(unsigned long flags)
-{
-	local_irq_enable();
-	smp_call_function(kgdb_call_nmi_hook, NULL, 0);
-	local_irq_disable();
-}
-
 static int __kgdb_notify(struct die_args *args, unsigned long cmd)
 {
 	struct pt_regs *regs = args->regs;
@@ -352,7 +341,7 @@ void kgdb_arch_exit(void)
 	unregister_die_notifier(&kgdb_notifier);
 }
 
-struct kgdb_arch arch_kgdb_ops;
+const struct kgdb_arch arch_kgdb_ops;
 
 int kgdb_arch_set_breakpoint(struct kgdb_bkpt *bpt)
 {

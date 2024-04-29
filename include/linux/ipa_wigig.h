@@ -1,13 +1,6 @@
-/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _IPA_WIGIG_H_
@@ -46,10 +39,12 @@ struct ipa_wigig_init_in_params {
  *
  * @is_uC_ready: is uC ready. No API should be called until uC is ready.
  * @uc_db_pa: physical address of IPA uC doorbell
+ * @lan_rx_napi_enable: if we use NAPI in the LAN rx
  */
 struct ipa_wigig_init_out_params {
 	bool is_uc_ready;
 	phys_addr_t uc_db_pa;
+	bool lan_rx_napi_enable;
 };
 
 /*
@@ -250,7 +245,7 @@ struct ipa_wigig_conn_tx_in_params_smmu {
 	u8 client_mac[IPA_MAC_ADDR_SIZE];
 };
 
-#if defined CONFIG_IPA || defined CONFIG_IPA3
+#if IS_ENABLED(CONFIG_IPA3)
 
 /*
  * ipa_wigig_init - Client should call this function to
@@ -407,7 +402,7 @@ int ipa_wigig_tx_dp(enum ipa_client_type dst, struct sk_buff *skb);
  */
 int ipa_wigig_set_perf_profile(u32 max_supported_bw_mbps);
 
-#else /* (CONFIG_IPA || CONFIG_IPA3) */
+#else /* IS_ENABLED(CONFIG_IPA3) */
 static inline int ipa_wigig_init(struct ipa_wigig_init_in_params *in,
 	struct ipa_wigig_init_out_params *out)
 {
@@ -483,9 +478,9 @@ static inline int ipa_wigig_tx_dp(enum ipa_client_type dst,
 	return -EPERM;
 }
 
-int ipa_wigig_set_perf_profile(u32 max_supported_bw_mbps)
+static inline int ipa_wigig_set_perf_profile(u32 max_supported_bw_mbps)
 {
 	return -EPERM;
 }
-#endif /* CONFIG_IPA3 */
+#endif /* IS_ENABLED(CONFIG_IPA3) */
 #endif /* _IPA_WIGIG_H_ */

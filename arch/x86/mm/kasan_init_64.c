@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 #define DISABLE_BRANCH_PROFILING
 #define pr_fmt(fmt) "kasan: " fmt
-#include <linux/bootmem.h>
+
+/* cpu_feature_enabled() cannot be used this early */
+#define USE_EARLY_PGTABLE_L5
+
+#include <linux/memblock.h>
 #include <linux/kasan.h>
 #include <linux/kdebug.h>
 #include <linux/memblock.h>
@@ -14,21 +18,22 @@
 #include <asm/pgalloc.h>
 #include <asm/tlbflush.h>
 #include <asm/sections.h>
-#include <asm/pgtable.h>
 #include <asm/cpu_entry_area.h>
 
 extern struct range pfn_mapped[E820_MAX_ENTRIES];
 
-static p4d_t tmp_p4d_table[PTRS_PER_P4D] __initdata __aligned(PAGE_SIZE);
+static p4d_t tmp_p4d_table[MAX_PTRS_PER_P4D] __initdata __aligned(PAGE_SIZE);
 
-static __init void *early_alloc(size_t size, int nid, bool panic)
+static __init void *early_alloc(size_t size, int nid, bool should_panic)
 {
-	if (panic)
-		return memblock_virt_alloc_try_nid(size, size,
-			__pa(MAX_DMA_ADDRESS), BOOTMEM_ALLOC_ACCESSIBLE, nid);
-	else
-		return memblock_virt_alloc_try_nid_nopanic(size, size,
-			__pa(MAX_DMA_ADDRESS), BOOTMEM_ALLOC_ACCESSIBLE, nid);
+	void *ptr = memblock_alloc_try_nid(size, size,
+			__pa(MAX_DMA_ADDRESS), MEMBLOCK_ALLOC_ACCESSIBLE, nid);
+
+	if (!ptr && should_panic)
+		panic("%pS: Failed to allocate page, nid=%d from=%lx\n",
+		      (void *)_RET_IP_, nid, __pa(MAX_DMA_ADDRESS));
+
+	return ptr;
 }
 
 static void __init kasan_populate_pmd(pmd_t *pmd, unsigned long addr,
@@ -45,8 +50,7 @@ static void __init kasan_populate_pmd(pmd_t *pmd, unsigned long addr,
 			p = early_alloc(PMD_SIZE, nid, false);
 			if (p && pmd_set_huge(pmd, __pa(p), PAGE_KERNEL))
 				return;
-			else if (p)
-				memblock_free(__pa(p), PMD_SIZE);
+			memblock_free_ptr(p, PMD_SIZE);
 		}
 
 		p = early_alloc(PAGE_SIZE, nid, true);
@@ -82,8 +86,7 @@ static void __init kasan_populate_pud(pud_t *pud, unsigned long addr,
 			p = early_alloc(PUD_SIZE, nid, false);
 			if (p && pud_set_huge(pud, __pa(p), PAGE_KERNEL))
 				return;
-			else if (p)
-				memblock_free(__pa(p), PUD_SIZE);
+			memblock_free_ptr(p, PUD_SIZE);
 		}
 
 		p = early_alloc(PAGE_SIZE, nid, true);
@@ -176,10 +179,10 @@ static void __init clear_pgds(unsigned long start,
 		 * With folded p4d, pgd_clear() is nop, use p4d_clear()
 		 * instead.
 		 */
-		if (CONFIG_PGTABLE_LEVELS < 5)
-			p4d_clear(p4d_offset(pgd, start));
-		else
+		if (pgtable_l5_enabled())
 			pgd_clear(pgd);
+		else
+			p4d_clear(p4d_offset(pgd, start));
 	}
 
 	pgd = pgd_offset_k(start);
@@ -191,7 +194,7 @@ static inline p4d_t *early_p4d_offset(pgd_t *pgd, unsigned long addr)
 {
 	unsigned long p4d;
 
-	if (!IS_ENABLED(CONFIG_X86_5LEVEL))
+	if (!pgtable_l5_enabled())
 		return (p4d_t *)pgd;
 
 	p4d = pgd_val(*pgd) & PTE_PFN_MASK;
@@ -240,22 +243,48 @@ static void __init kasan_map_early_shadow(pgd_t *pgd)
 	} while (pgd++, addr = next, addr != end);
 }
 
-#ifdef CONFIG_KASAN_INLINE
-static int kasan_die_handler(struct notifier_block *self,
-			     unsigned long val,
-			     void *data)
+static void __init kasan_shallow_populate_p4ds(pgd_t *pgd,
+					       unsigned long addr,
+					       unsigned long end)
 {
-	if (val == DIE_GPF) {
-		pr_emerg("CONFIG_KASAN_INLINE enabled\n");
-		pr_emerg("GPF could be caused by NULL-ptr deref or user memory access\n");
-	}
-	return NOTIFY_OK;
+	p4d_t *p4d;
+	unsigned long next;
+	void *p;
+
+	p4d = p4d_offset(pgd, addr);
+	do {
+		next = p4d_addr_end(addr, end);
+
+		if (p4d_none(*p4d)) {
+			p = early_alloc(PAGE_SIZE, NUMA_NO_NODE, true);
+			p4d_populate(&init_mm, p4d, p);
+		}
+	} while (p4d++, addr = next, addr != end);
 }
 
-static struct notifier_block kasan_die_notifier = {
-	.notifier_call = kasan_die_handler,
-};
-#endif
+static void __init kasan_shallow_populate_pgds(void *start, void *end)
+{
+	unsigned long addr, next;
+	pgd_t *pgd;
+	void *p;
+
+	addr = (unsigned long)start;
+	pgd = pgd_offset_k(addr);
+	do {
+		next = pgd_addr_end(addr, (unsigned long)end);
+
+		if (pgd_none(*pgd)) {
+			p = early_alloc(PAGE_SIZE, NUMA_NO_NODE, true);
+			pgd_populate(&init_mm, pgd, p);
+		}
+
+		/*
+		 * we need to populate p4ds to be synced when running in
+		 * four level mode - see sync_global_pgds_l4()
+		 */
+		kasan_shallow_populate_p4ds(pgd, addr, next);
+	} while (pgd++, addr = next, addr != (unsigned long)end);
+}
 
 void __init kasan_early_init(void)
 {
@@ -266,6 +295,12 @@ void __init kasan_early_init(void)
 	pudval_t pud_val = __pa_nodebug(kasan_early_shadow_pmd) | _KERNPG_TABLE;
 	p4dval_t p4d_val = __pa_nodebug(kasan_early_shadow_pud) | _KERNPG_TABLE;
 
+	/* Mask out unsupported __PAGE_KERNEL bits: */
+	pte_val &= __default_kernel_pte_mask;
+	pmd_val &= __default_kernel_pte_mask;
+	pud_val &= __default_kernel_pte_mask;
+	p4d_val &= __default_kernel_pte_mask;
+
 	for (i = 0; i < PTRS_PER_PTE; i++)
 		kasan_early_shadow_pte[i] = __pte(pte_val);
 
@@ -275,7 +310,7 @@ void __init kasan_early_init(void)
 	for (i = 0; i < PTRS_PER_PUD; i++)
 		kasan_early_shadow_pud[i] = __pud(pud_val);
 
-	for (i = 0; IS_ENABLED(CONFIG_X86_5LEVEL) && i < PTRS_PER_P4D; i++)
+	for (i = 0; pgtable_l5_enabled() && i < PTRS_PER_P4D; i++)
 		kasan_early_shadow_p4d[i] = __p4d(p4d_val);
 
 	kasan_map_early_shadow(early_top_pgt);
@@ -286,10 +321,6 @@ void __init kasan_init(void)
 {
 	int i;
 	void *shadow_cpu_entry_begin, *shadow_cpu_entry_end;
-
-#ifdef CONFIG_KASAN_INLINE
-	register_die_notifier(&kasan_die_notifier);
-#endif
 
 	memcpy(early_top_pgt, init_top_pgt, sizeof(early_top_pgt));
 
@@ -306,7 +337,7 @@ void __init kasan_init(void)
 	 * bunch of things like kernel code, modules, EFI mapping, etc.
 	 * We need to take extra steps to not overwrite them.
 	 */
-	if (IS_ENABLED(CONFIG_X86_5LEVEL)) {
+	if (pgtable_l5_enabled()) {
 		void *ptr;
 
 		ptr = (void *)pgd_page_vaddr(*pgd_offset_k(KASAN_SHADOW_END));
@@ -343,6 +374,24 @@ void __init kasan_init(void)
 
 	kasan_populate_early_shadow(
 		kasan_mem_to_shadow((void *)PAGE_OFFSET + MAXMEM),
+		kasan_mem_to_shadow((void *)VMALLOC_START));
+
+	/*
+	 * If we're in full vmalloc mode, don't back vmalloc space with early
+	 * shadow pages. Instead, prepopulate pgds/p4ds so they are synced to
+	 * the global table and we can populate the lower levels on demand.
+	 */
+	if (IS_ENABLED(CONFIG_KASAN_VMALLOC))
+		kasan_shallow_populate_pgds(
+			kasan_mem_to_shadow((void *)VMALLOC_START),
+			kasan_mem_to_shadow((void *)VMALLOC_END));
+	else
+		kasan_populate_early_shadow(
+			kasan_mem_to_shadow((void *)VMALLOC_START),
+			kasan_mem_to_shadow((void *)VMALLOC_END));
+
+	kasan_populate_early_shadow(
+		kasan_mem_to_shadow((void *)VMALLOC_END + 1),
 		shadow_cpu_entry_begin);
 
 	kasan_populate_shadow((unsigned long)shadow_cpu_entry_begin,
@@ -368,7 +417,13 @@ void __init kasan_init(void)
 	 */
 	memset(kasan_early_shadow_page, 0, PAGE_SIZE);
 	for (i = 0; i < PTRS_PER_PTE; i++) {
-		pte_t pte = __pte(__pa(kasan_early_shadow_page) | __PAGE_KERNEL_RO | _PAGE_ENC);
+		pte_t pte;
+		pgprot_t prot;
+
+		prot = __pgprot(__PAGE_KERNEL_RO | _PAGE_ENC);
+		pgprot_val(prot) &= __default_kernel_pte_mask;
+
+		pte = __pte(__pa(kasan_early_shadow_page) | pgprot_val(prot));
 		set_pte(&kasan_early_shadow_pte[i], pte);
 	}
 	/* Flush TLBs again to be sure that write protection applied. */

@@ -1,13 +1,6 @@
-/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2018-2019, 2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/bitops.h>
@@ -25,6 +18,7 @@
 #include <linux/pwm.h>
 #include <linux/regmap.h>
 #include <linux/types.h>
+#include <linux/qpnp/qti-pwm.h>
 
 #define TRILED_REG_TYPE			0x04
 #define TRILED_REG_SUBTYPE		0x05
@@ -118,18 +112,24 @@ static int __tri_led_config_pwm(struct qpnp_led_dev *led,
 				struct pwm_setting *pwm)
 {
 	struct pwm_state pstate;
+	enum pwm_output_type output_type;
 	int rc;
 
 	pwm_get_state(led->pwm_dev, &pstate);
 	pstate.enabled = !!(pwm->duty_ns != 0);
 	pstate.period = pwm->period_ns;
 	pstate.duty_cycle = pwm->duty_ns;
-	pstate.output_type = led->led_setting.breath ?
+	output_type = led->led_setting.breath ?
 		PWM_OUTPUT_MODULATED : PWM_OUTPUT_FIXED;
-	/* Use default pattern in PWM device */
-	pstate.output_pattern = NULL;
-	rc = pwm_apply_state(led->pwm_dev, &pstate);
 
+	rc = qpnp_lpg_pwm_set_output_type(led->pwm_dev, output_type);
+	if (rc < 0) {
+		dev_err(led->chip->dev, "Set output_type for %s led failed, rc=%d\n",
+			led->cdev.name, rc);
+		return rc;
+	}
+
+	rc = pwm_apply_state(led->pwm_dev, &pstate);
 	if (rc < 0)
 		dev_err(led->chip->dev, "Apply PWM state for %s led failed, rc=%d\n",
 					led->cdev.name, rc);
@@ -362,7 +362,7 @@ static ssize_t breath_show(struct device *dev, struct device_attribute *attr,
 	struct qpnp_led_dev *led =
 		container_of(led_cdev, struct qpnp_led_dev, cdev);
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", led->led_setting.breath);
+	return scnprintf(buf, PAGE_SIZE, "%d\n", led->led_setting.breath);
 }
 
 static ssize_t breath_store(struct device *dev, struct device_attribute *attr,
@@ -397,7 +397,7 @@ unlock:
 	return (rc < 0) ? rc : count;
 }
 
-static DEVICE_ATTR(breath, 0644, breath_show, breath_store);
+static DEVICE_ATTR_RW(breath);
 static const struct attribute *breath_attrs[] = {
 	&dev_attr_breath.attr,
 	NULL
@@ -418,7 +418,6 @@ static int qpnp_tri_led_register(struct qpnp_tri_led_chip *chip)
 		led->cdev.blink_set = qpnp_tri_led_set_blink;
 		led->cdev.default_trigger = led->default_trigger;
 		led->cdev.brightness = LED_OFF;
-		led->cdev.flags |= LED_KEEP_TRIGGER;
 
 		rc = devm_led_classdev_register(chip->dev, &led->cdev);
 		if (rc < 0) {
@@ -427,8 +426,8 @@ static int qpnp_tri_led_register(struct qpnp_tri_led_chip *chip)
 			goto err_out;
 		}
 
-		if (pwm_get_output_type_supported(led->pwm_dev)
-				& PWM_OUTPUT_MODULATED) {
+		rc = qpnp_lpg_pwm_get_output_types_supported(led->pwm_dev);
+		if (rc > 0 && (rc & PWM_OUTPUT_MODULATED)) {
 			rc = sysfs_create_files(&led->cdev.dev->kobj,
 					breath_attrs);
 			if (rc < 0) {
@@ -586,7 +585,8 @@ static int qpnp_tri_led_probe(struct platform_device *pdev)
 
 	rc = qpnp_tri_led_parse_dt(chip);
 	if (rc < 0) {
-		dev_err(chip->dev, "Devicetree properties parsing failed, rc=%d\n",
+		if (rc != -EPROBE_DEFER)
+			dev_err(chip->dev, "Devicetree properties parsing failed, rc=%d\n",
 								rc);
 		return rc;
 	}
@@ -638,7 +638,7 @@ static const struct of_device_id qpnp_tri_led_of_match[] = {
 
 static struct platform_driver qpnp_tri_led_driver = {
 	.driver		= {
-		.name		= "qcom,tri-led",
+		.name		= "leds-qti-tri-led",
 		.of_match_table	= qpnp_tri_led_of_match,
 	},
 	.probe		= qpnp_tri_led_probe,
@@ -648,4 +648,4 @@ module_platform_driver(qpnp_tri_led_driver);
 
 MODULE_DESCRIPTION("QTI TRI_LED driver");
 MODULE_LICENSE("GPL v2");
-MODULE_ALIAS("leds:qpnp-tri-led");
+MODULE_SOFTDEP("pre: pwm-qti-lpg");

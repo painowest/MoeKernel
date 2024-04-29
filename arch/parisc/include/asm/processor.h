@@ -20,17 +20,6 @@
 #include <asm/percpu.h>
 #endif /* __ASSEMBLY__ */
 
-/*
- * Default implementation of macro that returns current
- * instruction pointer ("program counter").
- */
-#ifdef CONFIG_PA20
-#define current_ia(x)	__asm__("mfia %0" : "=r"(x))
-#else /* mfia added in pa2.0 */
-#define current_ia(x)	__asm__("blr 0,%0\n\tnop" : "=r"(x))
-#endif
-#define current_text_addr() ({ void *pc; current_ia(pc); pc; })
-
 #define HAVE_ARCH_PICK_MMAP_LAYOUT
 
 #define TASK_SIZE_OF(tsk)       ((tsk)->thread.task_size)
@@ -56,14 +45,11 @@
 #define STACK_TOP	TASK_SIZE
 #define STACK_TOP_MAX	DEFAULT_TASK_SIZE
 
-/* Allow bigger stacks for 64-bit processes */
-#define STACK_SIZE_MAX	(USER_WIDE_MODE					\
-			 ? (1 << 30)	/* 1 GB */			\
-			 : (CONFIG_MAX_STACK_SIZE_MB*1024*1024))
-
 #endif
 
 #ifndef __ASSEMBLY__
+
+unsigned long calc_max_stack_size(unsigned long stack_max);
 
 /*
  * Data detected about CPUs at boot time which is the same for all CPU's.
@@ -114,10 +100,6 @@ extern struct system_cpuinfo_parisc boot_cpu_data;
 DECLARE_PER_CPU(struct cpuinfo_parisc, cpu_data);
 
 #define CPU_HVERSION ((boot_cpu_data.hversion >> 4) & 0x0FFF)
-
-typedef struct {
-	int seg;  
-} mm_segment_t;
 
 #define ARCH_MIN_TASKALIGN	8
 
@@ -255,11 +237,7 @@ on downward growing arches, it looks like this:
  * it in here from the current->personality
  */
 
-#ifdef CONFIG_64BIT
-#define USER_WIDE_MODE	(!test_thread_flag(TIF_32BIT))
-#else
-#define USER_WIDE_MODE	0
-#endif
+#define USER_WIDE_MODE	(!is_32bit_task())
 
 #define start_thread(regs, new_pc, new_sp) do {		\
 	elf_addr_t *sp = (elf_addr_t *)new_sp;		\
@@ -290,7 +268,6 @@ on downward growing arches, it looks like this:
 	regs->gr[23] = 0;				\
 } while(0)
 
-struct task_struct;
 struct mm_struct;
 
 /* Free all resources held by a thread. */

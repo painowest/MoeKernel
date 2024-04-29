@@ -1,13 +1,7 @@
-/* Copyright (c) 2016-2019 The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt)	"Qnovo: %s: " fmt, __func__
@@ -22,6 +16,10 @@
 #include <linux/of_irq.h>
 #include <linux/pmic-voter.h>
 #include <linux/delay.h>
+#include <linux/pinctrl/consumer.h>
+
+#include "smb5-lib.h"
+#include "smb5-iio.h"
 
 #define QNOVO_PE_CTRL			0x45
 #define QNOVO_PTRAIN_EN_BIT		BIT(7)
@@ -78,12 +76,10 @@
 #define DRV_MAJOR_VERSION	1
 #define DRV_MINOR_VERSION	1
 
-#define USER_VOTER		"user_voter"
 #define SHUTDOWN_VOTER		"user_voter"
 #define OK_TO_QNOVO_VOTER	"ok_to_qnovo_voter"
 #define HW_OK_TO_QNOVO_VOTER	"HW_OK_TO_QNOVO_VOTER"
 
-#define QNOVO_VOTER		"qnovo_voter"
 #define QNOVO_OVERALL_VOTER	"QNOVO_OVERALL_VOTER"
 #define QNI_PT_VOTER		"QNI_PT_VOTER"
 
@@ -127,16 +123,15 @@ struct qnovo {
 	struct votable		*not_ok_to_qnovo_votable;
 	struct votable		*chg_ready_votable;
 	struct votable		*awake_votable;
+	struct votable		*cp_disable_votable;
 	struct work_struct	status_change_work;
 	struct delayed_work	usb_debounce_work;
 	int			base;
 	int			fv_uV_request;
 	int			fcc_uA_request;
 	int			usb_present;
+	struct smb_charger	chg;
 };
-
-static int debug_mask;
-module_param_named(debug_mask, debug_mask, int, 0600);
 
 #define qnovo_dbg(chip, reason, fmt, ...)				\
 	do {								\
@@ -185,17 +180,17 @@ static bool is_usb_available(struct qnovo *chip)
 
 static int qnovo_batt_psy_update(struct qnovo *chip, bool disable)
 {
-	union power_supply_propval pval = {0};
+	struct smb_charger *chg = &chip->chg;
+	int val;
 	int rc = 0;
 
 	if (!is_batt_available(chip))
 		return -EINVAL;
 
 	if (chip->fv_uV_request != -EINVAL) {
-		pval.intval = disable ? -EINVAL : chip->fv_uV_request;
-		rc = power_supply_set_property(chip->batt_psy,
-			POWER_SUPPLY_PROP_VOLTAGE_QNOVO,
-			&pval);
+		val = disable ? -EINVAL : chip->fv_uV_request;
+		rc = smb5_iio_set_prop(chg, PSY_IIO_VOLTAGE_QNOVO,
+			val);
 		if (rc < 0) {
 			pr_err("Couldn't set prop qnovo_fv rc = %d\n", rc);
 			return -EINVAL;
@@ -203,10 +198,9 @@ static int qnovo_batt_psy_update(struct qnovo *chip, bool disable)
 	}
 
 	if (chip->fcc_uA_request != -EINVAL) {
-		pval.intval = disable ? -EINVAL : chip->fcc_uA_request;
-		rc = power_supply_set_property(chip->batt_psy,
-			POWER_SUPPLY_PROP_CURRENT_QNOVO,
-			&pval);
+		val = disable ? -EINVAL : chip->fcc_uA_request;
+		rc = smb5_iio_set_prop(chg, PSY_IIO_CURRENT_QNOVO,
+			val);
 		if (rc < 0) {
 			pr_err("Couldn't set prop qnovo_fcc rc = %d\n", rc);
 			return -EINVAL;
@@ -312,7 +306,7 @@ static int qnovo5_parse_dt(struct qnovo *chip)
 
 	chip->pinctrl = devm_pinctrl_get(chip->dev);
 	if (IS_ERR(chip->pinctrl)) {
-		pr_err("Couldn't get pinctrl rc=%d\n", PTR_ERR(chip->pinctrl));
+		pr_err("Couldn't get pinctrl rc=%ld\n", PTR_ERR(chip->pinctrl));
 		chip->pinctrl = NULL;
 	}
 
@@ -342,6 +336,7 @@ enum {
 	OK_TO_QNOVO,
 	QNOVO_ENABLE,
 	PT_ENABLE,
+	STANDALONE,
 	FV_REQUEST,
 	FCC_REQUEST,
 	PE_CTRL_REG,
@@ -663,7 +658,7 @@ static int __find_attr_idx(struct attribute *attr)
 static ssize_t version_show(struct class *c, struct class_attribute *attr,
 			char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, "%d.%d\n",
+	return scnprintf(buf, PAGE_SIZE, "%d.%d\n",
 			DRV_MAJOR_VERSION, DRV_MINOR_VERSION);
 }
 static CLASS_ATTR_RO(version);
@@ -672,9 +667,17 @@ static ssize_t ok_to_qnovo_show(struct class *c, struct class_attribute *attr,
 			char *buf)
 {
 	struct qnovo *chip = container_of(c, struct qnovo, qnovo_class);
-	int val = get_effective_result(chip->not_ok_to_qnovo_votable);
+	int val, cp_dis, not_ok =
+		get_effective_result(chip->not_ok_to_qnovo_votable);
+	struct votable *cp_disable_votable = find_votable("CP_DISABLE");
 
-	return snprintf(buf, PAGE_SIZE, "%d\n", !val);
+	val = !not_ok;
+	if (cp_disable_votable) {
+		cp_dis = get_effective_result(cp_disable_votable);
+		val = val && cp_dis;
+	}
+
+	return scnprintf(buf, PAGE_SIZE, "%d\n", val);
 }
 static CLASS_ATTR_RO(ok_to_qnovo);
 
@@ -684,7 +687,7 @@ static ssize_t qnovo_enable_show(struct class *c, struct class_attribute *attr,
 	struct qnovo *chip = container_of(c, struct qnovo, qnovo_class);
 	int val = get_effective_result(chip->disable_votable);
 
-	return snprintf(ubuf, PAGE_SIZE, "%d\n", !val);
+	return scnprintf(ubuf, PAGE_SIZE, "%d\n", !val);
 }
 
 static ssize_t qnovo_enable_store(struct class *c, struct class_attribute *attr,
@@ -708,7 +711,7 @@ static ssize_t pt_enable_show(struct class *c, struct class_attribute *attr,
 	struct qnovo *chip = container_of(c, struct qnovo, qnovo_class);
 	int val = get_effective_result(chip->pt_dis_votable);
 
-	return snprintf(ubuf, PAGE_SIZE, "%d\n", !val);
+	return scnprintf(ubuf, PAGE_SIZE, "%d\n", !val);
 }
 
 static ssize_t pt_enable_store(struct class *c, struct class_attribute *attr,
@@ -727,6 +730,38 @@ static ssize_t pt_enable_store(struct class *c, struct class_attribute *attr,
 }
 static CLASS_ATTR_RW(pt_enable);
 
+static ssize_t standalone_show(struct class *c, struct class_attribute *attr,
+			char *ubuf)
+{
+	int val;
+	struct votable *cp_disable_votable = find_votable("CP_DISABLE");
+
+	if (!cp_disable_votable)
+		return -ENODEV;
+
+	val = get_client_vote(cp_disable_votable, QNOVO_VOTER);
+
+	return scnprintf(ubuf, PAGE_SIZE, "%d\n", val);
+}
+
+static ssize_t standalone_store(struct class *c, struct class_attribute *attr,
+			const char *ubuf, size_t count)
+{
+	unsigned long val;
+	struct votable *cp_disable_votable;
+
+	if (kstrtoul(ubuf, 0, &val))
+		return -EINVAL;
+
+	cp_disable_votable = find_votable("CP_DISABLE");
+	if (!cp_disable_votable)
+		return -ENODEV;
+
+	vote(cp_disable_votable, QNOVO_VOTER, !!val, 0);
+
+	return count;
+}
+static CLASS_ATTR_RW(standalone);
 
 static ssize_t val_show(struct class *c, struct class_attribute *attr,
 			char *ubuf)
@@ -745,7 +780,7 @@ static ssize_t val_show(struct class *c, struct class_attribute *attr,
 	if (i == FCC_REQUEST)
 		val = chip->fcc_uA_request;
 
-	return snprintf(ubuf, PAGE_SIZE, "%d\n", val);
+	return scnprintf(ubuf, PAGE_SIZE, "%d\n", val);
 }
 
 static ssize_t val_store(struct class *c, struct class_attribute *attr,
@@ -793,7 +828,7 @@ static ssize_t reg_show(struct class *c, struct class_attribute *attr,
 	}
 	regval = buf[1] << 8 | buf[0];
 
-	return snprintf(ubuf, PAGE_SIZE, "0x%04x\n", regval);
+	return scnprintf(ubuf, PAGE_SIZE, "0x%04x\n", regval);
 }
 
 static ssize_t reg_store(struct class *c, struct class_attribute *attr,
@@ -846,11 +881,11 @@ static ssize_t time_show(struct class *c, struct class_attribute *attr,
 			/ params[i].reg_to_unit_divider)
 		- params[i].reg_to_unit_offset;
 
-	return snprintf(ubuf, PAGE_SIZE, "%d\n", val);
+	return scnprintf(ubuf, PAGE_SIZE, "%d\n", val);
 }
 
 static ssize_t time_store(struct class *c, struct class_attribute *attr,
-		       const char *ubuf, size_t count)
+			   const char *ubuf, size_t count)
 {
 	struct qnovo *chip = container_of(c, struct qnovo, qnovo_class);
 	u8 buf[2] = {0, 0};
@@ -912,11 +947,11 @@ static ssize_t current_show(struct class *c, struct class_attribute *attr,
 
 	regval_uA = div_s64(regval_nA, 1000);
 
-	return snprintf(ubuf, PAGE_SIZE, "%d\n", regval_uA);
+	return scnprintf(ubuf, PAGE_SIZE, "%d\n", regval_uA);
 }
 
 static ssize_t current_store(struct class *c, struct class_attribute *attr,
-		       const char *ubuf, size_t count)
+			   const char *ubuf, size_t count)
 {
 	struct qnovo *chip = container_of(c, struct qnovo, qnovo_class);
 	u8 buf[2] = {0, 0};
@@ -978,11 +1013,11 @@ static ssize_t voltage_show(struct class *c, struct class_attribute *attr,
 
 	regval_uV = div_s64(regval_nV, 1000);
 
-	return snprintf(ubuf, PAGE_SIZE, "%d\n", regval_uV);
+	return scnprintf(ubuf, PAGE_SIZE, "%d\n", regval_uV);
 }
 
 static ssize_t voltage_store(struct class *c, struct class_attribute *attr,
-		       const char *ubuf, size_t count)
+			   const char *ubuf, size_t count)
 {
 	struct qnovo *chip = container_of(c, struct qnovo, qnovo_class);
 	u8 buf[2] = {0, 0};
@@ -1043,7 +1078,7 @@ static ssize_t batt_prop_show(struct class *c, struct class_attribute *attr,
 		return -EINVAL;
 	}
 
-	return snprintf(ubuf, PAGE_SIZE, "%d\n", pval.intval);
+	return scnprintf(ubuf, PAGE_SIZE, "%d\n", pval.intval);
 }
 
 CLASS_ATTR_IDX_RW(fv_uV_request, val);
@@ -1084,6 +1119,7 @@ static struct attribute *qnovo_class_attrs[] = {
 	[OK_TO_QNOVO]		= &class_attr_ok_to_qnovo.attr,
 	[QNOVO_ENABLE]		= &class_attr_qnovo_enable.attr,
 	[PT_ENABLE]		= &class_attr_pt_enable.attr,
+	[STANDALONE]		= &class_attr_standalone.attr,
 	[FV_REQUEST]		= &class_attr_fv_uV_request.attr,
 	[FCC_REQUEST]		= &class_attr_fcc_uA_request.attr,
 	[PE_CTRL_REG]		= &class_attr_PE_CTRL_REG.attr,
@@ -1137,6 +1173,7 @@ static void status_change_work(struct work_struct *work)
 	union power_supply_propval pval;
 	bool usb_present = false, hw_ok_to_qnovo = false;
 	int rc, battery_health, charge_status;
+	struct votable *cp_disable_votable = find_votable("CP_DISABLE");
 
 	if (is_usb_available(chip)) {
 		rc = power_supply_get_property(chip->usb_psy,
@@ -1150,6 +1187,9 @@ static void status_change_work(struct work_struct *work)
 		cancel_delayed_work_sync(&chip->usb_debounce_work);
 		vote(chip->awake_votable, USB_READY_VOTER, false, 0);
 		vote(chip->chg_ready_votable, USB_READY_VOTER, false, 0);
+		if (cp_disable_votable)
+			vote(cp_disable_votable, QNOVO_VOTER, false, 0);
+
 		if (chip->pinctrl) {
 			rc = pinctrl_select_state(chip->pinctrl,
 					chip->pinctrl_state1);
@@ -1456,7 +1496,6 @@ static const struct of_device_id match_table[] = {
 static struct platform_driver qnovo5_driver = {
 	.driver		= {
 		.name		= "qcom,qnovo5-driver",
-		.owner		= THIS_MODULE,
 		.of_match_table	= match_table,
 	},
 	.probe		= qnovo5_probe,

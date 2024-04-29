@@ -1,22 +1,18 @@
-/* Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include "hab.h"
+
+#define CREATE_TRACE_POINTS
+#include "hab_trace_os.h"
 
 #define HAB_DEVICE_CNSTR(__name__, __id__, __num__) { \
 	.name = __name__,\
 	.id = __id__,\
 	.pchannels = LIST_HEAD_INIT(hab_devices[__num__].pchannels),\
-	.pchan_lock = __SPIN_LOCK_UNLOCKED(hab_devices[__num__].pchan_lock),\
+	.pchan_lock = __RW_LOCK_UNLOCKED(hab_devices[__num__].pchan_lock),\
 	.openq_list = LIST_HEAD_INIT(hab_devices[__num__].openq_list),\
 	.openlock = __SPIN_LOCK_UNLOCKED(&hab_devices[__num__].openlock)\
 	}
@@ -43,15 +39,21 @@ static struct hab_device hab_devices[] = {
 	HAB_DEVICE_CNSTR(DEVICE_GFX_NAME, MM_GFX, 11),
 	HAB_DEVICE_CNSTR(DEVICE_VID_NAME, MM_VID, 12),
 	HAB_DEVICE_CNSTR(DEVICE_VID2_NAME, MM_VID_2, 13),
-	HAB_DEVICE_CNSTR(DEVICE_MISC_NAME, MM_MISC, 14),
-	HAB_DEVICE_CNSTR(DEVICE_QCPE1_NAME, MM_QCPE_VM1, 15),
-	HAB_DEVICE_CNSTR(DEVICE_CLK1_NAME, MM_CLK_VM1, 16),
-	HAB_DEVICE_CNSTR(DEVICE_CLK2_NAME, MM_CLK_VM2, 17),
-	HAB_DEVICE_CNSTR(DEVICE_FDE1_NAME, MM_FDE_1, 18),
-	HAB_DEVICE_CNSTR(DEVICE_BUFFERQ1_NAME, MM_BUFFERQ_1, 19),
-	HAB_DEVICE_CNSTR(DEVICE_DATA1_NAME, MM_DATA_NETWORK_1, 20),
-	HAB_DEVICE_CNSTR(DEVICE_DATA2_NAME, MM_DATA_NETWORK_2, 21),
-	HAB_DEVICE_CNSTR(DEVICE_HSI2S1_NAME, MM_HSI2S_1, 22),
+	HAB_DEVICE_CNSTR(DEVICE_VID3_NAME, MM_VID_3, 14),
+	HAB_DEVICE_CNSTR(DEVICE_MISC_NAME, MM_MISC, 15),
+	HAB_DEVICE_CNSTR(DEVICE_QCPE1_NAME, MM_QCPE_VM1, 16),
+	HAB_DEVICE_CNSTR(DEVICE_CLK1_NAME, MM_CLK_VM1, 17),
+	HAB_DEVICE_CNSTR(DEVICE_CLK2_NAME, MM_CLK_VM2, 18),
+	HAB_DEVICE_CNSTR(DEVICE_FDE1_NAME, MM_FDE_1, 19),
+	HAB_DEVICE_CNSTR(DEVICE_BUFFERQ1_NAME, MM_BUFFERQ_1, 20),
+	HAB_DEVICE_CNSTR(DEVICE_DATA1_NAME, MM_DATA_NETWORK_1, 21),
+	HAB_DEVICE_CNSTR(DEVICE_DATA2_NAME, MM_DATA_NETWORK_2, 22),
+	HAB_DEVICE_CNSTR(DEVICE_HSI2S1_NAME, MM_HSI2S_1, 23),
+	HAB_DEVICE_CNSTR(DEVICE_XVM1_NAME, MM_XVM_1, 24),
+	HAB_DEVICE_CNSTR(DEVICE_XVM2_NAME, MM_XVM_2, 25),
+	HAB_DEVICE_CNSTR(DEVICE_XVM3_NAME, MM_XVM_3, 26),
+	HAB_DEVICE_CNSTR(DEVICE_VNW1_NAME, MM_VNW_1, 27),
+	HAB_DEVICE_CNSTR(DEVICE_EXT1_NAME, MM_EXT_1, 28),
 };
 
 struct hab_driver hab_driver = {
@@ -61,6 +63,9 @@ struct hab_driver hab_driver = {
 	.drvlock = __SPIN_LOCK_UNLOCKED(hab_driver.drvlock),
 	.imp_list = LIST_HEAD_INIT(hab_driver.imp_list),
 	.imp_lock = __SPIN_LOCK_UNLOCKED(hab_driver.imp_lock),
+	.hab_init_success = 0,
+	.reclaim_list = LIST_HEAD_INIT(hab_driver.reclaim_list),
+	.reclaim_lock = __SPIN_LOCK_UNLOCKED(hab_driver.reclaim_lock),
 };
 
 struct uhab_context *hab_ctx_alloc(int kernel)
@@ -79,6 +84,10 @@ struct uhab_context *hab_ctx_alloc(int kernel)
 	INIT_LIST_HEAD(&ctx->exp_rxq);
 	init_waitqueue_head(&ctx->exp_wq);
 	spin_lock_init(&ctx->expq_lock);
+
+	INIT_LIST_HEAD(&ctx->imp_rxq);
+	init_waitqueue_head(&ctx->imp_wq);
+	spin_lock_init(&ctx->impq_lock);
 
 	spin_lock_init(&ctx->imp_lock);
 	rwlock_init(&ctx->exp_lock);
@@ -106,29 +115,55 @@ struct uhab_context *hab_ctx_alloc(int kernel)
 	return ctx;
 }
 
-/* ctx can only be freed when all the vchan releases the refcnt */
-void hab_ctx_free(struct kref *ref)
+/*
+ * This function might sleep. One scenario (only applicable for Linux)
+ * is as below, hab_ctx_free_fn->habmem_remove_export->habmem_export_put
+ * ->habmem_export_destroy->habmem_exp_release,
+ * where dma_buf_unmap_attachment() & dma_buf_detach() might sleep.
+ */
+void hab_ctx_free_fn(struct uhab_context *ctx)
 {
-	struct uhab_context *ctx =
-		container_of(ref, struct uhab_context, refcount);
-	struct hab_export_ack_recvd *ack_recvd, *tmp;
+	struct hab_export_ack_recvd *exp_ack_recvd, *expack_tmp;
+	struct hab_import_ack_recvd *imp_ack_recvd, *impack_tmp;
 	struct virtual_channel *vchan;
 	struct physical_channel *pchan;
 	int i;
 	struct uhab_context *ctxdel, *ctxtmp;
-	struct hab_open_node *node;
+	struct hab_open_node *open_node;
 	struct export_desc *exp = NULL, *exp_tmp = NULL;
+	struct export_desc_super *exp_super = NULL;
+	int irqs_disabled = irqs_disabled();
+	struct hab_header header = HAB_HEADER_INITIALIZER;
+	int ret = 0;
 
 	/* garbage-collect exp/imp buffers */
-	write_lock_bh(&ctx->exp_lock);
+	write_lock(&ctx->exp_lock);
 	list_for_each_entry_safe(exp, exp_tmp, &ctx->exp_whse, node) {
 		list_del(&exp->node);
-		pr_debug("potential leak exp %d vcid %X recovered\n",
-				exp->export_id, exp->vcid_local);
-		habmem_hyp_revoke(exp->payload, exp->payload_count);
-		habmem_remove_export(exp);
+		exp_super = container_of(exp, struct export_desc_super, exp);
+		if ((exp_super->remote_imported != 0) && (exp->pchan->mem_proto == 1)) {
+			pr_warn("exp id %d still imported on remote side on pchan %s\n",
+				exp->export_id, exp->pchan->name);
+			hab_spin_lock(&hab_driver.reclaim_lock, irqs_disabled);
+			list_add_tail(&exp->node, &hab_driver.reclaim_list);
+			hab_spin_unlock(&hab_driver.reclaim_lock, irqs_disabled);
+			schedule_work(&hab_driver.reclaim_work);
+		} else {
+			pr_debug("potential leak exp %d vcid %X recovered\n",
+					exp->export_id, exp->vcid_local);
+			habmem_hyp_revoke(exp->payload, exp->payload_count);
+			write_unlock(&ctx->exp_lock);
+
+			pchan = exp->pchan;
+			hab_spin_lock(&pchan->expid_lock, irqs_disabled);
+			idr_remove(&pchan->expid_idr, exp->export_id);
+			hab_spin_unlock(&pchan->expid_lock, irqs_disabled);
+
+			habmem_remove_export(exp);
+			write_lock(&ctx->exp_lock);
+		}
 	}
-	write_unlock_bh(&ctx->exp_lock);
+	write_unlock(&ctx->exp_lock);
 
 	spin_lock_bh(&ctx->imp_lock);
 	list_for_each_entry_safe(exp, exp_tmp, &ctx->imp_whse, node) {
@@ -137,16 +172,46 @@ void hab_ctx_free(struct kref *ref)
 		pr_debug("leaked imp %d vcid %X for ctx is collected total %d\n",
 			exp->export_id, exp->vcid_local,
 			ctx->import_total);
-		habmm_imp_hyp_unmap(ctx->import_ctx, exp, ctx->kernel);
-		kfree(exp);
+		ret = habmm_imp_hyp_unmap(ctx->import_ctx, exp, ctx->kernel);
+		if (exp->pchan->mem_proto == 1) {
+			if (!ret) {
+				pr_warn("unimp msg sent for exp id %u on %s\n",
+					exp->export_id, exp->pchan->name);
+				HAB_HEADER_SET_TYPE(header, HAB_PAYLOAD_TYPE_UNIMPORT);
+				HAB_HEADER_SET_SIZE(header, sizeof(uint32_t));
+				HAB_HEADER_SET_ID(header, HAB_VCID_UNIMPORT);
+				HAB_HEADER_SET_SESSION_ID(header, HAB_SESSIONID_UNIMPORT);
+				ret = physical_channel_send(exp->pchan, &header, &exp->export_id,
+						HABMM_SOCKET_SEND_FLAGS_NON_BLOCKING);
+				if (ret != 0)
+					pr_err("failed to send unimp msg %d, vcid %d, exp id %d\n",
+						ret, exp->vcid_local, exp->export_id);
+			} else
+				pr_err("exp id %d unmap fail on vcid %X\n",
+					exp->export_id, exp->vcid_local);
+		}
+		exp_super = container_of(exp, struct export_desc_super, exp);
+		kfree(exp_super);
 	}
 	spin_unlock_bh(&ctx->imp_lock);
 
 	habmem_imp_hyp_close(ctx->import_ctx, ctx->kernel);
 
-	list_for_each_entry_safe(ack_recvd, tmp, &ctx->exp_rxq, node) {
-		list_del(&ack_recvd->node);
-		kfree(ack_recvd);
+	/*
+	 * Below rxq only used when vchan is alive. At this moment, it is safe without
+	 * holding lock as all vchans in this ctx have been freed.
+	 * Only one of the rx queues is used decided by the mem protocol. It cannot be
+	 * queried from pchan gracefully if above two warehouses are empty.
+	 * So both queues are always checked to decrease the code complexity.
+	 */
+	list_for_each_entry_safe(imp_ack_recvd, impack_tmp, &ctx->imp_rxq, node) {
+		list_del(&imp_ack_recvd->node);
+		kfree(imp_ack_recvd);
+	}
+
+	list_for_each_entry_safe(exp_ack_recvd, expack_tmp, &ctx->exp_rxq, node) {
+		list_del(&exp_ack_recvd->node);
+		kfree(exp_ack_recvd);
 	}
 
 	/* walk vchan list to find the leakage */
@@ -162,37 +227,38 @@ void hab_ctx_free(struct kref *ref)
 			ctx->kernel, ctx->closing, ctx->owner);
 
 	/* check vchans in this ctx */
-	write_lock_bh(&ctx->ctx_lock);
+	read_lock(&ctx->ctx_lock);
 	list_for_each_entry(vchan, &ctx->vchannels, node) {
 		pr_warn("leak vchan id %X cnt %X remote %d in ctx\n",
 				vchan->id, get_refcnt(vchan->refcount),
 				vchan->otherend_id);
 	}
-	write_unlock_bh(&ctx->ctx_lock);
+	read_unlock(&ctx->ctx_lock);
 
 	/* check pending open */
 	if (ctx->pending_cnt)
 		pr_warn("potential leak of pendin_open nodes %d\n",
 			ctx->pending_cnt);
 
-	write_lock_bh(&ctx->ctx_lock);
-	list_for_each_entry(node, &ctx->pending_open, node) {
+	read_lock(&ctx->ctx_lock);
+	list_for_each_entry(open_node, &ctx->pending_open, node) {
 		pr_warn("leak pending open vcid %X type %d subid %d openid %d\n",
-			node->request.xdata.vchan_id, node->request.type,
-			node->request.xdata.sub_id,
-			node->request.xdata.open_id);
+			open_node->request.xdata.vchan_id,
+			open_node->request.type,
+			open_node->request.xdata.sub_id,
+			open_node->request.xdata.open_id);
 	}
-	write_unlock_bh(&ctx->ctx_lock);
+	read_unlock(&ctx->ctx_lock);
 
 	/* check vchans belong to this ctx in all hab/mmid devices */
 	for (i = 0; i < hab_driver.ndevices; i++) {
 		struct hab_device *habdev = &hab_driver.devp[i];
 
-		spin_lock_bh(&habdev->pchan_lock);
+		read_lock_bh(&habdev->pchan_lock);
 		list_for_each_entry(pchan, &habdev->pchannels, node) {
 
 			/* check vchan ctx owner */
-			write_lock(&pchan->vchans_lock);
+			read_lock(&pchan->vchans_lock);
 			list_for_each_entry(vchan, &pchan->vchannels, pnode) {
 				if (vchan->ctx == ctx) {
 					pr_warn("leak vcid %X cnt %d pchan %s local %d remote %d\n",
@@ -202,11 +268,16 @@ void hab_ctx_free(struct kref *ref)
 						pchan->vmid_remote);
 				}
 			}
-			write_unlock(&pchan->vchans_lock);
+			read_unlock(&pchan->vchans_lock);
 		}
-		spin_unlock_bh(&habdev->pchan_lock);
+		read_unlock_bh(&habdev->pchan_lock);
 	}
 	kfree(ctx);
+}
+
+void hab_ctx_free(struct kref *ref)
+{
+	hab_ctx_free_os(ref);
 }
 
 /*
@@ -262,7 +333,8 @@ struct hab_device *find_hab_device(unsigned int mm_id)
  */
 struct virtual_channel *frontend_open(struct uhab_context *ctx,
 		unsigned int mm_id,
-		int dom_id)
+		int dom_id,
+		uint32_t flags)
 {
 	int ret, ret2, open_id = 0;
 	struct physical_channel *pchan = NULL;
@@ -315,8 +387,8 @@ struct virtual_channel *frontend_open(struct uhab_context *ctx,
 	/* Wait for Init-Ack sequence */
 	hab_open_request_init(&request, HAB_PAYLOAD_TYPE_INIT_ACK, pchan,
 		0, sub_id, open_id);
-	/* wait forever */
-	ret = hab_open_listen(ctx, dev, &request, &recv_request, 0);
+
+	ret = hab_open_listen(ctx, dev, &request, &recv_request, 0, flags);
 	if (!ret && recv_request && ((recv_request->xdata.ver_fe & 0xFFFF0000)
 		!= (recv_request->xdata.ver_be & 0xFFFF0000))) {
 		/* version check */
@@ -349,14 +421,16 @@ struct virtual_channel *frontend_open(struct uhab_context *ctx,
 	/* remove pending open locally after good pairing */
 	hab_open_pending_exit(ctx, pchan, &pending_open);
 
-	pr_debug("hab version match fe %X be %X on mmid %d\n",
+	pr_debug("hab version fe %X be %X on mmid %d\n",
 		recv_request->xdata.ver_fe, recv_request->xdata.ver_be,
 		mm_id);
+	pchan->mem_proto = (recv_request->xdata.ver_proto == 0) ? 0 : 1;
+	pr_info_once("mem proto ver %u\n", pchan->mem_proto);
 
 	vchan->otherend_id = recv_request->xdata.vchan_id;
 	hab_open_request_free(recv_request);
 
-	/* Send Ack sequence */
+	/* Send Init-Done sequence */
 	hab_open_request_init(&request, HAB_PAYLOAD_TYPE_INIT_DONE, pchan,
 		0, sub_id, open_id);
 	request.xdata.ver_fe = HAB_API_VER;
@@ -380,7 +454,7 @@ err:
 }
 
 struct virtual_channel *backend_listen(struct uhab_context *ctx,
-		unsigned int mm_id, int timeout)
+		unsigned int mm_id, int timeout, uint32_t flags)
 {
 	int ret, ret2;
 	int open_id, ver_fe;
@@ -406,7 +480,7 @@ struct virtual_channel *backend_listen(struct uhab_context *ctx,
 			NULL, 0, sub_id, 0);
 		/* cancel should not happen at this moment */
 		ret = hab_open_listen(ctx, dev, &request, &recv_request,
-				timeout);
+				timeout, flags);
 		if (ret || !recv_request) {
 			if (!ret && !recv_request)
 				ret = -EINVAL;
@@ -437,6 +511,9 @@ struct virtual_channel *backend_listen(struct uhab_context *ctx,
 			ret = -EPROTO;
 			goto err;
 		}
+
+		recv_request->pchan->mem_proto = (recv_request->xdata.ver_proto == 0) ? 0 : 1;
+		pr_info_once("mem proto ver %u\n", recv_request->pchan->mem_proto);
 
 		/* guest id from guest */
 		otherend_vchan_id = recv_request->xdata.vchan_id;
@@ -472,7 +549,7 @@ struct virtual_channel *backend_listen(struct uhab_context *ctx,
 		hab_open_request_init(&request, HAB_PAYLOAD_TYPE_INIT_DONE,
 				pchan, 0, sub_id, open_id);
 		ret = hab_open_listen(ctx, dev, &request, &recv_request,
-			HAB_HS_TIMEOUT);
+			HAB_HS_TIMEOUT, flags);
 		hab_open_pending_exit(ctx, pchan, &pending_open);
 		if (ret && recv_request &&
 			recv_request->type == HAB_PAYLOAD_TYPE_INIT_CANCEL) {
@@ -548,11 +625,11 @@ long hab_vchan_send(struct uhab_context *ctx,
 	struct virtual_channel *vchan;
 	int ret;
 	struct hab_header header = HAB_HEADER_INITIALIZER;
-	int nonblocking_flag = flags & HABMM_SOCKET_SEND_FLAGS_NON_BLOCKING;
+	unsigned int nonblocking_flag = flags & HABMM_SOCKET_SEND_FLAGS_NON_BLOCKING;
 
-	if (sizebytes > HAB_HEADER_SIZE_MASK) {
+	if (sizebytes > (size_t)HAB_HEADER_SIZE_MAX) {
 		pr_err("Message too large, %lu bytes, max is %d\n",
-			sizebytes, HAB_HEADER_SIZE_MASK);
+			sizebytes, HAB_HEADER_SIZE_MAX);
 		return -EINVAL;
 	}
 
@@ -561,6 +638,19 @@ long hab_vchan_send(struct uhab_context *ctx,
 		ret = -ENODEV;
 		goto err;
 	}
+
+	/**
+	 * Without non-blocking configured, when the shared memory (vdev-shmem project) or
+	 * vh_buf_header (virtio-hab project) used by HAB for front-end and back-end messaging
+	 * is exhausted, the current path will be blocked.
+	 * 1. The vdev-shmem project will be blocked in the hab_vchan_send function;
+	 * 2. The virtio-hab project will be blocked in the hab_physical_send function;
+	 */
+	if (!nonblocking_flag)
+		might_sleep();
+
+	/* log msg send timestamp: enter hab_vchan_send */
+	trace_hab_vchan_send_start(vchan);
 
 	HAB_HEADER_SET_SIZE(header, sizebytes);
 	if (flags & HABMM_SOCKET_SEND_FLAGS_XING_VM_STAT) {
@@ -576,8 +666,20 @@ long hab_vchan_send(struct uhab_context *ctx,
 	} else if (flags & HABMM_SOCKET_XVM_SCHE_TEST_ACK) {
 		HAB_HEADER_SET_TYPE(header, HAB_PAYLOAD_TYPE_SCHE_MSG_ACK);
 	} else if (flags & HABMM_SOCKET_XVM_SCHE_RESULT_REQ) {
+		if (sizebytes < sizeof(unsigned long long)) {
+			pr_err("Message buffer too small, %lu bytes, expect %d\n",
+				sizebytes,
+				sizeof(unsigned long long));
+			return -EINVAL;
+		}
 		HAB_HEADER_SET_TYPE(header, HAB_PAYLOAD_TYPE_SCHE_RESULT_REQ);
 	} else if (flags & HABMM_SOCKET_XVM_SCHE_RESULT_RSP) {
+		if (sizebytes < 3 * sizeof(unsigned long long)) {
+			pr_err("Message buffer too small, %lu bytes, expect %d\n",
+				sizebytes,
+				3 * sizeof(unsigned long long));
+			return -EINVAL;
+		}
 		HAB_HEADER_SET_TYPE(header, HAB_PAYLOAD_TYPE_SCHE_RESULT_RSP);
 	} else {
 		HAB_HEADER_SET_TYPE(header, HAB_PAYLOAD_TYPE_MSG);
@@ -586,7 +688,7 @@ long hab_vchan_send(struct uhab_context *ctx,
 	HAB_HEADER_SET_SESSION_ID(header, vchan->session_id);
 
 	while (1) {
-		ret = physical_channel_send(vchan->pchan, &header, data);
+		ret = physical_channel_send(vchan->pchan, &header, data, nonblocking_flag);
 
 		if (vchan->otherend_closed || nonblocking_flag ||
 			ret != -EAGAIN)
@@ -594,7 +696,18 @@ long hab_vchan_send(struct uhab_context *ctx,
 
 		schedule();
 	}
+
+	/*
+	 * The ret here as 0 indicates the message was already sent out
+	 * from the hab_vchan_send()'s perspective.
+	 */
+	if (!ret)
+		atomic64_inc(&vchan->tx_cnt);
 err:
+
+	/* log msg send timestamp: exit hab_vchan_send */
+	trace_hab_vchan_send_done(vchan);
+
 	if (vchan)
 		hab_vchan_put(vchan);
 
@@ -605,6 +718,7 @@ int hab_vchan_recv(struct uhab_context *ctx,
 				struct hab_message **message,
 				int vcid,
 				int *rsize,
+				unsigned int timeout,
 				unsigned int flags)
 {
 	struct virtual_channel *vchan;
@@ -618,6 +732,8 @@ int hab_vchan_recv(struct uhab_context *ctx,
 		return -ENODEV;
 	}
 
+	vchan->rx_inflight = 1;
+
 	if (nonblocking_flag) {
 		/*
 		 * Try to pull data from the ring in this context instead of
@@ -627,15 +743,20 @@ int hab_vchan_recv(struct uhab_context *ctx,
 		physical_channel_rx_dispatch((unsigned long) vchan->pchan);
 	}
 
-	ret = hab_msg_dequeue(vchan, message, rsize, flags);
-	if (!(*message)) {
-		if (nonblocking_flag)
-			ret = -EAGAIN;
-		else if (vchan->otherend_closed)
-			ret = -ENODEV;
-		else if (ret == -ERESTARTSYS)
-			ret = -EINTR;
+	ret = hab_msg_dequeue(vchan, message, rsize, timeout, flags);
+	if (!ret && *message) {
+		/* log msg recv timestamp: exit hab_vchan_recv */
+		trace_hab_vchan_recv_done(vchan, *message);
+
+		/*
+		 * Here, it is for sure that a message was received from the
+		 * hab_vchan_recv()'s view w/ the ret as 0 and *message as
+		 * non-zero.
+		 */
+		atomic64_inc(&vchan->rx_cnt);
 	}
+
+	vchan->rx_inflight = 0;
 
 	hab_vchan_put(vchan);
 	return ret;
@@ -663,9 +784,9 @@ int hab_vchan_open(struct uhab_context *ctx,
 
 	if (hab_is_loopback()) {
 		if (ctx->lb_be)
-			vchan = backend_listen(ctx, mmid, timeout);
+			vchan = backend_listen(ctx, mmid, timeout, flags);
 		else
-			vchan = frontend_open(ctx, mmid, LOOPBACK_DOM);
+			vchan = frontend_open(ctx, mmid, LOOPBACK_DOM, flags);
 	} else {
 		dev = find_hab_device(mmid);
 
@@ -674,14 +795,19 @@ int hab_vchan_open(struct uhab_context *ctx,
 				hab_pchan_find_domid(dev,
 					HABCFG_VMID_DONT_CARE);
 			if (pchan) {
+				if (pchan->kernel_only && !ctx->kernel) {
+					pr_err("pchan only serves the kernel: mmid %d\n", mmid);
+					return -EPERM;
+				}
+
 				if (pchan->is_be)
 					vchan = backend_listen(ctx, mmid,
-							timeout);
+							timeout, flags);
 				else
 					vchan = frontend_open(ctx, mmid,
-							HABCFG_VMID_DONT_CARE);
+							HABCFG_VMID_DONT_CARE, flags);
 			} else {
-				pr_err("open on nonexistent pchan (mmid %x)",
+				pr_err("open on nonexistent pchan (mmid %x)\n",
 					mmid);
 				return -ENODEV;
 			}
@@ -700,26 +826,48 @@ int hab_vchan_open(struct uhab_context *ctx,
 	pr_debug("vchan id %x remote id %x session %d\n", vchan->id,
 			vchan->otherend_id, vchan->session_id);
 
-	write_lock(&ctx->ctx_lock);
+	hab_write_lock(&ctx->ctx_lock, !ctx->kernel);
 	list_add_tail(&vchan->node, &ctx->vchannels);
 	ctx->vcnt++;
-	write_unlock(&ctx->ctx_lock);
-
 	*vcid = vchan->id;
+	hab_write_unlock(&ctx->ctx_lock, !ctx->kernel);
 
 	return 0;
 }
 
 void hab_send_close_msg(struct virtual_channel *vchan)
 {
-	struct hab_header header = {0};
+	struct hab_header header = HAB_HEADER_INITIALIZER;
+	int ret = 0;
 
 	if (vchan && !vchan->otherend_closed) {
 		HAB_HEADER_SET_SIZE(header, 0);
 		HAB_HEADER_SET_TYPE(header, HAB_PAYLOAD_TYPE_CLOSE);
 		HAB_HEADER_SET_ID(header, vchan->otherend_id);
 		HAB_HEADER_SET_SESSION_ID(header, vchan->session_id);
-		physical_channel_send(vchan->pchan, &header, NULL);
+		ret = physical_channel_send(vchan->pchan, &header, NULL,
+				HABMM_SOCKET_SEND_FLAGS_NON_BLOCKING);
+		if (ret != 0)
+			pr_err("failed to send close msg %d, vcid %x\n",
+				ret, vchan->id);
+	}
+}
+
+void hab_send_unimport_msg(struct virtual_channel *vchan, uint32_t exp_id)
+{
+	struct hab_header header = HAB_HEADER_INITIALIZER;
+	int ret = 0;
+
+	if (vchan) {
+		HAB_HEADER_SET_SIZE(header, sizeof(uint32_t));
+		HAB_HEADER_SET_TYPE(header, HAB_PAYLOAD_TYPE_UNIMPORT);
+		HAB_HEADER_SET_ID(header, vchan->otherend_id);
+		HAB_HEADER_SET_SESSION_ID(header, vchan->session_id);
+		ret = physical_channel_send(vchan->pchan, &header, &exp_id,
+				HABMM_SOCKET_SEND_FLAGS_NON_BLOCKING);
+		if (ret != 0)
+			pr_err("failed to send unimp msg %d, vcid %x\n",
+				ret, vchan->id);
 	}
 }
 
@@ -728,11 +876,12 @@ int hab_vchan_close(struct uhab_context *ctx, int32_t vcid)
 	struct virtual_channel *vchan = NULL, *tmp = NULL;
 	int vchan_found = 0;
 	int ret = 0;
+	int irqs_disabled = irqs_disabled();
 
 	if (!ctx)
 		return -EINVAL;
 
-	write_lock(&ctx->ctx_lock);
+	hab_write_lock(&ctx->ctx_lock, !ctx->kernel || irqs_disabled);
 	list_for_each_entry_safe(vchan, tmp, &ctx->vchannels, node) {
 		if (vchan->id == vcid) {
 			/* local close starts */
@@ -746,16 +895,16 @@ int hab_vchan_close(struct uhab_context *ctx, int32_t vcid)
 				vchan->id, vchan->otherend_id,
 				vchan->session_id, get_refcnt(vchan->refcount));
 
-			write_unlock(&ctx->ctx_lock);
+			hab_write_unlock(&ctx->ctx_lock, !ctx->kernel || irqs_disabled);
 			/* unblocking blocked in-calls */
 			hab_vchan_stop_notify(vchan);
 			hab_vchan_put(vchan); /* there is a lock inside */
-			write_lock(&ctx->ctx_lock);
+			hab_write_lock(&ctx->ctx_lock, !ctx->kernel || irqs_disabled);
 			vchan_found = 1;
 			break;
 		}
 	}
-	write_unlock(&ctx->ctx_lock);
+	hab_write_unlock(&ctx->ctx_lock, !ctx->kernel || irqs_disabled);
 
 	if (!vchan_found)
 		ret = -ENODEV;
@@ -771,7 +920,7 @@ int hab_vchan_close(struct uhab_context *ctx, int32_t vcid)
  * vmid (self)
  */
 static int hab_initialize_pchan_entry(struct hab_device *mmid_device,
-				int vmid_local, int vmid_remote, int is_be)
+				int vmid_local, int vmid_remote, int is_be, int kernel_only)
 {
 	char pchan_name[MAX_VMID_NAME_SIZE];
 	struct physical_channel *pchan = NULL;
@@ -797,10 +946,33 @@ static int hab_initialize_pchan_entry(struct hab_device *mmid_device,
 		/* local/remote id setting should be kept in lower level */
 		pchan->vmid_local = vmid_local;
 		pchan->vmid_remote = vmid_remote;
-		pr_debug("pchan %s mmid %s local %d remote %d role %d\n",
+		pchan->kernel_only = kernel_only;
+		pr_debug("pchan %s mmid %s local %d remote %d role %d, kernel only %d\n",
 				pchan_name, mmid_device->name,
 				pchan->vmid_local, pchan->vmid_remote,
-				pchan->dom_id);
+				pchan->dom_id, pchan->kernel_only);
+	}
+
+	return ret;
+}
+
+static int hab_generate_pchan_group(struct local_vmid *settings,
+								int i, int j, int start, int end)
+{
+	int k, ret = 0;
+
+	for (k = start + 1; k < end; k++) {
+		/*
+		 * if this local pchan end is BE, then use
+		 * remote FE's vmid. If local end is FE, then
+		 * use self vmid
+		 */
+		ret += hab_initialize_pchan_entry(
+				find_hab_device(k),
+				settings->self,
+				HABCFG_GET_VMID(settings, i),
+				HABCFG_GET_BE(settings, i, j),
+				HABCFG_GET_KERNEL(settings, i, j));
 	}
 
 	return ret;
@@ -812,131 +984,56 @@ static int hab_initialize_pchan_entry(struct hab_device *mmid_device,
  */
 static int hab_generate_pchan(struct local_vmid *settings, int i, int j)
 {
-	int k, ret = 0;
+	int ret = 0;
 
 	pr_debug("%d as mmid %d in vmid %d\n",
 			HABCFG_GET_MMID(settings, i, j), j, i);
 
 	switch (HABCFG_GET_MMID(settings, i, j)) {
 	case MM_AUD_START/100:
-		for (k = MM_AUD_START + 1; k < MM_AUD_END; k++) {
-			/*
-			 * if this local pchan end is BE, then use
-			 * remote FE's vmid. If local end is FE, then
-			 * use self vmid
-			 */
-			ret += hab_initialize_pchan_entry(
-					find_hab_device(k),
-					settings->self,
-					HABCFG_GET_VMID(settings, i),
-					HABCFG_GET_BE(settings, i, j));
-		}
+		ret = hab_generate_pchan_group(settings, i, j, MM_AUD_START, MM_AUD_END);
 		break;
-
 	case MM_CAM_START/100:
-		for (k = MM_CAM_START + 1; k < MM_CAM_END; k++) {
-			ret += hab_initialize_pchan_entry(
-					find_hab_device(k),
-					settings->self,
-					HABCFG_GET_VMID(settings, i),
-					HABCFG_GET_BE(settings, i, j));
-		}
+		ret = hab_generate_pchan_group(settings, i, j, MM_CAM_START, MM_CAM_END);
 		break;
-
 	case MM_DISP_START/100:
-		for (k = MM_DISP_START + 1; k < MM_DISP_END; k++) {
-			ret += hab_initialize_pchan_entry(
-					find_hab_device(k),
-					settings->self,
-					HABCFG_GET_VMID(settings, i),
-					HABCFG_GET_BE(settings, i, j));
-		}
+		ret = hab_generate_pchan_group(settings, i, j, MM_DISP_START, MM_DISP_END);
 		break;
-
 	case MM_GFX_START/100:
-		for (k = MM_GFX_START + 1; k < MM_GFX_END; k++) {
-			ret += hab_initialize_pchan_entry(
-					find_hab_device(k),
-					settings->self,
-					HABCFG_GET_VMID(settings, i),
-					HABCFG_GET_BE(settings, i, j));
-		}
+		ret = hab_generate_pchan_group(settings, i, j, MM_GFX_START, MM_GFX_END);
 		break;
-
 	case MM_VID_START/100:
-		for (k = MM_VID_START + 1; k < MM_VID_END; k++) {
-			ret += hab_initialize_pchan_entry(
-					find_hab_device(k),
-					settings->self,
-					HABCFG_GET_VMID(settings, i),
-					HABCFG_GET_BE(settings, i, j));
-		}
+		ret = hab_generate_pchan_group(settings, i, j, MM_VID_START, MM_VID_END);
 		break;
-
 	case MM_MISC_START/100:
-		for (k = MM_MISC_START + 1; k < MM_MISC_END; k++) {
-			ret += hab_initialize_pchan_entry(
-					find_hab_device(k),
-					settings->self,
-					HABCFG_GET_VMID(settings, i),
-					HABCFG_GET_BE(settings, i, j));
-		}
+		ret = hab_generate_pchan_group(settings, i, j, MM_MISC_START, MM_MISC_END);
 		break;
-
 	case MM_QCPE_START/100:
-		for (k = MM_QCPE_START + 1; k < MM_QCPE_END; k++) {
-			ret += hab_initialize_pchan_entry(
-					find_hab_device(k),
-					settings->self,
-					HABCFG_GET_VMID(settings, i),
-					HABCFG_GET_BE(settings, i, j));
-		}
+		ret = hab_generate_pchan_group(settings, i, j, MM_QCPE_START, MM_QCPE_END);
 		break;
-
 	case MM_CLK_START/100:
-		for (k = MM_CLK_START + 1; k < MM_CLK_END; k++) {
-			ret += hab_initialize_pchan_entry(
-					find_hab_device(k),
-					settings->self,
-					HABCFG_GET_VMID(settings, i),
-					HABCFG_GET_BE(settings, i, j));
-		}
+		ret = hab_generate_pchan_group(settings, i, j, MM_CLK_START, MM_CLK_END);
 		break;
 	case MM_FDE_START/100:
-		for (k = MM_FDE_START + 1; k < MM_FDE_END; k++) {
-			ret += hab_initialize_pchan_entry(
-					find_hab_device(k),
-					settings->self,
-					HABCFG_GET_VMID(settings, i),
-					HABCFG_GET_BE(settings, i, j));
-		}
+		ret = hab_generate_pchan_group(settings, i, j, MM_FDE_START, MM_FDE_END);
 		break;
 	case MM_BUFFERQ_START/100:
-		for (k = MM_BUFFERQ_START + 1; k < MM_BUFFERQ_END; k++) {
-			ret += hab_initialize_pchan_entry(
-					find_hab_device(k),
-					settings->self,
-					HABCFG_GET_VMID(settings, i),
-					HABCFG_GET_BE(settings, i, j));
-		}
+		ret = hab_generate_pchan_group(settings, i, j, MM_BUFFERQ_START, MM_BUFFERQ_END);
 		break;
 	case MM_DATA_START/100:
-		for (k = MM_DATA_START + 1; k < MM_DATA_END; k++) {
-			ret += hab_initialize_pchan_entry(
-					find_hab_device(k),
-					settings->self,
-					HABCFG_GET_VMID(settings, i),
-					HABCFG_GET_BE(settings, i, j));
-		}
+		ret = hab_generate_pchan_group(settings, i, j, MM_DATA_START, MM_DATA_END);
 		break;
 	case MM_HSI2S_START/100:
-		for (k = MM_HSI2S_START + 1; k < MM_HSI2S_END; k++) {
-			ret += hab_initialize_pchan_entry(
-					find_hab_device(k),
-					settings->self,
-					HABCFG_GET_VMID(settings, i),
-					HABCFG_GET_BE(settings, i, j));
-		}
+		ret = hab_generate_pchan_group(settings, i, j, MM_HSI2S_START, MM_HSI2S_END);
+		break;
+	case MM_XVM_START/100:
+		ret = hab_generate_pchan_group(settings, i, j, MM_XVM_START, MM_XVM_END);
+		break;
+	case MM_VNW_START/100:
+		ret = hab_generate_pchan_group(settings, i, j, MM_VNW_START, MM_VNW_END);
+		break;
+	case MM_EXT_START/100:
+		ret = hab_generate_pchan_group(settings, i, j, MM_EXT_START, MM_EXT_END);
 		break;
 	default:
 		pr_err("failed to find mmid %d, i %d, j %d\n",
@@ -977,8 +1074,8 @@ static int hab_generate_pchan_list(struct local_vmid *settings)
  * This function checks hypervisor plug-in readiness, read in hab configs,
  * and configure pchans
  */
-#ifdef HABMM_HC_VMID
-#define DEFAULT_GVMID 3
+#ifdef CONFIG_MSM_HAB_DEFAULT_VMID
+#define DEFAULT_GVMID CONFIG_MSM_HAB_DEFAULT_VMID
 #else
 #define DEFAULT_GVMID 2
 #endif

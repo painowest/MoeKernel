@@ -168,18 +168,6 @@ int amdgpu_atombios_get_memory_pll_dividers(struct amdgpu_device *adev,
 void amdgpu_atombios_set_engine_dram_timings(struct amdgpu_device *adev,
 					     u32 eng_clock, u32 mem_clock);
 
-int amdgpu_atombios_get_leakage_id_from_vbios(struct amdgpu_device *adev,
-					      u16 *leakage_id);
-
-int amdgpu_atombios_get_leakage_vddc_based_on_leakage_params(struct amdgpu_device *adev,
-							     u16 *vddc, u16 *vddci,
-							     u16 virtual_voltage_id,
-							     u16 vbios_voltage_id);
-
-int amdgpu_atombios_get_voltage_evv(struct amdgpu_device *adev,
-				    u16 virtual_voltage_id,
-				    u16 *voltage);
-
 bool
 amdgpu_atombios_is_voltage_gpio(struct amdgpu_device *adev,
 				u8 voltage_type, u8 voltage_mode);
@@ -195,9 +183,6 @@ int amdgpu_atombios_init_mc_reg_table(struct amdgpu_device *adev,
 bool amdgpu_atombios_has_gpu_virtualization_table(struct amdgpu_device *adev);
 
 void amdgpu_atombios_scratch_regs_lock(struct amdgpu_device *adev, bool lock);
-void amdgpu_atombios_scratch_regs_init(struct amdgpu_device *adev);
-void amdgpu_atombios_scratch_regs_save(struct amdgpu_device *adev);
-void amdgpu_atombios_scratch_regs_restore(struct amdgpu_device *adev);
 void amdgpu_atombios_scratch_regs_engine_hung(struct amdgpu_device *adev,
 					      bool hung);
 bool amdgpu_atombios_scratch_need_asic_init(struct amdgpu_device *adev);
@@ -219,6 +204,14 @@ int amdgpu_atombios_get_svi2_info(struct amdgpu_device *adev,
 			      u8 voltage_type,
 			      u8 *svd_gpio_id, u8 *svc_gpio_id);
 
-int amdgpu_atombios_allocate_fb_scratch(struct amdgpu_device *adev);
+int amdgpu_atombios_get_data_table(struct amdgpu_device *adev,
+				   uint32_t table,
+				   uint16_t *size,
+				   uint8_t *frev,
+				   uint8_t *crev,
+				   uint8_t **addr);
+
+void amdgpu_atombios_fini(struct amdgpu_device *adev);
+int amdgpu_atombios_init(struct amdgpu_device *adev);
 
 #endif

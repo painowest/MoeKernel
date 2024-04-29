@@ -1,15 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2012-2014,2017-2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2012-2014, 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -46,7 +38,6 @@
 #define LANE0_PWR_PRESENT		BIT(2)
 #define SWI_PCS_CLK_SEL			BIT(4)
 #define TEST_POWERDOWN			BIT(4)
-#define REF_USE_PAD			BIT(6)
 #define SS_PHY_RESET			BIT(7)
 
 #define USB_SSPHY_1P8_VOL_MIN		1800000 /* uV */
@@ -339,7 +330,6 @@ static int msm_ssphy_init(struct usb_phy *uphy)
 static int msm_ssphy_set_suspend(struct usb_phy *uphy, int suspend)
 {
 	struct msm_ssphy *phy = container_of(uphy, struct msm_ssphy, phy);
-	int rc;
 
 	dev_dbg(uphy->dev, "%s: phy->suspended:%d suspend:%d", __func__,
 					phy->suspended, suspend);
@@ -354,8 +344,6 @@ static int msm_ssphy_set_suspend(struct usb_phy *uphy, int suspend)
 
 		msm_usb_write_readback(phy->base, SS_PHY_CTRL2,
 					REF_SS_PHY_EN, 0);
-		msm_usb_write_readback(phy->base, SS_PHY_CTRL4,
-					REF_USE_PAD, 0);
 		if (!phy->cable_connected)
 			msm_usb_write_readback(phy->base, SS_PHY_CTRL4,
 						TEST_POWERDOWN, TEST_POWERDOWN);
@@ -368,21 +356,8 @@ static int msm_ssphy_set_suspend(struct usb_phy *uphy, int suspend)
 		phy->suspended = true;
 	} else {
 
-		if (!phy->cable_connected) {
-			rc = msm_ssusb_config_vdd(phy, 1);
-			if (rc)
-				return rc;
-			msm_ssusb_ldo_enable(phy, 1);
-		}
-		msm_ssusb_enable_clocks(phy);
-
-		msm_usb_write_readback(phy->base, SS_PHY_CTRL4,
-					REF_USE_PAD, REF_USE_PAD);
-		msm_usb_write_readback(phy->base, SS_PHY_CTRL2,
-					REF_SS_PHY_EN, REF_SS_PHY_EN);
-		if (!phy->cable_connected)
-			msm_usb_write_readback(phy->base, SS_PHY_CTRL4,
-						TEST_POWERDOWN, 0);
+		if (phy->cable_connected)
+			msm_ssphy_init(uphy);
 
 		phy->suspended = false;
 	}
@@ -441,7 +416,7 @@ static int msm_ssphy_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	phy->base = devm_ioremap_nocache(dev, res->start, resource_size(res));
+	phy->base = devm_ioremap(dev, res->start, resource_size(res));
 	if (!phy->base) {
 		dev_err(dev, "ioremap failed\n");
 		return -ENODEV;

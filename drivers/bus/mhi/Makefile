@@ -1,8 +1,8 @@
-#
-# Makefile for the MHI stack
-#
+# Host MHI stack
+obj-y += host/
 
-# core layer
-obj-y += core/
-obj-y += controllers/
+# MHI Devices stack
 obj-y += devices/
+
+#MHI Controller stack
+obj-y += controllers/

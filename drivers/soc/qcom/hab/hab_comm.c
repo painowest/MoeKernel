@@ -1,14 +1,7 @@
-/* Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2016-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include "hab.h"
 
@@ -95,12 +88,15 @@ int lb_kthread(void *d)
 
 int physical_channel_send(struct physical_channel *pchan,
 			struct hab_header *header,
-			void *payload)
+			void *payload, unsigned int flags)
 {
 	int size = HAB_HEADER_GET_SIZE(*header); /* payload size */
-	struct timeval tv;
+	struct timespec64 ts = {0};
 	struct loopback_msg *msg = NULL;
 	struct loopback_dev *dev = pchan->hyp_data;
+
+	/* Only used in virtio arch */
+	(void)flags;
 
 	msg = kmalloc(size + sizeof(*msg), GFP_KERNEL);
 	if (!msg)
@@ -114,9 +110,9 @@ int physical_channel_send(struct physical_channel *pchan,
 			struct habmm_xing_vm_stat *pstat =
 				(struct habmm_xing_vm_stat *)payload;
 
-			do_gettimeofday(&tv);
-			pstat->tx_sec = tv.tv_sec;
-			pstat->tx_usec = tv.tv_usec;
+			ktime_get_ts64(&ts);
+			pstat->tx_sec = ts.tv_sec;
+			pstat->tx_usec = ts.tv_nsec/NSEC_PER_USEC;
 		}
 
 		memcpy(msg->payload, payload, size);
@@ -168,7 +164,7 @@ int loopback_pchan_create(struct hab_device *dev, char *pchan_name)
 	}
 
 	pchan->closed = 0;
-	strlcpy(pchan->name, pchan_name, sizeof(pchan->name));
+	strscpy(pchan->name, pchan_name, sizeof(pchan->name));
 
 	lb_dev = kzalloc(sizeof(*lb_dev), GFP_KERNEL);
 	if (!lb_dev) {

@@ -143,6 +143,8 @@ struct bnx2x_virtf {
 
 	bool flr_clnup_stage;	/* true during flr cleanup */
 	bool malicious;		/* true if FW indicated so, until FLR */
+	/* 1(true) if spoof check is enabled */
+	u8 spoofchk;
 
 	/* dma */
 	dma_addr_t fw_stat_map;
@@ -183,6 +185,7 @@ struct bnx2x_virtf {
 	u32 error;	/* 0 means all's-well */
 
 	/* BDF */
+	unsigned int domain;
 	unsigned int bus;
 	unsigned int devfn;
 
@@ -500,7 +503,6 @@ enum sample_bulletin_result bnx2x_sample_bulletin(struct bnx2x *bp);
 
 /* VF side vfpf channel functions */
 int bnx2x_vfpf_acquire(struct bnx2x *bp, u8 tx_count, u8 rx_count);
-int bnx2x_vfpf_release(struct bnx2x *bp);
 int bnx2x_vfpf_release(struct bnx2x *bp);
 int bnx2x_vfpf_init(struct bnx2x *bp);
 void bnx2x_vfpf_close_vf(struct bnx2x *bp);

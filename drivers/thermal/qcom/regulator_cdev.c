@@ -1,13 +1,7 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -22,7 +16,7 @@
 struct reg_cooling_device {
 	struct regulator		*reg;
 	struct thermal_cooling_device	*cool_dev;
-	unsigned int			min_reg_state;
+	unsigned int			cur_state;
 	unsigned int			*lvl;
 	unsigned int			lvl_ct;
 	char				reg_name[THERMAL_NAME_LENGTH];
@@ -38,25 +32,25 @@ static int reg_get_max_state(struct thermal_cooling_device *cdev,
 	return 0;
 }
 
-static int reg_get_min_state(struct thermal_cooling_device *cdev,
+static int reg_get_cur_state(struct thermal_cooling_device *cdev,
 				 unsigned long *state)
 {
 	struct reg_cooling_device *reg_dev = cdev->devdata;
 
-	*state = reg_dev->min_reg_state;
+	*state = reg_dev->cur_state;
 	return 0;
 }
 
-static int reg_set_min_state(struct thermal_cooling_device *cdev,
+static int reg_set_cur_state(struct thermal_cooling_device *cdev,
 				 unsigned long state)
 {
 	struct reg_cooling_device *reg_dev = cdev->devdata;
 	int ret = 0;
 
 	if (state > reg_dev->lvl_ct)
-		state = reg_dev->lvl_ct;
+		return -EINVAL;
 
-	if (reg_dev->min_reg_state == state)
+	if (reg_dev->cur_state == state)
 		return ret;
 
 	ret = regulator_set_voltage(reg_dev->reg,
@@ -67,7 +61,7 @@ static int reg_set_min_state(struct thermal_cooling_device *cdev,
 			state, ret);
 		return ret;
 	}
-	if (reg_dev->reg_enable && state == reg_dev->lvl_ct) {
+	if (reg_dev->reg_enable && !state) {
 		ret = regulator_disable(reg_dev->reg);
 		if (ret) {
 			dev_err(&cdev->device,
@@ -75,7 +69,7 @@ static int reg_set_min_state(struct thermal_cooling_device *cdev,
 			return ret;
 		}
 		reg_dev->reg_enable = false;
-	} else if (!reg_dev->reg_enable && state != reg_dev->lvl_ct) {
+	} else if (!reg_dev->reg_enable && state) {
 		ret = regulator_enable(reg_dev->reg);
 		if (ret) {
 			dev_err(&cdev->device,
@@ -84,31 +78,15 @@ static int reg_set_min_state(struct thermal_cooling_device *cdev,
 		}
 		reg_dev->reg_enable = true;
 	}
-	reg_dev->min_reg_state = state;
+	reg_dev->cur_state = state;
 
 	return ret;
-}
-
-static int reg_get_cur_state(struct thermal_cooling_device *cdev,
-				 unsigned long *state)
-{
-	*state = 0;
-	return 0;
-}
-
-static int reg_set_cur_state(struct thermal_cooling_device *cdev,
-				 unsigned long state)
-{
-	/* regulator cooling device doesn't support voltage ceil */
-	return 0;
 }
 
 static struct thermal_cooling_device_ops reg_device_ops = {
 	.get_max_state = reg_get_max_state,
 	.get_cur_state = reg_get_cur_state,
 	.set_cur_state = reg_set_cur_state,
-	.set_min_state = reg_set_min_state,
-	.get_min_state = reg_get_min_state,
 };
 
 static int reg_cdev_probe(struct platform_device *pdev)
@@ -152,9 +130,9 @@ static int reg_cdev_probe(struct platform_device *pdev)
 	}
 	/* level count is an index and it depicts the max possible index */
 	reg_dev->lvl_ct--;
-	reg_dev->min_reg_state = reg_dev->lvl_ct;
+	reg_dev->cur_state = 0;
 	reg_dev->reg_enable = false;
-	strlcpy(reg_dev->reg_name, np->name, THERMAL_NAME_LENGTH);
+	strscpy(reg_dev->reg_name, np->name, THERMAL_NAME_LENGTH);
 
 	reg_dev->cool_dev = thermal_of_cooling_device_register(
 					np, reg_dev->reg_name, reg_dev,
@@ -171,7 +149,7 @@ static int reg_cdev_probe(struct platform_device *pdev)
 
 static const struct of_device_id reg_cdev_of_match[] = {
 	{.compatible = "qcom,regulator-cooling-device", },
-	{}
+	{},
 };
 
 static struct platform_driver reg_cdev_driver = {
@@ -181,4 +159,5 @@ static struct platform_driver reg_cdev_driver = {
 	},
 	.probe = reg_cdev_probe,
 };
-builtin_platform_driver(reg_cdev_driver);
+module_platform_driver(reg_cdev_driver);
+MODULE_LICENSE("GPL v2");

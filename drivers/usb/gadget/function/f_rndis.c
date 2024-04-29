@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * f_rndis.c -- RNDIS link function driver
  *
@@ -6,11 +7,6 @@
  * Copyright (C) 2008 Nokia Corporation
  * Copyright (C) 2009 Samsung Electronics
  *                    Author: Michal Nazarewicz (mina86@mina86.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 /* #define VERBOSE_DEBUG */
@@ -475,7 +471,7 @@ static void rndis_response_complete(struct usb_ep *ep, struct usb_request *req)
 		DBG(cdev, "RNDIS %s response error %d, %d/%d\n",
 			ep->name, status,
 			req->actual, req->length);
-		/* FALLTHROUGH */
+		fallthrough;
 	case 0:
 		if (ep != rndis->notify)
 			goto out;
@@ -1024,7 +1020,7 @@ static struct configfs_attribute *rndis_attrs[] = {
 	NULL,
 };
 
-static struct config_item_type rndis_func_type = {
+static const struct config_item_type rndis_func_type = {
 	.ct_item_ops	= &rndis_item_ops,
 	.ct_attrs	= rndis_attrs,
 	.ct_owner	= THIS_MODULE,

@@ -1,14 +1,7 @@
-/* Copyright (c) 2014-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2014-2019 2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __SUBSYS_RESTART_H
@@ -16,6 +9,7 @@
 
 #include <linux/spinlock.h>
 #include <linux/interrupt.h>
+#include <linux/device.h>
 
 struct subsys_device;
 extern struct bus_type subsys_bus_type;
@@ -39,6 +33,7 @@ enum ssr_comm {
 	SUBSYS_TO_SUBSYS_SYSMON,
 	SUBSYS_TO_HLOS,
 	HLOS_TO_SUBSYS_SYSMON_SHUTDOWN,
+	HLOS_TO_SUBSYS_SYSMON_DSENTER,
 	NUM_SSR_COMMS,
 };
 
@@ -72,12 +67,11 @@ struct subsys_notif_timeout {
  * @dev: parent device
  * @owner: module the descriptor belongs to
  * @shutdown: Stop a subsystem
+ * @powerup_notify: Notify about start of a subsystem
  * @powerup: Start a subsystem
  * @crash_shutdown: Shutdown a subsystem when the system crashes (can't sleep)
  * @ramdump: Collect a ramdump of the subsystem
  * @free_memory: Free the memory associated with this subsystem
- * @is_not_loadable: Indicate if subsystem firmware is not loadable via pil
- * framework
  * @no_auth: Set if subsystem does not rely on PIL to authenticate and bring
  * it out of reset
  * @ssctl_instance_id: Instance id used to connect with SSCTL service
@@ -98,32 +92,26 @@ struct subsys_desc {
 	struct module *owner;
 
 	int (*shutdown)(const struct subsys_desc *desc, bool force_stop);
+	int (*enter_ds)(const struct subsys_desc *desc);
+	int (*powerup_notify)(const struct subsys_desc *desc);
 	int (*powerup)(const struct subsys_desc *desc);
 	void (*crash_shutdown)(const struct subsys_desc *desc);
-	int (*ramdump)(int, const struct subsys_desc *desc);
+	int (*ramdump)(int need_dumps, const struct subsys_desc *desc);
 	void (*free_memory)(const struct subsys_desc *desc);
-	irqreturn_t (*err_fatal_handler)(int irq, void *dev_id);
-	irqreturn_t (*stop_ack_handler)(int irq, void *dev_id);
-	irqreturn_t (*shutdown_ack_handler)(int irq, void *dev_id);
-	irqreturn_t (*ramdump_disable_handler)(int irq, void *dev_id);
-	irqreturn_t (*wdog_bite_handler)(int irq, void *dev_id);
-	irqreturn_t (*generic_handler)(int irq, void *dev_id);
-	int is_not_loadable;
+	struct completion shutdown_ack;
+	struct completion dsentry_ack;
 	int err_fatal_gpio;
-	unsigned int err_fatal_irq;
-	unsigned int err_ready_irq;
-	unsigned int stop_ack_irq;
-	unsigned int wdog_bite_irq;
-	unsigned int generic_irq;
 	int force_stop_bit;
 	int ramdump_disable_irq;
 	int shutdown_ack_irq;
+	int dsentry_ack_irq;
 	int ramdump_disable;
 	bool no_auth;
 	bool pil_mss_memsetup;
 	int ssctl_instance_id;
 	u32 sysmon_pid;
 	int sysmon_shutdown_ret;
+	int sysmon_dsentry_ret;
 	bool system_debug;
 	bool ignore_ssr_failure;
 	const char *edge;
@@ -150,12 +138,18 @@ struct notif_data {
 	struct platform_device *pdev;
 };
 
-#if defined(CONFIG_MSM_SUBSYSTEM_RESTART)
+#if IS_ENABLED(CONFIG_MSM_SUBSYSTEM_RESTART)
 
 extern int subsys_get_restart_level(struct subsys_device *dev);
 extern int subsystem_restart_dev(struct subsys_device *dev);
 extern int subsystem_restart(const char *name);
 extern int subsystem_crashed(const char *name);
+extern int subsystem_start_notify(const char *name);
+extern int subsystem_stop_notify(const char *subsystem);
+extern int subsystem_ds_entry(const char *subsystem);
+extern int subsystem_ds_exit(const char *name);
+extern int subsystem_s2d_entry(const char *subsystem);
+extern int subsystem_s2d_exit(const char *name);
 
 extern void *subsystem_get(const char *name);
 extern void *subsystem_get_with_fwname(const char *name, const char *fw_name);
@@ -165,16 +159,21 @@ extern void subsystem_put(void *subsystem);
 extern struct subsys_device *subsys_register(struct subsys_desc *desc);
 extern void subsys_unregister(struct subsys_device *dev);
 
-extern void subsys_default_online(struct subsys_device *dev);
 extern void subsys_set_crash_status(struct subsys_device *dev,
 					enum crash_status crashed);
 extern enum crash_status subsys_get_crash_status(struct subsys_device *dev);
 void notify_proxy_vote(struct device *device);
 void notify_proxy_unvote(struct device *device);
-void complete_err_ready(struct subsys_device *subsys);
-void complete_shutdown_ack(struct subsys_device *subsys);
+void notify_before_auth_and_reset(struct device *device);
+static inline void complete_shutdown_ack(struct subsys_desc *desc)
+{
+	complete(&desc->shutdown_ack);
+}
+static inline void complete_dsentry_ack(struct subsys_desc *desc)
+{
+	complete(&desc->dsentry_ack);
+}
 struct subsys_device *find_subsys_device(const char *str);
-extern int wait_for_shutdown_ack(struct subsys_desc *desc);
 #else
 
 static inline int subsys_get_restart_level(struct subsys_device *dev)
@@ -196,6 +195,36 @@ static inline int subsystem_crashed(const char *name)
 {
 	return 0;
 }
+
+extern int subsystem_start_notify(const char *name)
+{
+	return 0;
+}
+
+extern int subsystem_stop_notify(const char *subsystem)
+{
+	return 0;
+}
+
+/*static int subsystem_ds_entry(const char *subsystem)
+{
+	return 0;
+}
+
+static int subsystem_ds_exit(const char *name)
+{
+	return 0;
+}
+
+static int subsystem_s2d_exit(const char *name)
+{
+	return 0;
+}
+
+static int subsystem_s2d_entry(const char *name)
+{
+	return 0;
+}*/
 
 static inline void *subsystem_get(const char *name)
 {
@@ -222,7 +251,6 @@ struct subsys_device *subsys_register(struct subsys_desc *desc)
 
 static inline void subsys_unregister(struct subsys_device *dev) { }
 
-static inline void subsys_default_online(struct subsys_device *dev) { }
 static inline void subsys_set_crash_status(struct subsys_device *dev,
 						enum crash_status crashed) { }
 static inline
@@ -232,10 +260,18 @@ enum crash_status subsys_get_crash_status(struct subsys_device *dev)
 }
 static inline void notify_proxy_vote(struct device *device) { }
 static inline void notify_proxy_unvote(struct device *device) { }
-static inline int wait_for_shutdown_ack(struct subsys_desc *desc)
+static inline void notify_before_auth_and_reset(struct device *device) { }
+#endif
+/* CONFIG_MSM_SUBSYSTEM_RESTART */
+
+/* Helper wrappers */
+static inline void wakeup_source_trash(struct wakeup_source *ws)
 {
-	return -EOPNOTSUPP;
+	if (!ws)
+		return;
+
+	wakeup_source_remove(ws);
+	__pm_relax(ws);
 }
-#endif /* CONFIG_MSM_SUBSYSTEM_RESTART */
 
 #endif

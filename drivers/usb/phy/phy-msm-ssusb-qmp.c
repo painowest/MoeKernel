@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2013-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -23,11 +14,10 @@
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/usb/phy.h>
+#include <linux/usb/dwc3-msm.h>
 #include <linux/clk.h>
 #include <linux/extcon.h>
 #include <linux/reset.h>
-#include <linux/hrtimer.h>
-#include <soc/qcom/socinfo.h>
 
 enum core_ldo_levels {
 	CORE_LEVEL_NONE = 0,
@@ -84,13 +74,8 @@ enum core_ldo_levels {
 #define DP_MODE			BIT(1) /* enables DP mode */
 #define USB3_DP_COMBO_MODE	(USB3_MODE | DP_MODE) /*enables combo mode */
 
-/* PCS_STATUS2 link training indicator */
-#define RX_EQUALIZATION_IN_PROGRESS	BIT(3)
-
-/* PCS_CONFIG5 register offsets for Gen2 link training SW WA */
-#define USB3_DP_PCS_EQ_CONFIG5		0x1DEC
-#define USB3_UNI_PCS_EQ_CONFIG5		0x09EC
-#define RXEQ_RETRAIN_MODE_SEL		BIT(6)
+/* USB3_DP_COM_TYPEC_STATUS */
+#define PORTSELECT_RAW		BIT(0)
 
 enum qmp_phy_rev_reg {
 	USB3_PHY_PCS_STATUS,
@@ -104,25 +89,27 @@ enum qmp_phy_rev_reg {
 	USB3_PHY_PCS_MISC_TYPEC_CTRL,
 
 	/* USB DP Combo PHY related */
-	USB3_DP_DP_PHY_PD_CTL,
 	USB3_DP_COM_POWER_DOWN_CTRL,
 	USB3_DP_COM_SW_RESET,
 	USB3_DP_COM_RESET_OVRD_CTRL,
 	USB3_DP_COM_PHY_MODE_CTRL,
 	USB3_DP_COM_TYPEC_CTRL,
-	USB3_DP_COM_SWI_CTRL,
 	USB3_PCS_MISC_CLAMP_ENABLE,
-	USB3_DP_PCS_PCS_STATUS2,
-	USB3_DP_PCS_INSIG_SW_CTRL3,
-	USB3_DP_PCS_INSIG_MX_CTRL3,
+	USB3_DP_COM_TYPEC_STATUS,
 	USB3_PHY_REG_MAX,
+};
+#define PHY_REG_SIZE (USB3_PHY_REG_MAX * sizeof(u32))
+
+enum qmp_phy_type {
+	USB3,
+	USB3_OR_DP,
+	USB3_AND_DP,
 };
 
 /* reg values to write */
 struct qmp_reg_val {
 	u32 offset;
 	u32 val;
-	u32 delay;
 };
 
 struct msm_ssphy_qmp {
@@ -138,29 +125,27 @@ struct msm_ssphy_qmp {
 	struct regulator	*core_ldo;
 	int			core_voltage_levels[3];
 	int			core_max_uA;
+	struct regulator	*usb3_dp_phy_gdsc;
 	struct clk		*ref_clk_src;
 	struct clk		*ref_clk;
 	struct clk		*aux_clk;
 	struct clk		*com_aux_clk;
 	struct clk		*cfg_ahb_clk;
 	struct clk		*pipe_clk;
+	struct clk		*pipe_clk_mux;
+	struct clk		*pipe_clk_ext_src;
 	struct reset_control	*phy_reset;
 	struct reset_control	*phy_phy_reset;
 	struct reset_control	*global_phy_reset;
-	struct extcon_dev	*extcon_dp;
-	struct notifier_block	dp_nb;
 	bool			power_enabled;
 	bool			clk_enabled;
 	bool			cable_connected;
 	bool			in_suspend;
 	u32			*phy_reg; /* revision based offset */
 	int			reg_offset_cnt;
-	u32			*qmp_phy_init_seq;
+	struct qmp_reg_val	*qmp_phy_init_seq;
 	int			init_seq_len;
-	struct hrtimer		timer;
-
-	bool			link_training_reset;
-	u32			eq_config5_offset;
+	enum qmp_phy_type	phy_type;
 };
 
 static const struct of_device_id msm_usb_id_table[] = {
@@ -185,7 +170,8 @@ MODULE_DEVICE_TABLE(of, msm_usb_id_table);
 
 static void usb_qmp_powerup_phy(struct msm_ssphy_qmp *phy);
 static void msm_ssphy_qmp_enable_clks(struct msm_ssphy_qmp *phy, bool on);
-static int msm_ssphy_qmp_link_training(struct usb_phy *uphy, bool start);
+static int msm_ssphy_qmp_reset(struct usb_phy *uphy);
+static int msm_ssphy_qmp_dp_combo_reset(struct usb_phy *uphy);
 
 static inline char *get_cable_status_str(struct msm_ssphy_qmp *phy)
 {
@@ -204,13 +190,13 @@ static void msm_ssusb_qmp_clr_lfps_rxterm_int(struct msm_ssphy_qmp *phy)
 
 static void msm_ssusb_qmp_clamp_enable(struct msm_ssphy_qmp *phy, bool val)
 {
-	switch (phy->phy.type) {
-	case USB_PHY_TYPE_USB3_AND_DP:
+	switch (phy->phy_type) {
+	case USB3_AND_DP:
 		writel_relaxed(!val, phy->base +
 			phy->phy_reg[USB3_PCS_MISC_CLAMP_ENABLE]);
 		break;
-	case USB_PHY_TYPE_USB3_OR_DP:
-	case USB_PHY_TYPE_USB3:
+	case USB3_OR_DP:
+	case USB3:
 		if (phy->vls_clamp_reg)
 			writel_relaxed(!!val, phy->vls_clamp_reg);
 		if (phy->pcs_clamp_enable_reg)
@@ -251,6 +237,24 @@ static void msm_ssusb_qmp_enable_autonomous(struct msm_ssphy_qmp *phy,
 	}
 }
 
+static int msm_ssusb_qmp_gdsc(struct msm_ssphy_qmp *phy, bool on)
+{
+	int ret;
+
+	if (IS_ERR_OR_NULL(phy->usb3_dp_phy_gdsc))
+		return 0;
+
+	if (on)
+		ret = regulator_enable(phy->usb3_dp_phy_gdsc);
+	else
+		ret = regulator_disable(phy->usb3_dp_phy_gdsc);
+
+	if (ret)
+		dev_err(phy->phy.dev, "err:%d fail to %s usb3_dp_phy_gdsc\n",
+				ret, on ? "enable" : "disable");
+	return ret;
+}
+
 static int msm_ssusb_qmp_ldo_enable(struct msm_ssphy_qmp *phy, int on)
 {
 	int min, rc = 0;
@@ -270,10 +274,14 @@ static int msm_ssusb_qmp_ldo_enable(struct msm_ssphy_qmp *phy, int on)
 	if (!on)
 		goto disable_regulators;
 
+	rc = msm_ssusb_qmp_gdsc(phy, true);
+	if (rc < 0)
+		return rc;
+
 	rc = regulator_set_load(phy->vdd, phy->vdd_max_uA);
 	if (rc < 0) {
 		dev_err(phy->phy.dev, "Unable to set HPM of %s\n", "vdd");
-		return rc;
+		goto put_gdsc;
 	}
 
 	rc = regulator_set_voltage(phy->vdd, phy->vdd_levels[min],
@@ -349,24 +357,23 @@ put_vdd_lpm:
 	if (rc < 0)
 		dev_err(phy->phy.dev, "Unable to set LPM of %s\n", "vdd");
 
+put_gdsc:
+	rc = msm_ssusb_qmp_gdsc(phy, false);
 	return rc < 0 ? rc : 0;
 }
 
-static int configure_phy_regs(struct usb_phy *uphy,
-				const struct qmp_reg_val *reg)
+static int configure_phy_regs(struct msm_ssphy_qmp *phy)
 {
-	struct msm_ssphy_qmp *phy = container_of(uphy, struct msm_ssphy_qmp,
-					phy);
+	struct qmp_reg_val *reg = phy->qmp_phy_init_seq;
+	int i;
 
 	if (!reg) {
-		dev_err(uphy->dev, "NULL PHY configuration\n");
+		dev_err(phy->phy.dev, "NULL PHY configuration\n");
 		return -EINVAL;
 	}
 
-	while (reg->offset != -1) {
+	for (i = 0; i < phy->init_seq_len; i++) {
 		writel_relaxed(reg->val, phy->base + reg->offset);
-		if (reg->delay)
-			usleep_range(reg->delay, reg->delay + 10);
 		reg++;
 	}
 	return 0;
@@ -383,7 +390,6 @@ static void msm_ssphy_qmp_setmode(struct msm_ssphy_qmp *phy, u32 mode)
 	readl_relaxed(phy->base + phy->phy_reg[USB3_DP_COM_PHY_MODE_CTRL]);
 }
 
-
 static void usb_qmp_update_portselect_phymode(struct msm_ssphy_qmp *phy)
 {
 	int val;
@@ -398,14 +404,25 @@ static void usb_qmp_update_portselect_phymode(struct msm_ssphy_qmp *phy)
 	/* PHY must be powered up before updating portselect and phymode. */
 	usb_qmp_powerup_phy(phy);
 
-	switch (phy->phy.type) {
-	case USB_PHY_TYPE_USB3_AND_DP:
-		/* override hardware control for reset of qmp phy */
+	switch (phy->phy_type) {
+	case USB3_AND_DP:
+		writel_relaxed(0x01,
+			phy->base + phy->phy_reg[USB3_DP_COM_SW_RESET]);
+		writel_relaxed(0x00,
+			phy->base + phy->phy_reg[USB3_DP_COM_SW_RESET]);
+
+		if (phy->phy_reg[USB3_DP_COM_TYPEC_STATUS]) {
+			u32 status = readl_relaxed(phy->base +
+					phy->phy_reg[USB3_DP_COM_TYPEC_STATUS]);
+			dev_dbg(phy->phy.dev, "hw port select %s\n",
+					status & PORTSELECT_RAW ? "CC2" : "CC1");
+		}
+
 		if (!(phy->phy.flags & PHY_USB_DP_CONCURRENT_MODE))
+			/* override hardware control for reset of qmp phy */
 			writel_relaxed(SW_DPPHY_RESET_MUX | SW_DPPHY_RESET |
 				SW_USB3PHY_RESET_MUX | SW_USB3PHY_RESET,
-				phy->base +
-				phy->phy_reg[USB3_DP_COM_RESET_OVRD_CTRL]);
+				phy->base + phy->phy_reg[USB3_DP_COM_RESET_OVRD_CTRL]);
 
 		/* update port select */
 		if (val > 0) {
@@ -415,6 +432,17 @@ static void usb_qmp_update_portselect_phymode(struct msm_ssphy_qmp *phy)
 				phy->phy_reg[USB3_DP_COM_TYPEC_CTRL]);
 		}
 
+#ifdef CONFIG_PINCTRL
+		/*
+		 * if there is no default pinctrl state for orientation,
+		 * it need external module provide SW orientation info,
+		 * report an error if there is no such info.
+		 */
+		if (val < 0 && !phy->phy.dev->pins)
+			dev_err(phy->phy.dev,
+				"USB DP QMP PHY: NO SW PORTSELECT\n");
+#endif
+
 		if (!(phy->phy.flags & PHY_USB_DP_CONCURRENT_MODE)) {
 			msm_ssphy_qmp_setmode(phy, USB3_DP_COMBO_MODE);
 
@@ -423,7 +451,7 @@ static void usb_qmp_update_portselect_phymode(struct msm_ssphy_qmp *phy)
 				phy->phy_reg[USB3_DP_COM_RESET_OVRD_CTRL]);
 		}
 		break;
-	case  USB_PHY_TYPE_USB3_OR_DP:
+	case  USB3_OR_DP:
 		if (val > 0) {
 			dev_err(phy->phy.dev,
 				"USB QMP PHY: Update TYPEC CTRL(%d)\n", val);
@@ -433,7 +461,7 @@ static void usb_qmp_update_portselect_phymode(struct msm_ssphy_qmp *phy)
 		break;
 	default:
 		dev_dbg(phy->phy.dev, "no portselect for phy type %d\n",
-					phy->phy.type);
+					phy->phy_type);
 		break;
 	}
 
@@ -443,8 +471,8 @@ static void usb_qmp_update_portselect_phymode(struct msm_ssphy_qmp *phy)
 
 static void usb_qmp_powerup_phy(struct msm_ssphy_qmp *phy)
 {
-	switch (phy->phy.type) {
-	case USB_PHY_TYPE_USB3_AND_DP:
+	switch (phy->phy_type) {
+	case USB3_AND_DP:
 		/* power up USB3 and DP common logic block */
 		writel_relaxed(0x01,
 			phy->base + phy->phy_reg[USB3_DP_COM_POWER_DOWN_CTRL]);
@@ -455,10 +483,9 @@ static void usb_qmp_powerup_phy(struct msm_ssphy_qmp *phy)
 		 * msm_ssphy_qmp_init() writes 0x0 to DP_COM_SW_RESET before
 		 * initializing PHY.
 		 */
-
-		/* intentional fall-through */
-	case USB_PHY_TYPE_USB3_OR_DP:
-	case USB_PHY_TYPE_USB3:
+		fallthrough;
+	case USB3_OR_DP:
+	case USB3:
 		/* power up USB3 PHY */
 		writel_relaxed(0x01,
 			phy->base + phy->phy_reg[USB3_PHY_POWER_DOWN_CONTROL]);
@@ -472,27 +499,6 @@ static void usb_qmp_powerup_phy(struct msm_ssphy_qmp *phy)
 	mb();
 }
 
-static void usb_qmp_apply_link_training_workarounds(struct msm_ssphy_qmp *phy)
-{
-	u32 version, major, minor, val;
-
-	if (!phy->link_training_reset)
-		return;
-
-	version = socinfo_get_version();
-	minor = SOCINFO_VERSION_MINOR(version);
-	major = SOCINFO_VERSION_MAJOR(version);
-
-	/* sw workaround is needed only for hw reviosions below 2.1 */
-	if ((major < 2) || (major == 2 && minor == 0)) {
-		val = readl_relaxed(phy->base + phy->eq_config5_offset);
-		val |= RXEQ_RETRAIN_MODE_SEL;
-		writel_relaxed(val, phy->base + phy->eq_config5_offset);
-		phy->phy.link_training	= msm_ssphy_qmp_link_training;
-		return;
-	}
-}
-
 /* SSPHY Initialization */
 static int msm_ssphy_qmp_init(struct usb_phy *uphy)
 {
@@ -500,9 +506,13 @@ static int msm_ssphy_qmp_init(struct usb_phy *uphy)
 					phy);
 	int ret;
 	unsigned int init_timeout_usec = INIT_MAX_TIME_USEC;
-	const struct qmp_reg_val *reg = NULL;
 
 	dev_dbg(uphy->dev, "Initializing QMP phy\n");
+
+	if (uphy->flags & PHY_DP_MODE) {
+		dev_info(uphy->dev, "QMP PHY currently in DP mode\n");
+		return -EBUSY;
+	}
 
 	ret = msm_ssusb_qmp_ldo_enable(phy, 1);
 	if (ret) {
@@ -514,28 +524,23 @@ static int msm_ssphy_qmp_init(struct usb_phy *uphy)
 
 	msm_ssphy_qmp_enable_clks(phy, true);
 
+	if (phy->phy_type == USB3_AND_DP)
+		ret = msm_ssphy_qmp_dp_combo_reset(&phy->phy);
+	else
+		ret = msm_ssphy_qmp_reset(&phy->phy);
+
 	/* select appropriate port select and PHY mode if applicable */
 	usb_qmp_update_portselect_phymode(phy);
 
 	/* power up PHY */
 	usb_qmp_powerup_phy(phy);
 
-	reg = (struct qmp_reg_val *)phy->qmp_phy_init_seq;
-
 	/* Main configuration */
-	ret = configure_phy_regs(uphy, reg);
+	ret = configure_phy_regs(phy);
 	if (ret) {
 		dev_err(uphy->dev, "Failed the main PHY configuration\n");
-		return ret;
+		goto fail;
 	}
-
-	usb_qmp_apply_link_training_workarounds(phy);
-
-	/* perform software reset of PHY common logic */
-	if (phy->phy.type == USB_PHY_TYPE_USB3_AND_DP &&
-				!(phy->phy.flags & PHY_USB_DP_CONCURRENT_MODE))
-		writel_relaxed(0x00,
-			phy->base + phy->phy_reg[USB3_DP_COM_SW_RESET]);
 
 	/* perform software reset of PCS/Serdes */
 	writel_relaxed(0x00, phy->base + phy->phy_reg[USB3_PHY_SW_RESET]);
@@ -559,10 +564,19 @@ static int msm_ssphy_qmp_init(struct usb_phy *uphy)
 		dev_err(uphy->dev, "USB3_PHY_PCS_STATUS:%x\n",
 				readl_relaxed(phy->base +
 					phy->phy_reg[USB3_PHY_PCS_STATUS]));
-		return -EBUSY;
-	};
+		ret = -EBUSY;
+		goto fail;
+	}
 
-	return 0;
+	return ret;
+fail:
+	phy->in_suspend = true;
+	writel_relaxed(0x00,
+		phy->base + phy->phy_reg[USB3_PHY_POWER_DOWN_CONTROL]);
+	msm_ssphy_qmp_enable_clks(phy, false);
+	msm_ssusb_qmp_ldo_enable(phy, 0);
+
+	return ret;
 }
 
 static int msm_ssphy_qmp_dp_combo_reset(struct usb_phy *uphy)
@@ -726,8 +740,9 @@ static int msm_ssphy_qmp_set_suspend(struct usb_phy *uphy, int suspend)
 			msm_ssusb_qmp_enable_autonomous(phy, 1);
 		} else {
 			/* Reset phy mode to USB only if DP not connected */
-			if (uphy->type  == USB_PHY_TYPE_USB3_AND_DP &&
-				!(phy->phy.flags & PHY_USB_DP_CONCURRENT_MODE))
+			if (phy->phy_type == USB3_AND_DP &&
+				!((uphy->flags & PHY_DP_MODE) ||
+				(uphy->flags & PHY_USB_DP_CONCURRENT_MODE)))
 				msm_ssphy_qmp_setmode(phy, USB3_MODE);
 			writel_relaxed(0x00,
 			phy->base + phy->phy_reg[USB3_PHY_POWER_DOWN_CONTROL]);
@@ -736,12 +751,16 @@ static int msm_ssphy_qmp_set_suspend(struct usb_phy *uphy, int suspend)
 		/* Make sure above write completed with PHY */
 		wmb();
 
-		hrtimer_cancel(&phy->timer);
 		msm_ssphy_qmp_enable_clks(phy, false);
 		phy->in_suspend = true;
 		msm_ssphy_power_enable(phy, 0);
 		dev_dbg(uphy->dev, "QMP PHY is suspend\n");
 	} else {
+		if (uphy->flags & PHY_DP_MODE) {
+			dev_info(uphy->dev, "QMP PHY currently in DP mode\n");
+			return -EBUSY;
+		}
+
 		msm_ssphy_power_enable(phy, 1);
 		msm_ssphy_qmp_enable_clks(phy, true);
 		if (!phy->cable_connected) {
@@ -761,74 +780,6 @@ static int msm_ssphy_qmp_set_suspend(struct usb_phy *uphy, int suspend)
 	return 0;
 }
 
-static enum hrtimer_restart timer_fn(struct hrtimer *timer)
-{
-	struct msm_ssphy_qmp *phy =
-		container_of(timer, struct msm_ssphy_qmp, timer);
-	u8 status2, status2_1, sw1, mx1, sw2, mx2;
-	int timeout = 15000;
-
-	status2_1 = sw1 = sw2 = mx1 = mx2 = 0;
-
-	status2 = readl_relaxed(phy->base +
-			phy->phy_reg[USB3_DP_PCS_PCS_STATUS2]);
-	if (status2 & RX_EQUALIZATION_IN_PROGRESS) {
-		while (timeout > 0) {
-			status2_1 = readl_relaxed(phy->base +
-					phy->phy_reg[USB3_DP_PCS_PCS_STATUS2]);
-			if (status2_1 & RX_EQUALIZATION_IN_PROGRESS) {
-				timeout -= 500;
-				udelay(500);
-				continue;
-			}
-
-			writel_relaxed(0x08, phy->base +
-				phy->phy_reg[USB3_DP_PCS_INSIG_SW_CTRL3]);
-			writel_relaxed(0x08, phy->base +
-				phy->phy_reg[USB3_DP_PCS_INSIG_MX_CTRL3]);
-			sw1 = readl_relaxed(phy->base +
-				phy->phy_reg[USB3_DP_PCS_INSIG_SW_CTRL3]);
-			mx1 = readl_relaxed(phy->base +
-				phy->phy_reg[USB3_DP_PCS_INSIG_MX_CTRL3]);
-			udelay(1);
-			writel_relaxed(0x0, phy->base +
-				phy->phy_reg[USB3_DP_PCS_INSIG_SW_CTRL3]);
-			writel_relaxed(0x0, phy->base +
-				phy->phy_reg[USB3_DP_PCS_INSIG_MX_CTRL3]);
-			sw2 = readl_relaxed(phy->base +
-				phy->phy_reg[USB3_DP_PCS_INSIG_SW_CTRL3]);
-			mx2 = readl_relaxed(phy->base +
-				phy->phy_reg[USB3_DP_PCS_INSIG_MX_CTRL3]);
-
-			break;
-		}
-	}
-
-	dev_dbg(phy->phy.dev,
-		"st=%x st2=%x sw1=%x sw2=%x mx1=%x mx2=%x timeout=%d\n",
-		status2, status2_1, sw1, sw2, mx1, mx2, timeout);
-
-	hrtimer_forward_now(timer, ms_to_ktime(1));
-
-	return HRTIMER_RESTART;
-}
-
-static int msm_ssphy_qmp_link_training(struct usb_phy *uphy, bool start)
-{
-	struct msm_ssphy_qmp *phy = container_of(uphy, struct msm_ssphy_qmp,
-					phy);
-
-	if (start) {
-		hrtimer_start(&phy->timer, 0, HRTIMER_MODE_REL);
-		dev_dbg(uphy->dev, "link training start\n");
-	} else {
-		hrtimer_cancel(&phy->timer);
-		dev_dbg(uphy->dev, "link training stop\n");
-	}
-
-	return 0;
-}
-
 static int msm_ssphy_qmp_notify_connect(struct usb_phy *uphy,
 				       enum usb_device_speed speed)
 {
@@ -837,7 +788,8 @@ static int msm_ssphy_qmp_notify_connect(struct usb_phy *uphy,
 
 	dev_dbg(uphy->dev, "QMP phy connect notification\n");
 	phy->cable_connected = true;
-	dev_dbg(uphy->dev, "cable_connected=%d\n", phy->cable_connected);
+	atomic_notifier_call_chain(&uphy->notifier, 1, uphy);
+
 	return 0;
 }
 
@@ -847,89 +799,16 @@ static int msm_ssphy_qmp_notify_disconnect(struct usb_phy *uphy,
 	struct msm_ssphy_qmp *phy = container_of(uphy, struct msm_ssphy_qmp,
 					phy);
 
-	writel_relaxed(0x00,
-		phy->base + phy->phy_reg[USB3_PHY_POWER_DOWN_CONTROL]);
-	readl_relaxed(phy->base + phy->phy_reg[USB3_PHY_POWER_DOWN_CONTROL]);
+	atomic_notifier_call_chain(&uphy->notifier, 0, uphy);
+	if (phy->phy.flags & PHY_HOST_MODE) {
+		writel_relaxed(0x00,
+			phy->base + phy->phy_reg[USB3_PHY_POWER_DOWN_CONTROL]);
+		readl_relaxed(phy->base + phy->phy_reg[USB3_PHY_POWER_DOWN_CONTROL]);
+	}
 
-	hrtimer_cancel(&phy->timer);
 	dev_dbg(uphy->dev, "QMP phy disconnect notification\n");
 	dev_dbg(uphy->dev, " cable_connected=%d\n", phy->cable_connected);
 	phy->cable_connected = false;
-	return 0;
-}
-
-static int msm_ssphy_qmp_powerup(struct usb_phy *uphy, bool powerup)
-{
-	struct msm_ssphy_qmp *phy = container_of(uphy, struct msm_ssphy_qmp,
-					phy);
-	u8 reg = powerup ? 1 : 0;
-	u8 temp;
-
-	if (!(uphy->flags & PHY_WAKEUP_WA_EN))
-		return 0;
-
-	temp = readl_relaxed(phy->base +
-			phy->phy_reg[USB3_PHY_POWER_DOWN_CONTROL]);
-
-	if (temp == powerup)
-		return 0;
-
-	writel_relaxed(reg,
-			phy->base + phy->phy_reg[USB3_PHY_POWER_DOWN_CONTROL]);
-	temp = readl_relaxed(phy->base +
-			phy->phy_reg[USB3_PHY_POWER_DOWN_CONTROL]);
-
-	dev_dbg(uphy->dev, "P3 powerup:%x\n", temp);
-
-	return 0;
-}
-
-static int msm_ssphy_qmp_vbus_notifier(struct notifier_block *nb,
-		unsigned long event, void *ptr)
-{
-	return 0;
-}
-
-static int msm_ssphy_qmp_dp_notifier(struct notifier_block *nb,
-		unsigned long dp_lane, void *ptr)
-{
-	struct msm_ssphy_qmp *phy = container_of(nb,
-			struct msm_ssphy_qmp, dp_nb);
-
-	if (dp_lane == 2 || dp_lane == 4)
-		phy->phy.flags |= PHY_USB_DP_CONCURRENT_MODE;
-	else
-		phy->phy.flags &= ~PHY_USB_DP_CONCURRENT_MODE;
-
-	return 0;
-
-}
-
-static int msm_ssphy_qmp_extcon_register(struct msm_ssphy_qmp *phy,
-				struct device *dev)
-{
-	struct device_node *node = dev->of_node;
-	struct extcon_dev *edev;
-	int ret = 0;
-
-	if (!of_property_read_bool(node, "extcon"))
-		return 0;
-
-	edev = extcon_get_edev_by_phandle(dev, 0);
-	if (IS_ERR(edev)) {
-		dev_err(dev, "failed to get phandle for msm_ssphy_qmp\n");
-		return PTR_ERR(edev);
-	}
-
-	phy->extcon_dp = edev;
-	phy->phy.vbus_nb.notifier_call = msm_ssphy_qmp_vbus_notifier;
-	phy->dp_nb.notifier_call = msm_ssphy_qmp_dp_notifier;
-	ret = extcon_register_blocking_notifier(edev, EXTCON_DISP_DP,
-								&phy->dp_nb);
-	if (ret < 0) {
-		dev_err(dev, "failed to register blocking notifier\n");
-		return ret;
-	}
 
 	return 0;
 }
@@ -968,6 +847,14 @@ static int msm_ssphy_qmp_get_clks(struct msm_ssphy_qmp *phy, struct device *dev)
 			dev_err(dev, "failed to get pipe_clk\n");
 		goto err;
 	}
+
+	phy->pipe_clk_mux = devm_clk_get(dev, "pipe_clk_mux");
+	if (IS_ERR(phy->pipe_clk_mux))
+		phy->pipe_clk_mux = NULL;
+
+	phy->pipe_clk_ext_src = devm_clk_get(dev, "pipe_clk_ext_src");
+	if (IS_ERR(phy->pipe_clk_ext_src))
+		phy->pipe_clk_ext_src = NULL;
 
 	phy->ref_clk_src = devm_clk_get(dev, "ref_clk_src");
 	if (IS_ERR(phy->ref_clk_src))
@@ -1012,12 +899,17 @@ static void msm_ssphy_qmp_enable_clks(struct msm_ssphy_qmp *phy, bool on)
 		if (phy->cfg_ahb_clk)
 			clk_prepare_enable(phy->cfg_ahb_clk);
 
+		//select PHY pipe clock
+		clk_set_parent(phy->pipe_clk_mux, phy->pipe_clk_ext_src);
 		clk_prepare_enable(phy->pipe_clk);
 		phy->clk_enabled = true;
 	}
 
 	if (phy->clk_enabled && !on) {
 		clk_disable_unprepare(phy->pipe_clk);
+
+		//select XO instead of PHY pipe clock
+		clk_set_parent(phy->pipe_clk_mux, phy->ref_clk_src);
 
 		if (phy->cfg_ahb_clk)
 			clk_disable_unprepare(phy->cfg_ahb_clk);
@@ -1041,20 +933,20 @@ static int msm_ssphy_qmp_probe(struct platform_device *pdev)
 	struct msm_ssphy_qmp *phy;
 	struct device *dev = &pdev->dev;
 	struct resource *res;
-	int ret = 0, size = 0, len;
+	int ret = 0, size = 0, size1 = 0, len;
 
 	phy = devm_kzalloc(dev, sizeof(*phy), GFP_KERNEL);
 	if (!phy)
 		return -ENOMEM;
 
-	phy->phy.type = USB_PHY_TYPE_USB3;
+	phy->phy_type = USB3;
 	if (of_device_is_compatible(dev->of_node,
 			"qcom,usb-ssphy-qmp-dp-combo"))
-		phy->phy.type = USB_PHY_TYPE_USB3_AND_DP;
+		phy->phy_type = USB3_AND_DP;
 
 	if (of_device_is_compatible(dev->of_node,
 			"qcom,usb-ssphy-qmp-usb3-or-dp"))
-		phy->phy.type = USB_PHY_TYPE_USB3_OR_DP;
+		phy->phy_type = USB3_OR_DP;
 
 	ret = msm_ssphy_qmp_get_clks(phy, dev);
 	if (ret)
@@ -1067,7 +959,7 @@ static int msm_ssphy_qmp_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	if (phy->phy.type == USB_PHY_TYPE_USB3_AND_DP) {
+	if (phy->phy_type == USB3_AND_DP) {
 		phy->global_phy_reset = devm_reset_control_get(dev,
 						"global_phy_reset");
 		if (IS_ERR(phy->global_phy_reset)) {
@@ -1087,7 +979,7 @@ static int msm_ssphy_qmp_probe(struct platform_device *pdev)
 
 	of_get_property(dev->of_node, "qcom,qmp-phy-reg-offset", &size);
 	if (size) {
-		phy->phy_reg = devm_kzalloc(dev, size, GFP_KERNEL);
+		phy->phy_reg = devm_kzalloc(dev, PHY_REG_SIZE, GFP_KERNEL);
 		if (phy->phy_reg) {
 			phy->reg_offset_cnt = (size / sizeof(*phy->phy_reg));
 			if (phy->reg_offset_cnt > USB3_PHY_REG_MAX) {
@@ -1118,7 +1010,7 @@ static int msm_ssphy_qmp_probe(struct platform_device *pdev)
 	 * For USB QMP DP combo PHY, common set of registers shall be accessed
 	 * by DP driver as well.
 	 */
-	phy->base = devm_ioremap_nocache(dev, res->start, resource_size(res));
+	phy->base = devm_ioremap(dev, res->start, resource_size(res));
 	if (IS_ERR_OR_NULL(phy->base)) {
 		ret = PTR_ERR(phy->base);
 		goto err;
@@ -1161,15 +1053,27 @@ static int msm_ssphy_qmp_probe(struct platform_device *pdev)
 			return -EINVAL;
 		}
 
-		phy->qmp_phy_init_seq = devm_kzalloc(dev, size, GFP_KERNEL);
+		of_get_property(dev->of_node, "qcom,qmp-phy-override-seq", &size1);
+		if (size1 % sizeof(*phy->qmp_phy_init_seq)) {
+			dev_err(dev, "invalid override seq len\n");
+			return -EINVAL;
+		}
+
+		len = size + size1;
+		phy->qmp_phy_init_seq = devm_kzalloc(dev, len, GFP_KERNEL);
 		if (!phy->qmp_phy_init_seq)
 			return -ENOMEM;
 
-		phy->init_seq_len = (size / sizeof(*phy->qmp_phy_init_seq));
+		phy->init_seq_len = (len / sizeof(*phy->qmp_phy_init_seq));
 		of_property_read_u32_array(dev->of_node,
 				"qcom,qmp-phy-init-seq",
-				phy->qmp_phy_init_seq,
-				phy->init_seq_len);
+				(u32 *)phy->qmp_phy_init_seq,
+				size / sizeof(u32));
+
+		of_property_read_u32_array(dev->of_node,
+				"qcom,qmp-phy-override-seq",
+				(u32 *)((char *)phy->qmp_phy_init_seq + size),
+				size1 / sizeof(u32));
 	} else {
 		dev_err(dev, "error need qmp-phy-init-seq\n");
 		return -EINVAL;
@@ -1230,35 +1134,23 @@ static int msm_ssphy_qmp_probe(struct platform_device *pdev)
 		goto err;
 	}
 
+	phy->usb3_dp_phy_gdsc = devm_regulator_get(dev, "usb3_dp_phy_gdsc");
+	if (IS_ERR(phy->usb3_dp_phy_gdsc)) {
+		ret = PTR_ERR(phy->usb3_dp_phy_gdsc);
+		if (ret != -ENODEV) {
+			dev_err(dev, "fail to get usb3_dp_phy_gdsc(%d)\n", ret);
+			return ret;
+		}
+		dev_err(dev, "usb3_dp_phy_gdsc optional regulator missing\n");
+	}
+
 	platform_set_drvdata(pdev, phy);
-
-	if (of_property_read_bool(dev->of_node, "qcom,vbus-valid-override"))
-		phy->phy.flags |= PHY_VBUS_VALID_OVERRIDE;
-
-	hrtimer_init(&phy->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
-	phy->timer.function = timer_fn;
 
 	phy->phy.dev			= dev;
 	phy->phy.init			= msm_ssphy_qmp_init;
 	phy->phy.set_suspend		= msm_ssphy_qmp_set_suspend;
 	phy->phy.notify_connect		= msm_ssphy_qmp_notify_connect;
 	phy->phy.notify_disconnect	= msm_ssphy_qmp_notify_disconnect;
-	phy->phy.powerup		= msm_ssphy_qmp_powerup;
-	phy->phy.reset			= msm_ssphy_qmp_reset;
-
-	if (phy->phy.type == USB_PHY_TYPE_USB3_AND_DP) {
-		phy->eq_config5_offset = USB3_DP_PCS_EQ_CONFIG5;
-		phy->phy.reset	= msm_ssphy_qmp_dp_combo_reset;
-	} else if (phy->phy.type == USB_PHY_TYPE_USB3) {
-		phy->eq_config5_offset = USB3_UNI_PCS_EQ_CONFIG5;
-	}
-
-	phy->link_training_reset = of_property_read_bool(dev->of_node,
-					"qcom,link-training-reset");
-
-	ret = msm_ssphy_qmp_extcon_register(phy, dev);
-	if (ret)
-		goto err;
 
 	ret = usb_add_phy_dev(&phy->phy);
 

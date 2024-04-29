@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -57,9 +50,6 @@
 		.intr_cfg_reg = base + 0x8 + REG_SIZE * id,	\
 		.intr_status_reg = base + 0xc + REG_SIZE * id,	\
 		.intr_target_reg = base + 0x8 + REG_SIZE * id,	\
-		.dir_conn_reg = (base == EAST) ? base + EAST_PDC_OFFSET : \
-			((base == WEST) ? base + WEST_PDC_OFFSET : \
-			base + SOUTH_PDC_OFFSET), \
 		.mux_bit = 2,			\
 		.pull_bit = 0,			\
 		.drv_bit = 6,			\
@@ -74,7 +64,6 @@
 		.intr_polarity_bit = 1,		\
 		.intr_detection_bit = 2,	\
 		.intr_detection_width = 2,	\
-		.dir_conn_en_bit = 8,		\
 	}
 
 #define SDC_QDSD_PINGROUP(pg_name, ctl, pull, drv)	\
@@ -1577,84 +1566,6 @@ static const struct msm_pingroup sm6150_groups[] = {
 	[130] = UFS_RESET(ufs_reset, 0x59f000),
 };
 
-static struct msm_dir_conn sm6150_dir_conn[] = {
-	{1, 525},
-	{3, 511},
-	{7, 535},
-	{9, 625},
-	{11, 514},
-	{13, 513},
-	{14, 515},
-	{17, 526},
-	{19, 528},
-	{21, 563},
-	{22, 516},
-	{26, 518},
-	{35, 517},
-	{39, 633}, /* GPIO 39 mapped to SPI 640 as well */
-	{41, 527},
-	{47, 529},
-	{48, 531},
-	{50, 532},
-	{51, 631}, /* GPIO 51 mapped to SPI 638 as well */
-	{55, 536},
-	{56, 537},
-	{57, 538},
-	{60, 540},
-	{71, 534},
-	{80, 553},
-	{81, 544},
-	{82, 530},
-	{83, 545},
-	{84, 572},
-	{85, 614},
-	{86, 547},
-	{87, 564},
-	{88, 632}, /* GPIO 88 mapped to SPI 639 as well */
-	{89, 630}, /* GPIO 89 mapped to SPI 637 as well */
-	{90, 549},
-	{92, 568},
-	{93, 555},
-	{94, 571},
-	{95, 552},
-	{96, 562},
-	{97, 554},
-	{98, 610},
-	{99, 609},
-	{100, 615},
-	{101, 520},
-	{102, 573},
-	{103, 557},
-	{104, 558},
-	{105, 611},
-	{107, 612},
-	{108, 626},
-	{112, 627},
-	{113, 628},
-	{117, 565},
-	{118, 617},
-	{119, 567},
-	{120, 629},
-	{121, 569},
-	{122, 570},
-	{-1, 216},
-	{-1, 215},
-	{-1, 214},
-	{-1, 213},
-	{-1, 212},
-	{-1, 211},
-	{-1, 210},
-	{-1, 209},
-};
-
-#ifdef CONFIG_HIBERNATION
-static u32 tile_dir_conn_addr[NUM_TILES] = {
-	[0] =   SOUTH + SOUTH_PDC_OFFSET,
-	[1] =   WEST + WEST_PDC_OFFSET,
-	[2] =   EAST + EAST_PDC_OFFSET
-};
-#endif
-
 static struct msm_pinctrl_soc_data sm6150_pinctrl = {
 	.pins = sm6150_pins,
 	.npins = ARRAY_SIZE(sm6150_pins),
@@ -1663,73 +1574,10 @@ static struct msm_pinctrl_soc_data sm6150_pinctrl = {
 	.groups = sm6150_groups,
 	.ngroups = ARRAY_SIZE(sm6150_groups),
 	.ngpios = 123,
-	.dir_conn = sm6150_dir_conn,
-	.n_dir_conns = ARRAY_SIZE(sm6150_dir_conn),
-	.dir_conn_irq_base = 216,
-#ifdef CONFIG_HIBERNATION
-	.dir_conn_addr = tile_dir_conn_addr,
-	.tile_count = ARRAY_SIZE(tile_dir_conn_addr),
-#endif
 };
-
-static int sm6150_pinctrl_dir_conn_probe(struct platform_device *pdev)
-{
-	const __be32 *prop;
-	struct msm_dir_conn *dir_conn_list;
-	uint32_t dir_conn_length, iterator = 0;
-	int i, length, *dir_conn_entries, num_dir_conns;
-
-	prop = of_get_property(pdev->dev.of_node, "dirconn-list",
-			&length);
-
-	dir_conn_length = length / sizeof(u32);
-
-	dir_conn_entries = devm_kzalloc(&pdev->dev,
-				dir_conn_length*sizeof(uint32_t), GFP_KERNEL);
-	if (!dir_conn_entries)
-		return -ENOMEM;
-
-	for (i = 0; i < dir_conn_length; i++)
-		dir_conn_entries[i] = be32_to_cpu(prop[i]);
-
-	if (dir_conn_length % 3) {
-		dev_err(&pdev->dev,
-			"Can't parse an entry with fewer than three values\n");
-		return -EINVAL;
-	};
-
-	num_dir_conns = (dir_conn_length / 3);
-
-	dir_conn_list = devm_kzalloc(&pdev->dev,
-			num_dir_conns * sizeof(*dir_conn_list), GFP_KERNEL);
-	if (!dir_conn_list)
-		return -ENOMEM;
-
-	for (i = 0; i < num_dir_conns; i++) {
-		dir_conn_list[i].gpio = dir_conn_entries[iterator++];
-		dir_conn_list[i].hwirq = dir_conn_entries[iterator++];
-		dir_conn_list[i].tlmm_dc = dir_conn_entries[iterator++];
-	}
-
-	sm6150_pinctrl.dir_conn = dir_conn_list;
-	sm6150_pinctrl.n_dir_conns = num_dir_conns;
-
-	return 0;
-}
 
 static int sm6150_pinctrl_probe(struct platform_device *pdev)
 {
-	int len, ret;
-
-	if (of_find_property(pdev->dev.of_node, "dirconn-list", &len)) {
-		ret = sm6150_pinctrl_dir_conn_probe(pdev);
-		if (ret) {
-			dev_err(&pdev->dev,
-				"Unable to parse TLMM direct connects\n");
-			return ret;
-		}
-	}
-
 	return msm_pinctrl_probe(pdev, &sm6150_pinctrl);
 }
 
@@ -1741,7 +1589,6 @@ static const struct of_device_id sm6150_pinctrl_of_match[] = {
 static struct platform_driver sm6150_pinctrl_driver = {
 	.driver = {
 		.name = "sm6150-pinctrl",
-		.owner = THIS_MODULE,
 		.of_match_table = sm6150_pinctrl_of_match,
 	},
 	.probe = sm6150_pinctrl_probe,

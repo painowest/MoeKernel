@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * This contains encryption functions for per-file encryption.
  *
@@ -73,7 +74,7 @@ EXPORT_SYMBOL(fscrypt_free_bounce_page);
  * Generate the IV for the given logical block number within the given file.
  * For filenames encryption, lblk_num == 0.
  *
- * Keep this in sync with fscrypt_limit_dio_pages().  fscrypt_limit_dio_pages()
+ * Keep this in sync with fscrypt_limit_io_blocks().  fscrypt_limit_io_blocks()
  * needs to know about any IV generation methods where the low bits of IV don't
  * simply contain the lblk_num (e.g., IV_INO_LBLK_32).
  */
@@ -82,38 +83,17 @@ void fscrypt_generate_iv(union fscrypt_iv *iv, u64 lblk_num,
 {
 	u8 flags = fscrypt_policy_flags(&ci->ci_policy);
 
-	bool inlinecrypt = false;
-
-#ifdef CONFIG_FS_ENCRYPTION_INLINE_CRYPT
-	inlinecrypt = ci->ci_inlinecrypt;
-#endif
 	memset(iv, 0, ci->ci_mode->ivsize);
 
-	if ((fscrypt_policy_contents_mode(&ci->ci_policy) ==
-					  FSCRYPT_MODE_PRIVATE)
-					  && inlinecrypt) {
-		if (ci->ci_inode->i_sb->s_type->name &&
-		    !strcmp(ci->ci_inode->i_sb->s_type->name, "f2fs")) {
-			if (flags & FSCRYPT_POLICY_FLAG_IV_INO_LBLK_32) {
-				WARN_ON_ONCE(lblk_num > U32_MAX);
-				lblk_num = (u32)(ci->ci_hashed_ino + lblk_num);
-			} else {
-				WARN_ON_ONCE(lblk_num > U32_MAX);
-				WARN_ON_ONCE(ci->ci_inode->i_ino > U32_MAX);
-				lblk_num |= (u64)ci->ci_inode->i_ino << 32;
-			}
-		}
-	} else if (flags & FSCRYPT_POLICY_FLAG_IV_INO_LBLK_64) {
+	if (flags & FSCRYPT_POLICY_FLAG_IV_INO_LBLK_64) {
 		WARN_ON_ONCE(lblk_num > U32_MAX);
 		WARN_ON_ONCE(ci->ci_inode->i_ino > U32_MAX);
 		lblk_num |= (u64)ci->ci_inode->i_ino << 32;
-	} else if ((flags & FSCRYPT_POLICY_FLAG_IV_INO_LBLK_32) &&
-		   !(fscrypt_policy_contents_mode(&ci->ci_policy) ==
-		     FSCRYPT_MODE_PRIVATE)) {
+	} else if (flags & FSCRYPT_POLICY_FLAG_IV_INO_LBLK_32) {
 		WARN_ON_ONCE(lblk_num > U32_MAX);
 		lblk_num = (u32)(ci->ci_hashed_ino + lblk_num);
 	} else if (flags & FSCRYPT_POLICY_FLAG_DIRECT_KEY) {
-		memcpy(iv->nonce, ci->ci_nonce, FS_KEY_DERIVATION_NONCE_SIZE);
+		memcpy(iv->nonce, ci->ci_nonce, FSCRYPT_FILE_NONCE_SIZE);
 	}
 	iv->lblk_num = cpu_to_le64(lblk_num);
 }
@@ -129,7 +109,7 @@ int fscrypt_crypt_block(const struct inode *inode, fscrypt_direction_t rw,
 	DECLARE_CRYPTO_WAIT(wait);
 	struct scatterlist dst, src;
 	struct fscrypt_info *ci = inode->i_crypt_info;
-	struct crypto_skcipher *tfm = ci->ci_key.tfm;
+	struct crypto_skcipher *tfm = ci->ci_enc_key.tfm;
 	int res = 0;
 
 	if (WARN_ON_ONCE(len <= 0))
@@ -372,9 +352,11 @@ void fscrypt_msg(const struct inode *inode, const char *level,
 	va_start(args, fmt);
 	vaf.fmt = fmt;
 	vaf.va = &args;
-	if (inode)
+	if (inode && inode->i_ino)
 		printk("%sfscrypt (%s, inode %lu): %pV\n",
 		       level, inode->i_sb->s_id, inode->i_ino, &vaf);
+	else if (inode)
+		printk("%sfscrypt (%s): %pV\n", level, inode->i_sb->s_id, &vaf);
 	else
 		printk("%sfscrypt: %pV\n", level, &vaf);
 	va_end(args);

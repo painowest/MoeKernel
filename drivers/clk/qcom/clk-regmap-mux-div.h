@@ -1,22 +1,13 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Copyright (c) 2015, Linaro Limited
- * Copyright (c) 2014, 2017, The Linux Foundation. All rights reserved.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2017, Linaro Limited
+ * Author: Georgi Djakov <georgi.djakov@linaro.org>
  */
 
 #ifndef __QCOM_CLK_REGMAP_MUX_DIV_H__
 #define __QCOM_CLK_REGMAP_MUX_DIV_H__
 
 #include <linux/clk-provider.h>
-#include "clk-rcg.h"
 #include "clk-regmap.h"
 
 /**
@@ -40,11 +31,11 @@
  *		parent B to change, then safe_freq must be defined.
  *		safe_freq is expected to have a source clock which is always
  *		on and runs at only one rate.
- * @parent_map:	pointer to parent_map struct
+ * @parent_map: pointer to parent_map struct
  * @clkr:	handle between common and hardware-specific interfaces
- * @clk_nb:	clock notifier registered for clock rate change
+ * @pclk:	the input PLL clock
+ * @clk_nb:	clock notifier for rate changes of the input PLL
  */
-
 struct clk_regmap_mux_div {
 	u32				reg_offset;
 	u32				hid_width;
@@ -56,13 +47,14 @@ struct clk_regmap_mux_div {
 	u32				safe_src;
 	u32				safe_div;
 	unsigned long			safe_freq;
-	const struct parent_map		*parent_map;
+	const u32			*parent_map;
 	struct clk_regmap		clkr;
+	struct clk			*pclk;
 	struct notifier_block		clk_nb;
 };
 
 extern const struct clk_ops clk_regmap_mux_div_ops;
-int __mux_div_set_src_div(struct clk_regmap_mux_div *md, u32 src, u32 div);
-int mux_div_get_src_div(struct clk_regmap_mux_div *md, u32 *src, u32 *div);
+extern int mux_div_set_src_div(struct clk_regmap_mux_div *md, u32 src, u32 div);
+void mux_div_get_src_div(struct clk_regmap_mux_div *md, u32 *src, u32 *div);
 
 #endif

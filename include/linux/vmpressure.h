@@ -18,7 +18,7 @@ struct vmpressure {
 	unsigned long tree_reclaimed;
 	unsigned long stall;
 	/* The lock is used to keep the scanned/reclaimed above in sync. */
-	struct spinlock sr_lock;
+	spinlock_t sr_lock;
 
 	/* The list of vmpressure_event structs. */
 	struct list_head events;
@@ -47,7 +47,7 @@ extern void vmpressure_dec_users(void);
 extern void vmpressure_init(struct vmpressure *vmpr);
 extern void vmpressure_cleanup(struct vmpressure *vmpr);
 extern struct vmpressure *memcg_to_vmpressure(struct mem_cgroup *memcg);
-extern struct cgroup_subsys_state *vmpressure_to_css(struct vmpressure *vmpr);
+extern struct mem_cgroup *vmpressure_to_memcg(struct vmpressure *vmpr);
 extern int vmpressure_register_event(struct mem_cgroup *memcg,
 				     struct eventfd_ctx *eventfd,
 				     const char *args);

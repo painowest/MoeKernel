@@ -1,13 +1,5 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/* Copyright (c) 2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -43,7 +35,6 @@ static int strlcmp(const char *s, const char *t, size_t n)
 	while (n-- && *t != '\0') {
 		if (*s != *t) {
 			return ((unsigned char)*s - (unsigned char)*t);
-			n = 0;
 		} else {
 			++s, ++t;
 		}
@@ -51,29 +42,29 @@ static int strlcmp(const char *s, const char *t, size_t n)
 	return (unsigned char)*s;
 }
 
-static void align_target_time_reg(u32 ch, void __iomem *ioaddr,
+static void align_target_time_reg(u32 ch, struct stmmac_priv *priv,
 				  struct pps_cfg *eth_pps_cfg,
 				  unsigned int align_ns)
 {
 	unsigned int system_s, system_ns, temp_system_s;
 
-	system_s = readl_relaxed(ioaddr + 0xb00 + PTP_STSR);
-	system_ns = readl_relaxed(ioaddr + 0xb00 + PTP_STNSR);
-	temp_system_s = readl_relaxed(ioaddr + 0xb00 + PTP_STSR);
+	system_s = readl_relaxed(priv->ptpaddr + PTP_STSR);
+	system_ns = readl_relaxed(priv->ptpaddr + PTP_STNSR);
+	temp_system_s = readl_relaxed(priv->ptpaddr + PTP_STSR);
 
 	if (temp_system_s != system_s) { // second roll over
-		system_s = readl_relaxed(ioaddr + 0xb00 + PTP_STSR);
-		system_ns = readl_relaxed(ioaddr + 0xb00 + PTP_STNSR);
+		system_s = readl_relaxed(priv->ptpaddr + PTP_STSR);
+		system_ns = readl_relaxed(priv->ptpaddr + PTP_STNSR);
 	}
 
 	system_ns += PPS_START_DELAY;
 	if (system_ns >= align_ns)
 		system_s += 1;
 
-	writel_relaxed(system_s, ioaddr +
+	writel_relaxed(system_s, priv->ioaddr +
 		       MAC_PPSX_TARGET_TIME_SEC(eth_pps_cfg->ppsout_ch));
 
-	writel_relaxed(align_ns, ioaddr +
+	writel_relaxed(align_ns, priv->ioaddr +
 		       MAC_PPSX_TARGET_TIME_NSEC(eth_pps_cfg->ppsout_ch));
 }
 
@@ -101,8 +92,8 @@ static u32 pps_config_sub_second_increment(void __iomem *ioaddr,
 	if (!(value & PTP_TCR_TSCTRLSSR))
 		data = div_u64((data * 1000), 465);
 
-	data &= PTP_SSIR_SSINC_MASK;
-
+	if (data > PTP_SSIR_SSINC_MAX)
+		data = PTP_SSIR_SSINC_MAX;
 	reg_value = data;
 	if (gmac4)
 		reg_value <<= GMAC4_PTP_SSIR_SSINC_SHIFT;
@@ -136,7 +127,7 @@ static irqreturn_t ethqos_pps_avb_class_a(int irq, void *dev_id)
 	struct qcom_ethqos *ethqos = priv->plat->bsp_priv;
 
 	ethqos->avb_class_a_intr_cnt++;
-	avb_class_a_msg_wq_flag = 1;
+	avb_class_a_msg_wq_flag = true;
 	wake_up_interruptible(&avb_class_a_msg_wq);
 
 	return IRQ_HANDLED;
@@ -150,7 +141,7 @@ static irqreturn_t ethqos_pps_avb_class_b(int irq, void *dev_id)
 	struct qcom_ethqos *ethqos = priv->plat->bsp_priv;
 
 	ethqos->avb_class_b_intr_cnt++;
-	avb_class_b_msg_wq_flag = 1;
+	avb_class_b_msg_wq_flag = true;
 	wake_up_interruptible(&avb_class_b_msg_wq);
 	return IRQ_HANDLED;
 }
@@ -196,8 +187,9 @@ int ppsout_config(struct stmmac_priv *priv, struct pps_cfg *eth_pps_cfg)
 	int interval, width;
 	u32 sub_second_inc;
 	void __iomem *ioaddr = priv->ioaddr;
-	u32 val, align_ns = 0;
+	u32 val;
 	u64 temp;
+	u32 align_ns = 0;
 
 	if (!eth_pps_cfg->ppsout_start) {
 		ppsout_stop(priv, eth_pps_cfg);
@@ -249,7 +241,7 @@ int ppsout_config(struct stmmac_priv *priv, struct pps_cfg *eth_pps_cfg)
 		else
 			align_ns -= PPS_ADJUST_NS;
 		align_target_time_reg(eth_pps_cfg->ppsout_ch,
-				      priv->ioaddr, eth_pps_cfg, align_ns);
+				      priv, eth_pps_cfg, align_ns);
 	}
 
 	writel_relaxed(interval, ioaddr +
@@ -262,12 +254,17 @@ int ppsout_config(struct stmmac_priv *priv, struct pps_cfg *eth_pps_cfg)
 	return 0;
 }
 
-int ethqos_init_pps(struct stmmac_priv *priv)
+int ethqos_init_pps(void *priv_n)
 {
+	struct stmmac_priv *priv;
 	u32 value;
 	struct pps_cfg eth_pps_cfg = {0};
 
-	priv->ptpaddr = priv->ioaddr + PTP_GMAC4_OFFSET;
+	if (!priv_n)
+		return -ENODEV;
+
+	priv = priv_n;
+
 	value = (PTP_TCR_TSENA | PTP_TCR_TSCFUPDT | PTP_TCR_TSUPDT);
 	priv->hw->ptp->config_hw_tstamping(priv->ptpaddr, value);
 	priv->hw->ptp->init_systime(priv->ptpaddr, 0, 0);
@@ -275,8 +272,10 @@ int ethqos_init_pps(struct stmmac_priv *priv)
 
 	/*Configuaring PPS0 PPS output frequency to default 19.2 Mhz*/
 	eth_pps_cfg.ppsout_ch = 0;
+
 	eth_pps_cfg.ptpclk_freq = priv->plat->clk_ptp_req_rate;
 	eth_pps_cfg.ppsout_freq = PPS_19_2_FREQ;
+
 	eth_pps_cfg.ppsout_start = 1;
 	eth_pps_cfg.ppsout_duty = 50;
 
@@ -295,7 +294,7 @@ static ssize_t pps_fops_read(struct file *filp, char __user *buf,
 	info = filp->private_data;
 
 	if (info->channel_no == AVB_CLASS_A_CHANNEL_NUM) {
-		avb_class_a_msg_wq_flag = 0;
+		avb_class_a_msg_wq_flag = false;
 		temp_buf = kzalloc(buf_len, GFP_KERNEL);
 		if (!temp_buf)
 			return -ENOMEM;
@@ -313,7 +312,7 @@ static ssize_t pps_fops_read(struct file *filp, char __user *buf,
 			ETHQOSERR("poll pps2intr info=%d sent by kernel\n",
 				  pethqos->avb_class_a_intr_cnt);
 	} else if (info->channel_no == AVB_CLASS_B_CHANNEL_NUM) {
-		avb_class_b_msg_wq_flag = 0;
+		avb_class_b_msg_wq_flag = false;
 		temp_buf = kzalloc(buf_len, GFP_KERNEL);
 		if (!temp_buf)
 			return -ENOMEM;
@@ -345,14 +344,14 @@ static unsigned int pps_fops_poll(struct file *file, poll_table *wait)
 
 		poll_wait(file, &avb_class_a_msg_wq, wait);
 
-		if (avb_class_a_msg_wq_flag == 1) {
+		if (avb_class_a_msg_wq_flag) {
 			//Sending read mask
 			mask |= POLLIN | POLLRDNORM;
 		}
 	} else if (info->channel_no == AVB_CLASS_B_CHANNEL_NUM) {
 		poll_wait(file, &avb_class_b_msg_wq, wait);
 
-		if (avb_class_b_msg_wq_flag == 1) {
+		if (avb_class_b_msg_wq_flag) {
 			//Sending read mask
 			mask |= POLLIN | POLLRDNORM;
 		}

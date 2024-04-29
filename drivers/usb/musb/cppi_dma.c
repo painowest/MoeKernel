@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2005-2006 by Texas Instruments
  *
@@ -974,7 +975,7 @@ static int cppi_channel_program(struct dma_channel *ch,
 		musb_dbg(musb, "%cX DMA%d not allocated!",
 				cppi_ch->transmit ? 'T' : 'R',
 				cppi_ch->index);
-		/* FALLTHROUGH */
+		fallthrough;
 	case MUSB_DMA_STATUS_FREE:
 		break;
 	}

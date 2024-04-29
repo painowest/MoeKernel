@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * USB Networking Link Interface
  *
@@ -22,14 +23,14 @@
 #ifndef	__LINUX_USB_USBNET_H
 #define	__LINUX_USB_USBNET_H
 
-#define IPC_LOG_NUM_PAGES 30
+#include <linux/android_kabi.h>
 
 /* interface from usbnet core to each USB networking link we handle */
 struct usbnet {
 	/* housekeeping */
 	struct usb_device	*udev;
 	struct usb_interface	*intf;
-	struct driver_info	*driver_info;
+	const struct driver_info *driver_info;
 	const char		*driver_name;
 	void			*driver_priv;
 	wait_queue_head_t	wait;
@@ -54,6 +55,9 @@ struct usbnet {
 	u32			hard_mtu;	/* count any extra framing */
 	size_t			rx_urb_size;	/* size for rx urbs */
 	struct mii_if_info	mii;
+	long			rx_speed;	/* If MII not used */
+	long			tx_speed;	/* If MII not used */
+#		define SPEED_UNSET	-1
 
 	/* various kinds of pending driver work */
 	struct sk_buff_head	rxq;
@@ -65,8 +69,6 @@ struct usbnet {
 	struct mutex		interrupt_mutex;
 	struct usb_anchor	deferred;
 	struct tasklet_struct	bh;
-
-	struct pcpu_sw_netstats __percpu *stats64;
 
 	struct work_struct	kevent;
 	unsigned long		flags;
@@ -85,11 +87,10 @@ struct usbnet {
 #		define EVENT_SET_RX_MODE	12
 #		define EVENT_NO_IP_ALIGN	13
 
-	void			*ipc_log_ctxt;
-	int			netdev_id;
-
-	u32			rx_speed;	/* in bps - NOT Mbps */
-	u32			tx_speed;	/* in bps - NOT Mbps */
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 static inline struct usb_driver *driver_of(struct usb_interface *intf)
@@ -179,6 +180,9 @@ struct driver_info {
 	int		out;		/* tx endpoint */
 
 	unsigned long	data;		/* Misc driver specific data */
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 /* Minidrivers are just drivers using the "usbnet" core as a powerful
@@ -214,6 +218,7 @@ struct cdc_state {
 	struct usb_interface		*data;
 };
 
+extern void usbnet_cdc_update_filter(struct usbnet *dev);
 extern int usbnet_generic_cdc_bind(struct usbnet *, struct usb_interface *);
 extern int usbnet_ether_cdc_bind(struct usbnet *dev, struct usb_interface *intf);
 extern int usbnet_cdc_bind(struct usbnet *, struct usb_interface *);
@@ -260,7 +265,7 @@ extern int usbnet_open(struct net_device *net);
 extern int usbnet_stop(struct net_device *net);
 extern netdev_tx_t usbnet_start_xmit(struct sk_buff *skb,
 				     struct net_device *net);
-extern void usbnet_tx_timeout(struct net_device *net);
+extern void usbnet_tx_timeout(struct net_device *net, unsigned int txqueue);
 extern int usbnet_change_mtu(struct net_device *net, int new_mtu);
 
 extern int usbnet_get_endpoints(struct usbnet *, struct usb_interface *);
@@ -273,13 +278,16 @@ extern void usbnet_pause_rx(struct usbnet *);
 extern void usbnet_resume_rx(struct usbnet *);
 extern void usbnet_purge_paused_rxq(struct usbnet *);
 
-extern int usbnet_get_link_ksettings(struct net_device *net,
+extern int usbnet_get_link_ksettings_mii(struct net_device *net,
 				     struct ethtool_link_ksettings *cmd);
-extern int usbnet_set_link_ksettings(struct net_device *net,
+extern int usbnet_set_link_ksettings_mii(struct net_device *net,
 				     const struct ethtool_link_ksettings *cmd);
+extern int usbnet_get_link_ksettings_internal(struct net_device *net,
+				     struct ethtool_link_ksettings *cmd);
 extern u32 usbnet_get_link(struct net_device *net);
 extern u32 usbnet_get_msglevel(struct net_device *);
 extern void usbnet_set_msglevel(struct net_device *, u32);
+extern void usbnet_set_rx_mode(struct net_device *net);
 extern void usbnet_get_drvinfo(struct net_device *, struct ethtool_drvinfo *);
 extern int usbnet_nway_reset(struct net_device *net);
 
@@ -290,7 +298,5 @@ extern int usbnet_status_start(struct usbnet *dev, gfp_t mem_flags);
 extern void usbnet_status_stop(struct usbnet *dev);
 
 extern void usbnet_update_max_qlen(struct usbnet *dev);
-extern void usbnet_get_stats64(struct net_device *dev,
-			       struct rtnl_link_stats64 *stats);
 
 #endif /* __LINUX_USB_USBNET_H */

@@ -1,13 +1,6 @@
-/* Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _NPU_HW_ACCESS_H
@@ -26,14 +19,9 @@
 #define IPC_MEM_OFFSET_FROM_SSTCM 0x00018000
 #define SYS_CACHE_SCID 23
 
-#define QFPROM_FMAX_REG_OFFSET_1 0x00006014
-#define QFPROM_FMAX_BITS_MASK_1  0xF8000000
-#define QFPROM_FMAX_BITS_SHIFT_1 27
-
-#define QFPROM_FMAX_REG_OFFSET_2 0x00006018
-#define QFPROM_FMAX_BITS_MASK_2  0x00000007
-#define QFPROM_FMAX_BITS_SHIFT_2 5
-
+#define QFPROM_FMAX_REG_OFFSET 0x00006010
+#define QFPROM_FMAX_BITS_MASK  0x0003FC00
+#define QFPROM_FMAX_BITS_SHIFT 10
 
 #define REGW(npu_dev, off, val) npu_core_reg_write(npu_dev, off, val)
 #define REGR(npu_dev, off) npu_core_reg_read(npu_dev, off)
@@ -95,10 +83,7 @@ void npu_disable_irq(struct npu_device *npu_dev);
 int npu_enable_sys_cache(struct npu_device *npu_dev);
 void npu_disable_sys_cache(struct npu_device *npu_dev);
 
-void *subsystem_get_local(char *sub_system);
-void subsystem_put_local(void *sub_system_handle);
-
-void npu_process_log_message(struct npu_device *npu_dev, uint32_t *msg,
-	uint32_t size);
+int npu_subsystem_get(struct npu_device *npu_dev, const char *fw_name);
+void npu_subsystem_put(struct npu_device *npu_dev);
 
 #endif /* _NPU_HW_ACCESS_H*/

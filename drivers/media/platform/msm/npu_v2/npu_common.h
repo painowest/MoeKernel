@@ -1,13 +1,6 @@
-/* Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _NPU_COMMON_H
@@ -17,7 +10,6 @@
  * Includes
  * -------------------------------------------------------------------------
  */
-#include <asm/dma-iommu.h>
 #include <linux/cdev.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -29,10 +21,12 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/mailbox/qmp.h>
+#ifdef CONFIG_MSM_BUS_SCALING
 #include <linux/msm-bus.h>
+#endif
 #include <linux/mailbox_controller.h>
 #include <linux/reset.h>
-
+#include <linux/interconnect.h>
 #include "npu_mgr.h"
 
 /* -------------------------------------------------------------------------
@@ -49,9 +43,9 @@
 
 #define NUM_MAX_CLK_NUM			48
 #define NPU_MAX_REGULATOR_NUM	2
-#define NPU_MAX_DT_NAME_LEN		21
+#define NPU_MAX_DT_NAME_LEN	    21
 #define NPU_MAX_PWRLEVELS		8
-#define NPU_MAX_STATS_BUF_SIZE	16384
+#define NPU_MAX_STATS_BUF_SIZE 16384
 #define NPU_MAX_PATCH_NUM		160
 #define NPU_MAX_BW_DEVS			4
 
@@ -116,12 +110,6 @@ struct npu_debugfs_ctx {
 	struct dentry *root;
 	uint32_t reg_off;
 	uint32_t reg_cnt;
-	uint8_t *log_buf;
-	struct mutex log_lock;
-	uint32_t log_num_bytes_buffered;
-	uint32_t log_read_index;
-	uint32_t log_write_index;
-	uint32_t log_buf_size;
 };
 
 struct npu_debugfs_reg_ctx {
@@ -140,8 +128,8 @@ struct npu_mbox {
 	bool send_data_pending;
 };
 
-/*
- * struct npul_pwrlevel - Struct holding different pwrlevel info obtained from
+/**
+ * struct npu_pwrlevel - Struct holding different pwrlevel info obtained
  * from dtsi file
  * @pwr_level:           NPU power level
  * @freq[]:              NPU frequency vote in Hz
@@ -163,7 +151,7 @@ struct npu_reg {
 	bool valid;
 };
 
-/*
+/**
  * struct npu_pwrctrl - Power control settings for a NPU device
  * @pwr_vote_num - voting information for power enable
  * @pwrlevels - List of supported power levels
@@ -183,6 +171,7 @@ struct npu_reg {
  */
 struct npu_pwrctrl {
 	int32_t pwr_vote_num;
+	int32_t pwr_vote_num_sysfs;
 
 	struct npu_pwrlevel pwrlevels[NPU_MAX_PWRLEVELS];
 	uint32_t active_pwrlevel;
@@ -202,7 +191,7 @@ struct npu_pwrctrl {
 	uint32_t cur_dcvs_activity;
 };
 
-/*
+/**
  * struct npu_thermalctrl - Thermal control settings for a NPU device
  * @max_state - maximum thermal mitigation state
  * @current_state - current thermal mitigation state
@@ -234,9 +223,11 @@ struct npu_io_data {
 #define MBYTE (1ULL << 20)
 
 struct npu_bwctrl {
+#ifdef CONFIG_MSM_BUS_SCALING
 	struct msm_bus_vectors vectors[MAX_PATHS * DBL_BUF];
 	struct msm_bus_paths bw_levels[DBL_BUF];
 	struct msm_bus_scale_pdata bw_data;
+#endif
 	uint32_t bus_client;
 	int cur_ab;
 	int cur_ib;
@@ -250,8 +241,16 @@ struct mbox_bridge_data {
 	void *priv_data;
 };
 
+struct npu_fw_io_data {
+	phys_addr_t mem_phys;
+	phys_addr_t mem_reloc;
+	void *mem_region;
+	size_t mem_size;
+};
+
 struct npu_device {
 	struct mutex dev_lock;
+	spinlock_t ipc_lock;
 
 	struct platform_device *pdev;
 
@@ -266,6 +265,7 @@ struct npu_device {
 	struct npu_io_data tcsr_io;
 	struct npu_io_data apss_shared_io;
 	struct npu_io_data qfprom_io;
+	struct npu_fw_io_data fw_io;
 
 	uint32_t core_clk_num;
 	struct npu_clk core_clks[NUM_MAX_CLK_NUM];
@@ -281,6 +281,10 @@ struct npu_device {
 	struct npu_host_ctx host_ctx;
 	struct npu_smmu_ctx smmu_ctx;
 	struct npu_debugfs_ctx debugfs_ctx;
+
+	struct icc_path *icc_llcc_bw;
+	struct icc_path *icc_llcc_ddr_bw;
+	struct icc_path *icc_dsp_ddr_bw;
 
 	struct npu_mbox *mbox_aop;
 	struct npu_mbox mbox[NPU_MAX_MBOX_NUM];
@@ -339,6 +343,7 @@ void disable_fw(struct npu_device *npu_dev);
 int load_fw(struct npu_device *npu_dev);
 int unload_fw(struct npu_device *npu_dev);
 int npu_set_bw(struct npu_device *npu_dev, int new_ib, int new_ab);
+int npu_notify_cdsprm_cxlimit_activity(struct npu_device *npu_dev, bool enable);
 int npu_bridge_mbox_send_data(struct npu_host_ctx *host_ctx,
 	struct npu_mbox *mbox, void *data);
 #endif /* _NPU_COMMON_H */

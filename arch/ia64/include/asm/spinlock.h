@@ -26,7 +26,7 @@
  * the queue, and the other indicating the current tail. The lock is acquired
  * by atomically noting the tail and incrementing it by one (thus adding
  * ourself to the queue and noting our position), then waiting until the head
- * becomes equal to the the initial value of the tail.
+ * becomes equal to the initial value of the tail.
  * The pad bits in the middle are used to prevent the next_ticket number
  * overflowing into the now_serving number.
  *
@@ -62,7 +62,7 @@ static __always_inline void __ticket_spin_lock(arch_spinlock_t *lock)
 
 static __always_inline int __ticket_spin_trylock(arch_spinlock_t *lock)
 {
-	int tmp = ACCESS_ONCE(lock->lock);
+	int tmp = READ_ONCE(lock->lock);
 
 	if (!(((tmp >> TICKET_SHIFT) ^ tmp) & TICKET_MASK))
 		return ia64_cmpxchg(acq, &lock->lock, tmp, tmp + 1, sizeof (tmp)) == tmp;
@@ -73,20 +73,22 @@ static __always_inline void __ticket_spin_unlock(arch_spinlock_t *lock)
 {
 	unsigned short	*p = (unsigned short *)&lock->lock + 1, tmp;
 
+	/* This could be optimised with ARCH_HAS_MMIOWB */
+	mmiowb();
 	asm volatile ("ld2.bias %0=[%1]" : "=r"(tmp) : "r"(p));
-	ACCESS_ONCE(*p) = (tmp + 2) & ~1;
+	WRITE_ONCE(*p, (tmp + 2) & ~1);
 }
 
 static inline int __ticket_spin_is_locked(arch_spinlock_t *lock)
 {
-	long tmp = ACCESS_ONCE(lock->lock);
+	long tmp = READ_ONCE(lock->lock);
 
 	return !!(((tmp >> TICKET_SHIFT) ^ tmp) & TICKET_MASK);
 }
 
 static inline int __ticket_spin_is_contended(arch_spinlock_t *lock)
 {
-	long tmp = ACCESS_ONCE(lock->lock);
+	long tmp = READ_ONCE(lock->lock);
 
 	return ((tmp - (tmp >> TICKET_SHIFT)) & TICKET_MASK) > 1;
 }
@@ -128,9 +130,6 @@ static __always_inline void arch_spin_lock_flags(arch_spinlock_t *lock,
 	arch_spin_lock(lock);
 }
 #define arch_spin_lock_flags	arch_spin_lock_flags
-
-#define arch_read_can_lock(rw)		(*(volatile int *)(rw) >= 0)
-#define arch_write_can_lock(rw)	(*(volatile int *)(rw) == 0)
 
 #ifdef ASM_SUPPORTED
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * drivers/usb/misc/lvstest.c
  *
@@ -5,10 +6,6 @@
  *
  * Copyright (C) 2014 ST Microelectronics
  * Pratyush Anand <pratyush.anand@gmail.com>
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/init.h>
@@ -108,7 +105,13 @@ static ssize_t u3_entry_store(struct device *dev,
 	struct usb_device *hdev = interface_to_usbdev(intf);
 	struct lvs_rh *lvs = usb_get_intfdata(intf);
 	struct usb_device *udev;
+	int port;
 	int ret;
+
+	if (!kstrtoint(buf, 0, &port) && port >= 1 && port <= 255) {
+		lvs->portnum = port;
+		lvs->present = true;
+	}
 
 	udev = create_lvs_device(intf);
 	if (!udev) {
@@ -137,7 +140,13 @@ static ssize_t u3_exit_store(struct device *dev,
 	struct usb_device *hdev = interface_to_usbdev(intf);
 	struct lvs_rh *lvs = usb_get_intfdata(intf);
 	struct usb_device *udev;
+	int port;
 	int ret;
+
+	if (!kstrtoint(buf, 0, &port) && port >= 1 && port <= 255) {
+		lvs->portnum = port;
+		lvs->present = true;
+	}
 
 	udev = create_lvs_device(intf);
 	if (!udev) {
@@ -165,9 +174,13 @@ static ssize_t hot_reset_store(struct device *dev,
 	struct usb_interface *intf = to_usb_interface(dev);
 	struct usb_device *hdev = interface_to_usbdev(intf);
 	struct lvs_rh *lvs = usb_get_intfdata(intf);
+	int port;
 	int ret;
 
-	ret = lvs_rh_set_port_feature(hdev, lvs->portnum,
+	if (kstrtoint(buf, 0, &port) || port < 1 || port > 255)
+		port = lvs->portnum;
+
+	ret = lvs_rh_set_port_feature(hdev, port,
 			USB_PORT_FEAT_RESET);
 	if (ret < 0) {
 		dev_err(dev, "can't issue hot reset %d\n", ret);
@@ -262,9 +275,15 @@ static ssize_t get_dev_desc_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct usb_interface *intf = to_usb_interface(dev);
+	struct lvs_rh *lvs = usb_get_intfdata(intf);
 	struct usb_device *udev;
 	struct usb_device_descriptor *descriptor;
-	int ret;
+	int ret, port;
+
+	if (!kstrtoint(buf, 0, &port) && port >= 1 && port <= 255) {
+		lvs->portnum = port;
+		lvs->present = true;
+	}
 
 	descriptor = kmalloc(sizeof(*descriptor), GFP_KERNEL);
 	if (!descriptor)
@@ -283,7 +302,6 @@ static ssize_t get_dev_desc_store(struct device *dev,
 			USB_CTRL_GET_TIMEOUT);
 	if (ret < 0)
 		dev_err(dev, "can't read device descriptor %d\n", ret);
-
 	destroy_lvs_device(udev);
 
 free_desc:
@@ -320,7 +338,7 @@ static ssize_t enable_compliance_store(struct device *dev,
 }
 static DEVICE_ATTR_WO(enable_compliance);
 
-static struct attribute *lvs_attributes[] = {
+static struct attribute *lvs_attrs[] = {
 	&dev_attr_get_dev_desc.attr,
 	&dev_attr_u1_timeout.attr,
 	&dev_attr_u2_timeout.attr,
@@ -331,10 +349,7 @@ static struct attribute *lvs_attributes[] = {
 	&dev_attr_enable_compliance.attr,
 	NULL
 };
-
-static const struct attribute_group lvs_attr_group = {
-	.attrs = lvs_attributes,
-};
+ATTRIBUTE_GROUPS(lvs);
 
 static void lvs_rh_work(struct work_struct *work)
 {
@@ -449,12 +464,6 @@ static int lvs_rh_probe(struct usb_interface *intf,
 
 	INIT_WORK(&lvs->rh_work, lvs_rh_work);
 
-	ret = sysfs_create_group(&intf->dev.kobj, &lvs_attr_group);
-	if (ret < 0) {
-		dev_err(&intf->dev, "Failed to create sysfs node %d\n", ret);
-		goto free_urb;
-	}
-
 	pipe = usb_rcvintpipe(hdev, endpoint->bEndpointAddress);
 	maxp = usb_maxpacket(hdev, pipe, usb_pipeout(pipe));
 	usb_fill_int_urb(lvs->urb, hdev, pipe, &lvs->buffer[0], maxp,
@@ -463,13 +472,11 @@ static int lvs_rh_probe(struct usb_interface *intf,
 	ret = usb_submit_urb(lvs->urb, GFP_KERNEL);
 	if (ret < 0) {
 		dev_err(&intf->dev, "couldn't submit lvs urb %d\n", ret);
-		goto sysfs_remove;
+		goto free_urb;
 	}
 
 	return ret;
 
-sysfs_remove:
-	sysfs_remove_group(&intf->dev.kobj, &lvs_attr_group);
 free_urb:
 	usb_free_urb(lvs->urb);
 	return ret;
@@ -479,7 +486,6 @@ static void lvs_rh_disconnect(struct usb_interface *intf)
 {
 	struct lvs_rh *lvs = usb_get_intfdata(intf);
 
-	sysfs_remove_group(&intf->dev.kobj, &lvs_attr_group);
 	usb_poison_urb(lvs->urb); /* used in scheduled work */
 	flush_work(&lvs->rh_work);
 	usb_free_urb(lvs->urb);
@@ -489,6 +495,7 @@ static struct usb_driver lvs_driver = {
 	.name =		"lvs",
 	.probe =	lvs_rh_probe,
 	.disconnect =	lvs_rh_disconnect,
+	.dev_groups =	lvs_groups,
 };
 
 module_usb_driver(lvs_driver);

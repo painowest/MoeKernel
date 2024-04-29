@@ -90,9 +90,9 @@
  * for such situations. See below and CPUMASK_ALLOC also.
  */
 
-#include <linux/kernel.h>
 #include <linux/threads.h>
 #include <linux/bitmap.h>
+#include <linux/minmax.h>
 #include <linux/numa.h>
 
 typedef struct { DECLARE_BITMAP(bits, MAX_NUMNODES); } nodemask_t;
@@ -104,13 +104,22 @@ extern nodemask_t _unused_nodemask_arg_;
  *
  * Can be used to provide arguments for '%*pb[l]' when printing a nodemask.
  */
-#define nodemask_pr_args(maskp)		MAX_NUMNODES, (maskp)->bits
+#define nodemask_pr_args(maskp)	__nodemask_pr_numnodes(maskp), \
+				__nodemask_pr_bits(maskp)
+static inline unsigned int __nodemask_pr_numnodes(const nodemask_t *m)
+{
+	return m ? MAX_NUMNODES : 0;
+}
+static inline const unsigned long *__nodemask_pr_bits(const nodemask_t *m)
+{
+	return m ? m->bits : NULL;
+}
 
 /*
  * The inline keyword gives the compiler room to decide to inline, or
  * not inline a function as it sees best.  However, as these functions
  * are called in both __init and non-__init functions, if they are not
- * inlined we will end up with a section mis-match error (of the type of
+ * inlined we will end up with a section mismatch error (of the type of
  * freeable items not being freed).  So we must use __always_inline here
  * to fix the problem.  If other functions in the future also end up in
  * this situation they will also need to be annotated as __always_inline
@@ -389,6 +398,7 @@ enum node_states {
 #endif
 	N_MEMORY,		/* The node has memory(regular, high, movable) */
 	N_CPU,		/* The node has one or more cpus */
+	N_GENERIC_INITIATOR,	/* The node has one or more Generic Initiators */
 	NR_NODE_STATES
 };
 
@@ -434,8 +444,8 @@ static inline unsigned int next_memory_node(int nid)
 	return next_node(nid, node_states[N_MEMORY]);
 }
 
-extern int nr_node_ids;
-extern int nr_online_nodes;
+extern unsigned int nr_node_ids;
+extern unsigned int nr_online_nodes;
 
 static inline void node_set_online(int nid)
 {
@@ -475,8 +485,9 @@ static inline int num_node_state(enum node_states state)
 #define first_online_node	0
 #define first_memory_node	0
 #define next_online_node(nid)	(MAX_NUMNODES)
-#define nr_node_ids		1
-#define nr_online_nodes		1
+#define next_memory_node(nid)	(MAX_NUMNODES)
+#define nr_node_ids		1U
+#define nr_online_nodes		1U
 
 #define node_set_online(node)	   node_set_state((node), N_ONLINE)
 #define node_set_offline(node)	   node_clear_state((node), N_ONLINE)
@@ -504,11 +515,11 @@ static inline int node_random(const nodemask_t *mask)
 #define for_each_online_node(node) for_each_node_state(node, N_ONLINE)
 
 /*
- * For nodemask scrach area.
+ * For nodemask scratch area.
  * NODEMASK_ALLOC(type, name) allocates an object with a specified type and
  * name.
  */
-#if NODES_SHIFT > 8 /* nodemask_t > 256 bytes */
+#if NODES_SHIFT > 8 /* nodemask_t > 32 bytes */
 #define NODEMASK_ALLOC(type, name, gfp_flags)	\
 			type *name = kmalloc(sizeof(*name), gfp_flags)
 #define NODEMASK_FREE(m)			kfree(m)
@@ -517,7 +528,7 @@ static inline int node_random(const nodemask_t *mask)
 #define NODEMASK_FREE(m)			do {} while (0)
 #endif
 
-/* A example struture for using NODEMASK_ALLOC, used in mempolicy. */
+/* Example structure for using NODEMASK_ALLOC, used in mempolicy. */
 struct nodemask_scratch {
 	nodemask_t	mask1;
 	nodemask_t	mask2;

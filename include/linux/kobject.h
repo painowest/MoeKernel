@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * kobject.h - generic kernel object infrastructure.
  *
@@ -6,9 +7,7 @@
  * Copyright (c) 2006-2008 Greg Kroah-Hartman <greg@kroah.com>
  * Copyright (c) 2006-2008 Novell Inc.
  *
- * This file is released under the GPLv2.
- *
- * Please read Documentation/kobject.txt before using the kobject
+ * Please read Documentation/core-api/kobject.rst before using the kobject
  * interface, ESPECIALLY the parts about reference counts and object
  * destructors.
  */
@@ -27,6 +26,8 @@
 #include <linux/wait.h>
 #include <linux/atomic.h>
 #include <linux/workqueue.h>
+#include <linux/uidgid.h>
+#include <linux/android_kabi.h>
 
 #define UEVENT_HELPER_PATH_LEN		256
 #define UEVENT_NUM_ENVP			64	/* number of env pointers */
@@ -59,7 +60,6 @@ enum kobject_action {
 	KOBJ_OFFLINE,
 	KOBJ_BIND,
 	KOBJ_UNBIND,
-	KOBJ_MAX
 };
 
 struct kobject {
@@ -78,6 +78,11 @@ struct kobject {
 	unsigned int state_add_uevent_sent:1;
 	unsigned int state_remove_uevent_sent:1;
 	unsigned int uevent_suppress:1;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 extern __printf(2, 3)
@@ -115,7 +120,30 @@ extern struct kobject * __must_check kobject_get_unless_zero(
 extern void kobject_put(struct kobject *kobj);
 
 extern const void *kobject_namespace(struct kobject *kobj);
+extern void kobject_get_ownership(struct kobject *kobj,
+				  kuid_t *uid, kgid_t *gid);
+#ifdef __GENKSYMS__	// ANDROID KABI CRC preservation
 extern char *kobject_get_path(struct kobject *kobj, gfp_t flag);
+#else
+extern char *kobject_get_path(const struct kobject *kobj, gfp_t flag);
+#endif
+
+/**
+ * kobject_has_children - Returns whether a kobject has children.
+ * @kobj: the object to test
+ *
+ * This will return whether a kobject has other kobjects as children.
+ *
+ * It does NOT account for the presence of attribute files, only sub
+ * directories. It also assumes there is no concurrent addition or
+ * removal of such children, and thus relies on external locking.
+ */
+static inline bool kobject_has_children(struct kobject *kobj)
+{
+	WARN_ON_ONCE(kref_read(&kobj->kref) == 0);
+
+	return kobj->sd && kobj->sd->dir.subdirs;
+}
 
 /**
  * kobject_has_children - Returns whether a kobject has children.
@@ -137,9 +165,16 @@ static inline bool kobject_has_children(struct kobject *kobj)
 struct kobj_type {
 	void (*release)(struct kobject *kobj);
 	const struct sysfs_ops *sysfs_ops;
-	struct attribute **default_attrs;
+	struct attribute **default_attrs;	/* use default_groups instead */
+	const struct attribute_group **default_groups;
 	const struct kobj_ns_type_operations *(*child_ns_type)(struct kobject *kobj);
 	const void *(*namespace)(struct kobject *kobj);
+	void (*get_ownership)(struct kobject *kobj, kuid_t *uid, kgid_t *gid);
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 };
 
 struct kobj_uevent_env {
@@ -191,6 +226,11 @@ struct kset {
 	spinlock_t list_lock;
 	struct kobject kobj;
 	const struct kset_uevent_ops *uevent_ops;
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
+	ANDROID_KABI_RESERVE(3);
+	ANDROID_KABI_RESERVE(4);
 } __randomize_layout;
 
 extern void kset_init(struct kset *kset);

@@ -1,13 +1,6 @@
-/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2014-2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -23,6 +16,7 @@
 #include <linux/coresight.h>
 
 #include "coresight-priv.h"
+#include "coresight-common.h"
 
 #define tpda_writel(drvdata, val, off)	__raw_writel((val), drvdata->base + off)
 #define tpda_readl(drvdata, off)	__raw_readl(drvdata->base + off)
@@ -49,6 +43,8 @@ do {									\
 
 #define TPDA_MAX_INPORTS	32
 
+DEFINE_CORESIGHT_DEVLIST(tpda_devs, "tpda");
+
 struct tpda_drvdata {
 	void __iomem		*base;
 	struct device		*dev;
@@ -66,6 +62,7 @@ struct tpda_drvdata {
 	bool			freq_ts;
 	uint32_t		freq_req_val;
 	bool			freq_req;
+	bool			cmbchan_mode;
 };
 
 static void __tpda_enable_pre_port(struct tpda_drvdata *drvdata)
@@ -93,6 +90,10 @@ static void __tpda_enable_pre_port(struct tpda_drvdata *drvdata)
 		val = val | BIT(2);
 	else
 		val = val & ~BIT(2);
+	if (drvdata->cmbchan_mode)
+		val = val | BIT(20);
+	else
+		val = val & ~BIT(20);
 	tpda_writel(drvdata, val, TPDA_CR);
 
 	/*
@@ -227,7 +228,7 @@ static const struct coresight_ops tpda_cs_ops = {
 	.link_ops	= &tpda_link_ops,
 };
 
-static ssize_t tpda_show_trig_async_enable(struct device *dev,
+static ssize_t trig_async_enable_show(struct device *dev,
 					   struct device_attribute *attr,
 					   char *buf)
 {
@@ -237,7 +238,7 @@ static ssize_t tpda_show_trig_async_enable(struct device *dev,
 			 (unsigned int)drvdata->trig_async);
 }
 
-static ssize_t tpda_store_trig_async_enable(struct device *dev,
+static ssize_t trig_async_enable_store(struct device *dev,
 					    struct device_attribute *attr,
 					    const char *buf,
 					    size_t size)
@@ -256,11 +257,9 @@ static ssize_t tpda_store_trig_async_enable(struct device *dev,
 	mutex_unlock(&drvdata->lock);
 	return size;
 }
-static DEVICE_ATTR(trig_async_enable, 0644,
-		   tpda_show_trig_async_enable,
-		   tpda_store_trig_async_enable);
+static DEVICE_ATTR_RW(trig_async_enable);
 
-static ssize_t tpda_show_trig_flag_ts_enable(struct device *dev,
+static ssize_t trig_flag_ts_enable_show(struct device *dev,
 					     struct device_attribute *attr,
 					     char *buf)
 {
@@ -270,7 +269,7 @@ static ssize_t tpda_show_trig_flag_ts_enable(struct device *dev,
 			 (unsigned int)drvdata->trig_flag_ts);
 }
 
-static ssize_t tpda_store_trig_flag_ts_enable(struct device *dev,
+static ssize_t trig_flag_ts_enable_store(struct device *dev,
 					      struct device_attribute *attr,
 					      const char *buf,
 					      size_t size)
@@ -289,11 +288,9 @@ static ssize_t tpda_store_trig_flag_ts_enable(struct device *dev,
 	mutex_unlock(&drvdata->lock);
 	return size;
 }
-static DEVICE_ATTR(trig_flag_ts_enable, 0644,
-		   tpda_show_trig_flag_ts_enable,
-		   tpda_store_trig_flag_ts_enable);
+static DEVICE_ATTR_RW(trig_flag_ts_enable);
 
-static ssize_t tpda_show_trig_freq_enable(struct device *dev,
+static ssize_t trig_freq_enable_show(struct device *dev,
 					  struct device_attribute *attr,
 					  char *buf)
 {
@@ -303,7 +300,7 @@ static ssize_t tpda_show_trig_freq_enable(struct device *dev,
 			 (unsigned int)drvdata->trig_freq);
 }
 
-static ssize_t tpda_store_trig_freq_enable(struct device *dev,
+static ssize_t trig_freq_enable_store(struct device *dev,
 					   struct device_attribute *attr,
 					   const char *buf,
 					   size_t size)
@@ -322,11 +319,9 @@ static ssize_t tpda_store_trig_freq_enable(struct device *dev,
 	mutex_unlock(&drvdata->lock);
 	return size;
 }
-static DEVICE_ATTR(trig_freq_enable, 0644,
-		   tpda_show_trig_freq_enable,
-		   tpda_store_trig_freq_enable);
+static DEVICE_ATTR_RW(trig_freq_enable);
 
-static ssize_t tpda_show_freq_ts_enable(struct device *dev,
+static ssize_t freq_ts_enable_show(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
 {
@@ -336,7 +331,7 @@ static ssize_t tpda_show_freq_ts_enable(struct device *dev,
 			 (unsigned int)drvdata->freq_ts);
 }
 
-static ssize_t tpda_store_freq_ts_enable(struct device *dev,
+static ssize_t freq_ts_enable_store(struct device *dev,
 					 struct device_attribute *attr,
 					 const char *buf,
 					 size_t size)
@@ -355,10 +350,9 @@ static ssize_t tpda_store_freq_ts_enable(struct device *dev,
 	mutex_unlock(&drvdata->lock);
 	return size;
 }
-static DEVICE_ATTR(freq_ts_enable, 0644, tpda_show_freq_ts_enable,
-		   tpda_store_freq_ts_enable);
+static DEVICE_ATTR_RW(freq_ts_enable);
 
-static ssize_t tpda_show_freq_req_val(struct device *dev,
+static ssize_t freq_req_val_show(struct device *dev,
 				      struct device_attribute *attr,
 				      char *buf)
 {
@@ -368,7 +362,7 @@ static ssize_t tpda_show_freq_req_val(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "%#lx\n", val);
 }
 
-static ssize_t tpda_store_freq_req_val(struct device *dev,
+static ssize_t freq_req_val_store(struct device *dev,
 				       struct device_attribute *attr,
 				       const char *buf,
 				       size_t size)
@@ -384,10 +378,9 @@ static ssize_t tpda_store_freq_req_val(struct device *dev,
 	mutex_unlock(&drvdata->lock);
 	return size;
 }
-static DEVICE_ATTR(freq_req_val, 0644, tpda_show_freq_req_val,
-		   tpda_store_freq_req_val);
+static DEVICE_ATTR_RW(freq_req_val);
 
-static ssize_t tpda_show_freq_req(struct device *dev,
+static ssize_t freq_req_show(struct device *dev,
 				  struct device_attribute *attr,
 				  char *buf)
 {
@@ -397,7 +390,7 @@ static ssize_t tpda_show_freq_req(struct device *dev,
 			 (unsigned int)drvdata->freq_req);
 }
 
-static ssize_t tpda_store_freq_req(struct device *dev,
+static ssize_t freq_req_store(struct device *dev,
 				   struct device_attribute *attr,
 				   const char *buf,
 				   size_t size)
@@ -416,10 +409,9 @@ static ssize_t tpda_store_freq_req(struct device *dev,
 	mutex_unlock(&drvdata->lock);
 	return size;
 }
-static DEVICE_ATTR(freq_req, 0644, tpda_show_freq_req,
-		   tpda_store_freq_req);
+static DEVICE_ATTR_RW(freq_req);
 
-static ssize_t tpda_show_global_flush_req(struct device *dev,
+static ssize_t global_flush_req_show(struct device *dev,
 					  struct device_attribute *attr,
 					  char *buf)
 {
@@ -441,7 +433,7 @@ static ssize_t tpda_show_global_flush_req(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "%lx\n", val);
 }
 
-static ssize_t tpda_store_global_flush_req(struct device *dev,
+static ssize_t global_flush_req_store(struct device *dev,
 					   struct device_attribute *attr,
 					   const char *buf,
 					   size_t size)
@@ -470,10 +462,9 @@ static ssize_t tpda_store_global_flush_req(struct device *dev,
 	mutex_unlock(&drvdata->lock);
 	return size;
 }
-static DEVICE_ATTR(global_flush_req, 0644,
-		   tpda_show_global_flush_req, tpda_store_global_flush_req);
+static DEVICE_ATTR_RW(global_flush_req);
 
-static ssize_t tpda_show_port_flush_req(struct device *dev,
+static ssize_t port_flush_req_show(struct device *dev,
 					struct device_attribute *attr,
 					char *buf)
 {
@@ -495,7 +486,7 @@ static ssize_t tpda_show_port_flush_req(struct device *dev,
 	return scnprintf(buf, PAGE_SIZE, "%lx\n", val);
 }
 
-static ssize_t tpda_store_port_flush_req(struct device *dev,
+static ssize_t port_flush_req_store(struct device *dev,
 					 struct device_attribute *attr,
 					 const char *buf,
 					 size_t size)
@@ -522,8 +513,38 @@ static ssize_t tpda_store_port_flush_req(struct device *dev,
 	mutex_unlock(&drvdata->lock);
 	return size;
 }
-static DEVICE_ATTR(port_flush_req, 0644, tpda_show_port_flush_req,
-		   tpda_store_port_flush_req);
+static DEVICE_ATTR_RW(port_flush_req);
+
+static ssize_t cmbchan_mode_show(struct device *dev,
+					     struct device_attribute *attr,
+					     char *buf)
+{
+	struct tpda_drvdata *drvdata = dev_get_drvdata(dev->parent);
+
+	return scnprintf(buf, PAGE_SIZE, "%u\n",
+			 (unsigned int)drvdata->cmbchan_mode);
+}
+
+static ssize_t cmbchan_mode_store(struct device *dev,
+					      struct device_attribute *attr,
+					      const char *buf,
+					      size_t size)
+{
+	struct tpda_drvdata *drvdata = dev_get_drvdata(dev->parent);
+	bool val;
+
+	if (kstrtobool(buf, &val))
+		return -EINVAL;
+
+	mutex_lock(&drvdata->lock);
+	if (val)
+		drvdata->cmbchan_mode = true;
+	else
+		drvdata->cmbchan_mode = false;
+	mutex_unlock(&drvdata->lock);
+	return size;
+}
+static DEVICE_ATTR_RW(cmbchan_mode);
 
 static struct attribute *tpda_attrs[] = {
 	&dev_attr_trig_async_enable.attr,
@@ -534,6 +555,7 @@ static struct attribute *tpda_attrs[] = {
 	&dev_attr_freq_req.attr,
 	&dev_attr_global_flush_req.attr,
 	&dev_attr_port_flush_req.attr,
+	&dev_attr_cmbchan_mode.attr,
 	NULL,
 };
 
@@ -546,37 +568,11 @@ static const struct attribute_group *tpda_attr_grps[] = {
 	NULL,
 };
 
-static int tpda_parse_of_data(struct tpda_drvdata *drvdata)
+static int tpda_parse_tc(struct tpda_drvdata *drvdata)
 {
-	int len, port, i, ret;
+	int len, port, i;
 	const __be32 *prop;
 	struct device_node *node = drvdata->dev->of_node;
-
-	ret = of_property_read_u32(node, "qcom,tpda-atid", &drvdata->atid);
-	if (ret) {
-		dev_err(drvdata->dev, "TPDA ATID is not specified\n");
-		return -EINVAL;
-	}
-
-	prop = of_get_property(node, "qcom,bc-elem-size", &len);
-	if (prop) {
-		len /= sizeof(__be32);
-		if (len < 2 || len > 63 || len % 2 != 0) {
-			dev_err(drvdata->dev,
-				"Dataset BC width entries are wrong\n");
-			return -EINVAL;
-		}
-
-		for (i = 0; i < len; i++) {
-			port = be32_to_cpu(prop[i++]);
-			if (port >= TPDA_MAX_INPORTS) {
-				dev_err(drvdata->dev,
-					"Wrong port specified for BC\n");
-				return -EINVAL;
-			}
-			drvdata->bc_esize[port] = be32_to_cpu(prop[i]);
-		}
-	}
 
 	prop = of_get_property(node, "qcom,tc-elem-size", &len);
 	if (prop) {
@@ -598,6 +594,44 @@ static int tpda_parse_of_data(struct tpda_drvdata *drvdata)
 		}
 	}
 
+	return 0;
+}
+
+static int tpda_parse_bc(struct tpda_drvdata *drvdata)
+{
+	int len, port, i;
+	const __be32 *prop;
+	struct device_node *node = drvdata->dev->of_node;
+
+	prop = of_get_property(node, "qcom,bc-elem-size", &len);
+	if (prop) {
+		len /= sizeof(__be32);
+		if (len < 2 || len > 63 || len % 2 != 0) {
+			dev_err(drvdata->dev,
+				"Dataset BC width entries are wrong\n");
+			return -EINVAL;
+		}
+
+		for (i = 0; i < len; i++) {
+			port = be32_to_cpu(prop[i++]);
+			if (port >= TPDA_MAX_INPORTS) {
+				dev_err(drvdata->dev,
+					"Wrong port specified for BC\n");
+				return -EINVAL;
+			}
+			drvdata->bc_esize[port] = be32_to_cpu(prop[i]);
+		}
+	}
+
+	return 0;
+}
+
+static int tpda_parse_dsb(struct tpda_drvdata *drvdata)
+{
+	int len, port, i;
+	const __be32 *prop;
+	struct device_node *node = drvdata->dev->of_node;
+
 	prop = of_get_property(node, "qcom,dsb-elem-size", &len);
 	if (prop) {
 		len /= sizeof(__be32);
@@ -618,6 +652,15 @@ static int tpda_parse_of_data(struct tpda_drvdata *drvdata)
 		}
 	}
 
+	return 0;
+}
+
+static int tpda_parse_cmb(struct tpda_drvdata *drvdata)
+{
+	int len, port, i;
+	const __be32 *prop;
+	struct device_node *node = drvdata->dev->of_node;
+
 	prop = of_get_property(node, "qcom,cmb-elem-size", &len);
 	if (prop) {
 		len /= sizeof(__be32);
@@ -637,6 +680,45 @@ static int tpda_parse_of_data(struct tpda_drvdata *drvdata)
 			drvdata->cmb_esize[port] = be32_to_cpu(prop[i]);
 		}
 	}
+
+	return 0;
+}
+
+static int tpda_parse_of_data(struct tpda_drvdata *drvdata)
+{
+	int ret;
+	struct device_node *node = drvdata->dev->of_node;
+
+	ret = of_property_read_u32(node, "qcom,tpda-atid", &drvdata->atid);
+	if (ret) {
+		dev_err(drvdata->dev, "TPDA ATID is not specified\n");
+		return -EINVAL;
+	}
+
+	ret = tpda_parse_tc(drvdata);
+	if (ret) {
+		dev_err(drvdata->dev, "Dataset TC width entries are wrong\n");
+		return -EINVAL;
+	}
+
+	ret = tpda_parse_bc(drvdata);
+	if (ret) {
+		dev_err(drvdata->dev, "Dataset BC width entries are wrong\n");
+		return -EINVAL;
+	}
+
+	ret = tpda_parse_dsb(drvdata);
+	if (ret) {
+		dev_err(drvdata->dev, "Dataset DSB width entries are wrong\n");
+		return -EINVAL;
+	}
+
+	ret = tpda_parse_cmb(drvdata);
+	if (ret) {
+		dev_err(drvdata->dev, "Dataset CMB width entries are wrong\n");
+		return -EINVAL;
+	}
+
 	return 0;
 }
 
@@ -645,15 +727,39 @@ static void tpda_init_default_data(struct tpda_drvdata *drvdata)
 	drvdata->freq_ts = true;
 }
 
+static bool coresight_authstatus_enabled(void __iomem *addr)
+{
+	int ret;
+	unsigned int auth_val;
+
+	if (!addr)
+		return false;
+
+	auth_val = readl_relaxed(addr + CORESIGHT_AUTHSTATUS);
+
+	if ((BMVAL(auth_val, 0, 1) == 0x2) ||
+		(BMVAL(auth_val, 2, 3) == 0x2) ||
+		(BMVAL(auth_val, 4, 5) == 0x2) ||
+		(BMVAL(auth_val, 6, 7) == 0x2))
+		ret = false;
+	else
+		ret = true;
+
+	return ret;
+}
+
 static int tpda_probe(struct amba_device *adev, const struct amba_id *id)
 {
 	int ret;
 	struct device *dev = &adev->dev;
 	struct coresight_platform_data *pdata;
 	struct tpda_drvdata *drvdata;
-	struct coresight_desc *desc;
+	struct coresight_desc desc = { 0 };
 
-	pdata = of_get_coresight_platform_data(dev, adev->dev.of_node);
+	desc.name = coresight_alloc_device_name(&tpda_devs, dev);
+	if (!desc.name)
+		return -ENOMEM;
+	pdata = coresight_get_platform_data(dev);
 	if (IS_ERR(pdata))
 		return PTR_ERR(pdata);
 	adev->dev.platform_data = pdata;
@@ -680,16 +786,13 @@ static int tpda_probe(struct amba_device *adev, const struct amba_id *id)
 
 	tpda_init_default_data(drvdata);
 
-	desc = devm_kzalloc(dev, sizeof(*desc), GFP_KERNEL);
-	if (!desc)
-		return -ENOMEM;
-	desc->type = CORESIGHT_DEV_TYPE_LINK;
-	desc->subtype.link_subtype = CORESIGHT_DEV_SUBTYPE_LINK_MERG;
-	desc->ops = &tpda_cs_ops;
-	desc->pdata = adev->dev.platform_data;
-	desc->dev = &adev->dev;
-	desc->groups = tpda_attr_grps;
-	drvdata->csdev = coresight_register(desc);
+	desc.type = CORESIGHT_DEV_TYPE_LINK;
+	desc.subtype.link_subtype = CORESIGHT_DEV_SUBTYPE_LINK_MERG;
+	desc.ops = &tpda_cs_ops;
+	desc.pdata = adev->dev.platform_data;
+	desc.dev = &adev->dev;
+	desc.groups = tpda_attr_grps;
+	drvdata->csdev = coresight_register(&desc);
 	if (IS_ERR(drvdata->csdev))
 		return PTR_ERR(drvdata->csdev);
 
@@ -701,6 +804,13 @@ err:
 	return -EPERM;
 }
 
+static void __exit tpda_remove(struct amba_device *adev)
+{
+	struct tpda_drvdata *drvdata = dev_get_drvdata(&adev->dev);
+
+	coresight_unregister(drvdata->csdev);
+}
+
 static struct amba_id tpda_ids[] = {
 	{
 		.id     = 0x0003b969,
@@ -709,6 +819,7 @@ static struct amba_id tpda_ids[] = {
 	},
 	{ 0, 0},
 };
+MODULE_DEVICE_TABLE(amba, tpda_ids);
 
 static struct amba_driver tpda_driver = {
 	.drv = {
@@ -717,10 +828,11 @@ static struct amba_driver tpda_driver = {
 		.suppress_bind_attrs = true,
 	},
 	.probe          = tpda_probe,
+	.remove		= tpda_remove,
 	.id_table	= tpda_ids,
 };
 
-builtin_amba_driver(tpda_driver);
+module_amba_driver(tpda_driver);
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("Trace, Profiling & Diagnostic Aggregator driver");

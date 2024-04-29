@@ -8,13 +8,13 @@
 
 typedef struct {
 	int lock;
-} __attribute__ ((aligned (4))) arch_spinlock_t;
+} arch_spinlock_t;
 
 #define __ARCH_SPIN_LOCK_UNLOCKED { .lock = 0, }
 
 typedef struct {
-	int lock;
-	int owner;
+	int cnts;
+	arch_spinlock_t wait;
 } arch_rwlock_t;
 
 #define __ARCH_RW_LOCK_UNLOCKED		{ 0 }

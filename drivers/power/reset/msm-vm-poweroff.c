@@ -1,15 +1,8 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
+
 
 #include <linux/io.h>
 #include <linux/of.h>
@@ -19,13 +12,14 @@
 #include <linux/pm.h>
 #include <linux/delay.h>
 #include <linux/of_address.h>
+#include <linux/panic_notifier.h>
 
 #include <asm/cacheflush.h>
 #include <asm/system_misc.h>
 #include <soc/qcom/watchdog.h>
 
 static int in_panic;
-static void (*old_pm_restart)(enum reboot_mode reboot_mode, const char *cmd);
+static struct notifier_block restart_nb;
 
 static int panic_prep_restart(struct notifier_block *this,
 			      unsigned long event, void *ptr)
@@ -38,30 +32,24 @@ static struct notifier_block panic_blk = {
 	.notifier_call	= panic_prep_restart,
 };
 
-static void do_vm_restart(enum reboot_mode reboot_mode, const char *cmd)
+static int do_vm_restart(struct notifier_block *unused, unsigned long action,
+						void *arg)
 {
 	pr_notice("Going down for vm restart now\n");
 
-	flush_cache_all();
-
-	/*outer_flush_all is not supported by 64bit kernel*/
-#ifndef CONFIG_ARM64
-	outer_flush_all();
-#endif
-
 	if (in_panic)
-		msm_trigger_wdog_bite();
+		qcom_wdt_trigger_bite();
 
-	if (old_pm_restart)
-		old_pm_restart(reboot_mode, cmd);
+	return NOTIFY_DONE;
 }
 
 static int vm_restart_probe(struct platform_device *pdev)
 {
 	atomic_notifier_chain_register(&panic_notifier_list, &panic_blk);
 
-	old_pm_restart = arm_pm_restart;
-	arm_pm_restart = do_vm_restart;
+	restart_nb.notifier_call = do_vm_restart;
+	restart_nb.priority = 200;
+	register_restart_handler(&restart_nb);
 
 	return 0;
 }
@@ -84,4 +72,18 @@ static int __init vm_restart_init(void)
 {
 	return platform_driver_register(&vm_restart_driver);
 }
+
+#if IS_MODULE(CONFIG_POWER_RESET_QCOM_VM)
+module_init(vm_restart_init);
+#else
 pure_initcall(vm_restart_init);
+#endif
+
+static __exit void vm_restart_exit(void)
+{
+	platform_driver_unregister(&vm_restart_driver);
+}
+module_exit(vm_restart_exit);
+
+MODULE_DESCRIPTION("MSM VM Poweroff Driver");
+MODULE_LICENSE("GPL v2");

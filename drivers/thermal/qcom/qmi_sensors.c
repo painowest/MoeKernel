@@ -1,14 +1,7 @@
-/* Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "%s:%s " fmt, KBUILD_MODNAME, __func__
@@ -25,52 +18,16 @@
 #include <linux/suspend.h>
 
 #include "thermal_sensor_service_v01.h"
-#include "../thermal_core.h"
+#include "qmi_sensors.h"
 
 #define QMI_SENS_DRIVER		"qmi-therm-sensors"
 #define QMI_TS_RESP_TOUT	msecs_to_jiffies(100)
-#define QMI_CLIENT_NAME_LENGTH	40
 #define QMI_FL_SIGN		0x80000000
 #define QMI_FL_EXP		0x7f800000
 #define QMI_FL_MANTISSA		0x007fffff
 #define QMI_FL_NORM		0x00800000
 #define QMI_FL_SIGN_BIT		31
 #define QMI_MANTISSA_MSB	23
-
-enum qmi_ts_sensor {
-	QMI_TS_PA,
-	QMI_TS_PA_1,
-	QMI_TS_PA_2,
-	QMI_TS_QFE_PA_0,
-	QMI_TS_QFE_WTR_0,
-	QMI_TS_MODEM_MODEM,
-	QMI_TS_MMW_0,
-	QMI_TS_MMW_1,
-	QMI_TS_MMW_2,
-	QMI_TS_MMW_3,
-	QMI_TS_MODEM_SKIN,
-	QMI_TS_QFE_PA_MDM,
-	QMI_TS_QFE_PA_WTR,
-	QMI_TS_STREAMER_0,
-	QMI_TS_MOD_MMW_0,
-	QMI_TS_MOD_MMW_1,
-	QMI_TS_MOD_MMW_2,
-	QMI_TS_MOD_MMW_3,
-	QMI_TS_RET_PA_0,
-	QMI_TS_WTR_PA_0,
-	QMI_TS_WTR_PA_1,
-	QMI_TS_WTR_PA_2,
-	QMI_TS_WTR_PA_3,
-	QMI_SYS_THERM1,
-	QMI_SYS_THERM2,
-	QMI_TS_TSENS_1,
-	QMI_TS_RET_PA_0_FR1,
-	QMI_TS_WTR_PA_0_FR1,
-	QMI_TS_WTR_PA_1_FR1,
-	QMI_TS_WTR_PA_2_FR1,
-	QMI_TS_WTR_PA_3_FR1,
-	QMI_TS_MAX_NR
-};
 
 struct qmi_sensor {
 	struct device			*dev;
@@ -99,40 +56,6 @@ static struct qmi_ts_instance *ts_instances;
 static int ts_inst_cnt;
 static atomic_t in_suspend;
 
-static char sensor_clients[QMI_TS_MAX_NR][QMI_CLIENT_NAME_LENGTH] = {
-	{"pa"},
-	{"pa_1"},
-	{"pa_2"},
-	{"qfe_pa0"},
-	{"qfe_wtr0"},
-	{"modem_tsens"},
-	{"qfe_mmw0"},
-	{"qfe_mmw1"},
-	{"qfe_mmw2"},
-	{"qfe_mmw3"},
-	{"xo_therm"},
-	{"qfe_pa_mdm"},
-	{"qfe_pa_wtr"},
-	{"qfe_mmw_streamer0"},
-	{"qfe_mmw0_mod"},
-	{"qfe_mmw1_mod"},
-	{"qfe_mmw2_mod"},
-	{"qfe_mmw3_mod"},
-	{"qfe_ret_pa0"},
-	{"qfe_wtr_pa0"},
-	{"qfe_wtr_pa1"},
-	{"qfe_wtr_pa2"},
-	{"qfe_wtr_pa3"},
-	{"sys_therm1"},
-	{"sys_therm2"},
-	{"modem_tsens1"},
-	{"qfe_ret_pa0_fr1"},
-	{"qfe_wtr_pa0_fr1"},
-	{"qfe_wtr_pa1_fr1"},
-	{"qfe_wtr_pa2_fr1"},
-	{"qfe_wtr_pa3_fr1"},
-};
-
 static int32_t encode_qmi(int32_t val)
 {
 	uint32_t shift = 0, local_val = 0;
@@ -157,19 +80,29 @@ static int32_t encode_qmi(int32_t val)
 	return local_val;
 }
 
-static int32_t decode_qmi(int32_t val)
+static int32_t decode_qmi(int32_t float32)
 {
-	int32_t sign = 0, shift = 0, local_val;
+	int fraction, shift, mantissa, sign, exp, zeropre;
 
-	sign = (val & QMI_FL_SIGN) ? -1 : 1;
-	shift = (val & QMI_FL_EXP) >> QMI_MANTISSA_MSB;
-	shift = QMI_MANTISSA_MSB - (shift - 127);
-	local_val = (val & QMI_FL_MANTISSA) | QMI_FL_NORM;
-	pr_debug("val:0x%x sign:%d shift:%d mantissa:%x temp:%d\n",
-			val, sign, shift, local_val,
-			sign * (local_val >> shift));
+	mantissa = float32 & GENMASK(22, 0);
+	sign = (float32 & BIT(31)) ? -1 : 1;
+	exp = (float32 & ~BIT(31)) >> 23;
 
-	return sign * (local_val >> shift);
+	if (!exp && !mantissa)
+		return 0;
+
+	exp -= 127;
+	if (exp < 0) {
+		exp = -exp;
+		zeropre = (((BIT(23) + mantissa) * 100) >> 23) >> exp;
+		return zeropre >= 50 ? sign : 0;
+	}
+
+	shift = 23 - exp;
+	float32 = BIT(exp) + (mantissa >> shift);
+	fraction = mantissa & GENMASK(shift - 1, 0);
+
+	return (((fraction * 100) >> shift) >= 50) ? sign * (float32 + 1) : sign * float32;
 }
 
 static int qmi_sensor_pm_notify(struct notifier_block *nb,
@@ -202,7 +135,7 @@ static void qmi_ts_thresh_notify(struct work_struct *work)
 						struct qmi_sensor,
 						therm_notify_work);
 
-	of_thermal_handle_trip(qmi_sens->tz_dev);
+	thermal_zone_device_update(qmi_sens->tz_dev, THERMAL_TRIP_VIOLATED);
 };
 
 static void qmi_ts_update_temperature(struct qmi_ts_instance *ts,
@@ -259,7 +192,7 @@ void qmi_ts_ind_cb(struct qmi_handle *qmi, struct sockaddr_qrtr *sq,
 	if (ind_msg->temp_valid)
 		qmi_ts_update_temperature(ts, ind_msg, notify);
 	else
-		pr_err("Error invalid temperature field.");
+		pr_err("Error invalid temperature field.\n");
 }
 
 static int qmi_ts_request(struct qmi_sensor *qmi_sens,
@@ -274,7 +207,7 @@ static int qmi_ts_request(struct qmi_sensor *qmi_sens,
 	memset(&req, 0, sizeof(req));
 	memset(&resp, 0, sizeof(resp));
 
-	strlcpy(req.sensor_id.sensor_id, qmi_sens->qmi_name,
+	strscpy(req.sensor_id.sensor_id, qmi_sens->qmi_name,
 		QMI_TS_SENSOR_ID_LENGTH_MAX_V01);
 	req.seq_num = 0;
 	if (send_current_temp_report) {
@@ -400,7 +333,7 @@ static int qmi_register_sensor_device(struct qmi_sensor *qmi_sens)
 	if (IS_ERR(qmi_sens->tz_dev)) {
 		ret = PTR_ERR(qmi_sens->tz_dev);
 		if (ret != -ENODEV)
-			pr_err("sensor register failed for %s, ret:%ld\n",
+			pr_err("sensor register failed for %s, ret:%d\n",
 				qmi_sens->qmi_name, ret);
 		qmi_sens->tz_dev = NULL;
 		return ret;
@@ -584,7 +517,7 @@ static int of_get_qmi_ts_platform_data(struct device *dev)
 {
 	int ret = 0, i = 0, idx = 0;
 	struct device_node *np = dev->of_node;
-	struct device_node *subsys_np;
+	struct device_node *subsys_np = NULL;
 	struct qmi_ts_instance *ts;
 	struct qmi_sensor *qmi_sens;
 	int sens_name_max = 0, sens_idx = 0, subsys_cnt = 0;
@@ -638,7 +571,7 @@ static int of_get_qmi_ts_platform_data(struct device *dev)
 			of_property_read_string_index(subsys_np,
 					"qcom,qmi-sensor-names", sens_idx,
 					&qmi_name);
-			strlcpy(qmi_sens->qmi_name, qmi_name,
+			strscpy(qmi_sens->qmi_name, qmi_name,
 						QMI_CLIENT_NAME_LENGTH);
 			/* Check for supported qmi sensors */
 			for (i = 0; i < QMI_TS_MAX_NR; i++) {
@@ -669,6 +602,7 @@ static int of_get_qmi_ts_platform_data(struct device *dev)
 	ts_instances = ts;
 	ts_inst_cnt = subsys_cnt;
 
+	return 0;
 data_fetch_err:
 	of_node_put(subsys_np);
 	return ret;
@@ -701,6 +635,8 @@ static int qmi_sens_device_probe(struct platform_device *pdev)
 		if (ret < 0) {
 			dev_err(dev, "QMI[0x%x] handle init failed. err:%d\n",
 					ts->inst_id, ret);
+			ts_inst_cnt = idx;
+			ret = -EPROBE_DEFER;
 			goto probe_err;
 		}
 		ret = qmi_add_lookup(&ts->handle, TS_SERVICE_ID_V01,
@@ -708,6 +644,7 @@ static int qmi_sens_device_probe(struct platform_device *pdev)
 		if (ret < 0) {
 			dev_err(dev, "QMI register failed for 0x%x, ret:%d\n",
 				ts->inst_id, ret);
+			ret = -EPROBE_DEFER;
 			goto probe_err;
 		}
 	}
@@ -738,9 +675,9 @@ static struct platform_driver qmi_sens_device_driver = {
 	.remove         = qmi_sens_device_remove,
 	.driver         = {
 		.name   = QMI_SENS_DRIVER,
-		.owner  = THIS_MODULE,
 		.of_match_table = qmi_sens_device_match,
 	},
 };
 
-builtin_platform_driver(qmi_sens_device_driver);
+module_platform_driver(qmi_sens_device_driver);
+MODULE_LICENSE("GPL v2");

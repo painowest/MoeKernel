@@ -1,16 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * cdsprm.h
- *
- * Copyright (c) 2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
  */
 
 /*
@@ -48,5 +38,20 @@ void cdsprm_register_cdspl3gov(struct cdsprm_l3 *arg);
  *       stopped
  */
 void cdsprm_unregister_cdspl3gov(void);
+
+/**
+ * cdsprm_compute_vtcm_set_partition_map() - Send the vtcm partition and
+ *                                           map data to cdsp via
+ *                                           rpmsg channel
+ * @arg: b_vtcm_partitioning 0 - disable VTCM partitioning
+ *                           1 - enable VTCM partitioning
+ *@return SUCCESS (0) if vtcm partition and map data is sent
+ *         FAILURE (Non-zero) if vtcm partition and map sent fails
+ * Note: VTCM partitioning should be defined in the device tree for
+ *        the enable / disable request to go through.
+ *
+ */
+
+int cdsprm_compute_vtcm_set_partition_map(unsigned int b_vtcm_partitioning);
 
 #endif

@@ -13,7 +13,7 @@
  */
 #define ASYNCB_HUP_NOTIFY	 0 /* Notify getty on hangups and closes
 				    * on the callout port */
-#define ASYNCB_FOURPORT		 1 /* Set OU1, OUT2 per AST Fourport settings */
+#define ASYNCB_FOURPORT		 1 /* Set OUT1, OUT2 per AST Fourport settings */
 #define ASYNCB_SAK		 2 /* Secure Attention Key (Orange book) */
 #define ASYNCB_SPLIT_TERMIOS	 3 /* [x] Separate termios for dialin/callout */
 #define ASYNCB_SPD_HI		 4 /* Use 57600 instead of 38400 bps */
@@ -73,8 +73,8 @@
 #define ASYNC_MAGIC_MULTIPLIER	(1U << ASYNCB_MAGIC_MULTIPLIER)
 
 #define ASYNC_FLAGS		((1U << (ASYNCB_LAST_USER + 1)) - 1)
-#define ASYNC_DEPRECATED	(ASYNC_SESSION_LOCKOUT | ASYNC_PGRP_LOCKOUT | \
-		ASYNC_CALLOUT_NOHUP | ASYNC_AUTOPROBE)
+#define ASYNC_DEPRECATED	(ASYNC_SPLIT_TERMIOS | ASYNC_SESSION_LOCKOUT | \
+		ASYNC_PGRP_LOCKOUT | ASYNC_CALLOUT_NOHUP | ASYNC_AUTOPROBE)
 #define ASYNC_USR_MASK		(ASYNC_SPD_MASK|ASYNC_CALLOUT_NOHUP| \
 		ASYNC_LOW_LATENCY)
 #define ASYNC_SPD_CUST		(ASYNC_SPD_HI|ASYNC_SPD_VHI)

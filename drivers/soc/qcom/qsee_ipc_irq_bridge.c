@@ -1,14 +1,6 @@
-/* Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
- * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/cdev.h>
@@ -19,9 +11,9 @@
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/poll.h>
+#include <linux/remoteproc/qcom_rproc.h>
 #include <linux/slab.h>
-#include <soc/qcom/subsystem_notif.h>
-#include <soc/qcom/subsystem_restart.h>
+#include <trace/events/rproc_qcom.h>
 
 #define MODULE_NAME "qsee_ipc_irq_bridge"
 #define DEVICE_NAME MODULE_NAME
@@ -36,8 +28,7 @@
 
 #define QIIB_ERR(x...) do { \
 	pr_err(x); \
-	if (qiib_info->log_ctx) \
-		ipc_log_string(qiib_info->log_ctx, x); \
+	ipc_log_string(qiib_info->log_ctx, x); \
 	} while (0)
 
 static void qiib_cleanup(void);
@@ -156,18 +147,24 @@ static int qiib_restart_notifier_cb(struct notifier_block *this,
 {
 	struct qiib_dev *devp = container_of(this, struct qiib_dev, nb);
 
-	if (code == SUBSYS_BEFORE_SHUTDOWN) {
+	if (code == QCOM_SSR_BEFORE_SHUTDOWN) {
+		trace_rproc_qcom_event(devp->ssr_name,
+				"QCOM_SSR_BEFORE_POWERUP", "qiib_restart_notifier-enter");
 		QIIB_DBG("%s: %s: subsystem restart for %s\n", __func__,
-				"SUBSYS_BEFORE_SHUTDOWN",
+				"QCOM_SSR_BEFORE_SHUTDOWN",
 				devp->ssr_name);
 		devp->in_reset = true;
 		wake_up_interruptible(&devp->poll_wait_queue);
-	} else if (code == SUBSYS_AFTER_POWERUP) {
+	} else if (code == QCOM_SSR_AFTER_POWERUP) {
+		trace_rproc_qcom_event(devp->ssr_name,
+				"QCOM_SSR_AFTER_SHUTDOWN", "qiib_restart_notifier-enter");
 		QIIB_DBG("%s: %s: subsystem restart for %s\n", __func__,
-				"SUBSYS_AFTER_POWERUP",
+				"QCOM_SSR_AFTER_POWERUP",
 				devp->ssr_name);
 		devp->in_reset = false;
 	}
+
+	trace_rproc_qcom_event(devp->ssr_name, "qiib_restart_notifier", "exit");
 	return NOTIFY_DONE;
 }
 
@@ -182,10 +179,10 @@ static int qiib_restart_notifier_cb(struct notifier_block *this,
  *
  * Return: POLLIN for interrupt intercepted case and POLLRDHUP for SSR.
  */
-static unsigned int qiib_poll(struct file *file, poll_table *wait)
+static __poll_t qiib_poll(struct file *file, poll_table *wait)
 {
 	struct qiib_dev *devp = file->private_data;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 	unsigned long flags;
 
 	if (!devp) {
@@ -392,7 +389,7 @@ static int qiib_init_notifs(struct device_node *node, struct qiib_dev *devp)
 	QIIB_DBG("%s: irqtype = %d\n", __func__, irqtype);
 
 	devp->nb.notifier_call = qiib_restart_notifier_cb;
-	devp->notifier_handle = subsys_notif_register_notifier(devp->ssr_name,
+	devp->notifier_handle = qcom_register_ssr_notifier(devp->ssr_name,
 								&devp->nb);
 	if (IS_ERR_OR_NULL(devp->notifier_handle)) {
 		QIIB_ERR("%s: Could not register SSR notifier cb\n", __func__);
@@ -411,7 +408,7 @@ static int qiib_init_notifs(struct device_node *node, struct qiib_dev *devp)
 	return ret;
 
 req_irq_fail:
-	subsys_notif_unregister_notifier(devp->notifier_handle,	&devp->nb);
+	qcom_unregister_ssr_notifier(devp->notifier_handle,	&devp->nb);
 missing_key:
 	return ret;
 }
@@ -434,7 +431,7 @@ static void qiib_cleanup(void)
 		device_destroy(qiib_info->classp,
 			       MKDEV(MAJOR(qiib_info->dev_num), devp->i));
 		if (devp->notifier_handle)
-			subsys_notif_unregister_notifier(devp->notifier_handle,
+			qcom_unregister_ssr_notifier(devp->notifier_handle,
 								&devp->nb);
 		kfree(devp);
 	}
@@ -555,7 +552,6 @@ static struct platform_driver qsee_ipc_irq_bridge_driver = {
 	.remove = qsee_ipc_irq_bridge_remove,
 	.driver = {
 		.name = MODULE_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = qsee_ipc_irq_bridge_match_table,
 	 },
 };
@@ -588,5 +584,6 @@ static void __exit qsee_ipc_irq_bridge_exit(void)
 	qiib_driver_data_deinit();
 }
 module_exit(qsee_ipc_irq_bridge_exit);
+MODULE_SOFTDEP("pre: qcom_ipcc");
 MODULE_DESCRIPTION("QSEE IPC interrupt bridge");
 MODULE_LICENSE("GPL v2");

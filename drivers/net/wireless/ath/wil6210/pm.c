@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: ISC
 /*
  * Copyright (c) 2014,2017 Qualcomm Atheros, Inc.
  * Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
- *
- * Permission to use, copy, modify, and/or distribute this software for any
- * purpose with or without fee is hereby granted, provided that the above
- * copyright notice and this permission notice appear in all copies.
- *
- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
- * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
- * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
- * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
 #include "wil6210.h"
@@ -26,7 +15,7 @@ static void wil_pm_wake_connected_net_queues(struct wil6210_priv *wil)
 	int i;
 
 	mutex_lock(&wil->vif_mutex);
-	for (i = 0; i < wil->max_vifs; i++) {
+	for (i = 0; i < GET_MAX_VIFS(wil); i++) {
 		struct wil6210_vif *vif = wil->vifs[i];
 
 		if (vif && test_bit(wil_vif_fwconnected, vif->status))
@@ -40,7 +29,7 @@ static void wil_pm_stop_all_net_queues(struct wil6210_priv *wil)
 	int i;
 
 	mutex_lock(&wil->vif_mutex);
-	for (i = 0; i < wil->max_vifs; i++) {
+	for (i = 0; i < GET_MAX_VIFS(wil); i++) {
 		struct wil6210_vif *vif = wil->vifs[i];
 
 		if (vif)
@@ -101,12 +90,6 @@ int wil_can_suspend(struct wil6210_priv *wil, bool is_runtime)
 		goto out;
 	}
 
-	if (test_bit(wil_status_pci_linkdown, wil->status)) {
-		wil_dbg_pm(wil, "Delay suspend during pci linkdown\n");
-		rc = -EBUSY;
-		goto out;
-	}
-
 	mutex_lock(&wil->vif_mutex);
 	active_ifaces = wil_has_active_ifaces(wil, true, false);
 	mutex_unlock(&wil->vif_mutex);
@@ -129,7 +112,7 @@ int wil_can_suspend(struct wil6210_priv *wil, bool is_runtime)
 
 	/* interface is running */
 	mutex_lock(&wil->vif_mutex);
-	for (i = 0; i < wil->max_vifs; i++) {
+	for (i = 0; i < GET_MAX_VIFS(wil); i++) {
 		struct wil6210_vif *vif = wil->vifs[i];
 
 		if (!vif)
@@ -196,7 +179,7 @@ out:
 static int wil_suspend_keep_radio_on(struct wil6210_priv *wil)
 {
 	int rc = 0;
-	unsigned long start, data_comp_to;
+	unsigned long data_comp_to;
 
 	wil_dbg_pm(wil, "suspend keep radio on\n");
 
@@ -242,7 +225,6 @@ static int wil_suspend_keep_radio_on(struct wil6210_priv *wil)
 	}
 
 	/* Wait for completion of the pending RX packets */
-	start = jiffies;
 	data_comp_to = jiffies + msecs_to_jiffies(WIL_DATA_COMPLETION_TO_MS);
 	if (test_bit(wil_status_napi_en, wil->status)) {
 		while (!wil->txrx_ops.is_rx_idle(wil)) {

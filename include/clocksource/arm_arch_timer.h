@@ -1,17 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2012 ARM Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #ifndef __CLKSOURCE_ARM_ARCH_TIMER_H
 #define __CLKSOURCE_ARM_ARCH_TIMER_H
@@ -43,6 +32,7 @@ enum arch_timer_ppi_nr {
 	ARCH_TIMER_PHYS_NONSECURE_PPI,
 	ARCH_TIMER_VIRT_PPI,
 	ARCH_TIMER_HYP_PPI,
+	ARCH_TIMER_HYP_VIRT_PPI,
 	ARCH_TIMER_MAX_TIMER_PPI
 };
 
@@ -74,6 +64,7 @@ enum arch_timer_spi_nr {
 struct arch_timer_kvm_info {
 	struct timecounter timecounter;
 	int virtual_irq;
+	int physical_irq;
 };
 
 struct arch_timer_mem_frame {
@@ -95,8 +86,8 @@ struct arch_timer_mem {
 extern u32 arch_timer_get_rate(void);
 extern u64 (*arch_timer_read_counter)(void);
 extern struct arch_timer_kvm_info *arch_timer_get_kvm_info(void);
-extern void arch_timer_mem_get_cval(u32 *lo, u32 *hi);
 extern bool arch_timer_evtstrm_available(void);
+
 #else
 
 static inline u32 arch_timer_get_rate(void)
@@ -107,11 +98,6 @@ static inline u32 arch_timer_get_rate(void)
 static inline u64 arch_timer_read_counter(void)
 {
 	return 0;
-}
-
-static void arch_timer_mem_get_cval(u32 *lo, u32 *hi)
-{
-	*lo = *hi = ~0U;
 }
 
 static inline bool arch_timer_evtstrm_available(void)

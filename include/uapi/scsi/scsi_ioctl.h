@@ -24,19 +24,9 @@
  * Note that include/linux/cdrom.h also defines IOCTL 0x5300 - 0x5395
  */
 
-/* Used to obtain PUN and LUN info.  Conflicts with CDROMAUDIOBUFSIZ */
-#define SCSI_IOCTL_GET_IDLUN		0x5382
-
-/* 0x5383 and 0x5384 were used for SCSI_IOCTL_TAGGED_{ENABLE,DISABLE} */
-
-/* Used to obtain the host number of a device. */
-#define SCSI_IOCTL_PROBE_HOST		0x5385
-
-/* Used to obtain the bus number for a device */
-#define SCSI_IOCTL_GET_BUS_NUMBER	0x5386
-
-/* Used to obtain the PCI location of a device */
-#define SCSI_IOCTL_GET_PCI		0x5387
+struct gendisk;
+struct scsi_device;
+struct sg_io_hdr;
 
 /*
  * Structures used for scsi_ioctl et al.
@@ -45,7 +35,7 @@
 typedef struct scsi_ioctl_command {
 	unsigned int inlen;
 	unsigned int outlen;
-	unsigned char data[0];
+	unsigned char data[];
 } Scsi_Ioctl_Command;
 
 typedef struct scsi_idlun {
@@ -64,6 +54,11 @@ struct scsi_device;
 
 int scsi_ioctl_block_when_processing_errors(struct scsi_device *sdev,
 		int cmd, bool ndelay);
-extern int scsi_ioctl(struct scsi_device *, int, void __user *);
+int scsi_ioctl(struct scsi_device *sdev, struct gendisk *disk, fmode_t mode,
+		int cmd, void __user *arg);
+int get_sg_io_hdr(struct sg_io_hdr *hdr, const void __user *argp);
+int put_sg_io_hdr(const struct sg_io_hdr *hdr, void __user *argp);
+bool scsi_cmd_allowed(unsigned char *cmd, fmode_t mode);
+
 #endif /* __KERNEL__ */
 #endif /* _SCSI_IOCTL_H */

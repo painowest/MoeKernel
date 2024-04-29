@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *    Chassis LCD/LED driver for HP-PARISC workstations
  *
@@ -5,11 +6,6 @@
  *      (c) Copyright 2000 Helge Deller <hdeller@redhat.com>
  *      (c) Copyright 2001-2009 Helge Deller <deller@gmx.de>
  *      (c) Copyright 2001 Randolph Chung <tausq@debian.org>
- *
- *      This program is free software; you can redistribute it and/or modify
- *      it under the terms of the GNU General Public License as published by
- *      the Free Software Foundation; either version 2 of the License, or
- *      (at your option) any later version.
  *
  * TODO:
  *	- speed-up calculations with inlined assembler
@@ -179,7 +175,7 @@ static int led_proc_open(struct inode *inode, struct file *file)
 }
 
 
-static ssize_t led_proc_write(struct file *file, const char *buf,
+static ssize_t led_proc_write(struct file *file, const char __user *buf,
 	size_t count, loff_t *pos)
 {
 	void *data = PDE_DATA(file_inode(file));
@@ -237,13 +233,12 @@ parse_error:
 	return -EINVAL;
 }
 
-static const struct file_operations led_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= led_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-	.write		= led_proc_write,
+static const struct proc_ops led_proc_ops = {
+	.proc_open	= led_proc_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+	.proc_write	= led_proc_write,
 };
 
 static int __init led_create_procfs(void)
@@ -253,20 +248,20 @@ static int __init led_create_procfs(void)
 
 	if (led_type == -1) return -1;
 
-	proc_pdc_root = proc_mkdir("pdc", 0);
+	proc_pdc_root = proc_mkdir("pdc", NULL);
 	if (!proc_pdc_root) return -1;
 
 	if (!lcd_no_led_support)
 	{
-		ent = proc_create_data("led", S_IRUGO|S_IWUSR, proc_pdc_root,
-					&led_proc_fops, (void *)LED_NOLCD); /* LED */
+		ent = proc_create_data("led", 0644, proc_pdc_root,
+					&led_proc_ops, (void *)LED_NOLCD); /* LED */
 		if (!ent) return -1;
 	}
 
 	if (led_type == LED_HASLCD)
 	{
-		ent = proc_create_data("lcd", S_IRUGO|S_IWUSR, proc_pdc_root,
-					&led_proc_fops, (void *)LED_HASLCD); /* LCD */
+		ent = proc_create_data("lcd", 0644, proc_pdc_root,
+					&led_proc_ops, (void *)LED_HASLCD); /* LCD */
 		if (!ent) return -1;
 	}
 

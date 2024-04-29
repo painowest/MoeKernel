@@ -1,19 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ARMv8 single-step debug support and mdscr context switching.
  *
  * Copyright (C) 2012 ARM Limited
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  * Author: Will Deacon <will.deacon@arm.com>
  */
@@ -30,8 +19,10 @@
 
 #include <asm/cpufeature.h>
 #include <asm/cputype.h>
+#include <asm/daifflags.h>
 #include <asm/debug-monitors.h>
 #include <asm/system_misc.h>
+#include <asm/traps.h>
 
 /* Determine debug architecture. */
 u8 debug_monitors_arch(void)
@@ -46,9 +37,9 @@ u8 debug_monitors_arch(void)
 static void mdscr_write(u32 mdscr)
 {
 	unsigned long flags;
-	local_dbg_save(flags);
+	flags = local_daif_save();
 	write_sysreg(mdscr, mdscr_el1);
-	local_dbg_restore(flags);
+	local_daif_restore(flags);
 }
 NOKPROBE_SYMBOL(mdscr_write);
 
@@ -139,7 +130,7 @@ static int clear_os_lock(unsigned int cpu)
 	return 0;
 }
 
-static int debug_monitors_init(void)
+static int __init debug_monitors_init(void)
 {
 	return cpuhp_setup_state(CPUHP_AP_ARM64_DEBUG_MONITORS_STARTING,
 				 "arm64/debug_monitors:starting",
@@ -219,15 +210,15 @@ static int call_step_hook(struct pt_regs *regs, unsigned int esr)
 
 	list = user_mode(regs) ? &user_step_hook : &kernel_step_hook;
 
-	rcu_read_lock();
-
+	/*
+	 * Since single-step exception disables interrupt, this function is
+	 * entirely not preemptible, and we can use rcu list safely here.
+	 */
 	list_for_each_entry_rcu(hook, list, node)	{
 		retval = hook->fn(regs, esr);
 		if (retval == DBG_HOOK_HANDLED)
 			break;
 	}
-
-	rcu_read_unlock();
 
 	return retval;
 }
@@ -236,12 +227,6 @@ NOKPROBE_SYMBOL(call_step_hook);
 static void send_user_sigtrap(int si_code)
 {
 	struct pt_regs *regs = current_pt_regs();
-	siginfo_t info = {
-		.si_signo	= SIGTRAP,
-		.si_errno	= 0,
-		.si_code	= si_code,
-		.si_addr	= (void __user *)instruction_pointer(regs),
-	};
 
 	if (WARN_ON(!user_mode(regs)))
 		return;
@@ -249,10 +234,11 @@ static void send_user_sigtrap(int si_code)
 	if (interrupts_enabled(regs))
 		local_irq_enable();
 
-	force_sig_info(SIGTRAP, &info, current);
+	arm64_force_sig_fault(SIGTRAP, si_code, instruction_pointer(regs),
+			      "User debug trap");
 }
 
-static int single_step_handler(unsigned long addr, unsigned int esr,
+static int single_step_handler(unsigned long unused, unsigned int esr,
 			       struct pt_regs *regs)
 {
 	bool handler_found = false;
@@ -264,10 +250,6 @@ static int single_step_handler(unsigned long addr, unsigned int esr,
 	if (!reinstall_suspended_bps(regs))
 		return 0;
 
-#ifdef	CONFIG_KPROBES
-	if (kprobe_single_step_handler(regs, esr) == DBG_HOOK_HANDLED)
-		handler_found = true;
-#endif
 	if (!handler_found && call_step_hook(regs, esr) == DBG_HOOK_HANDLED)
 		handler_found = true;
 
@@ -294,11 +276,6 @@ static int single_step_handler(unsigned long addr, unsigned int esr,
 }
 NOKPROBE_SYMBOL(single_step_handler);
 
-/*
- * Breakpoint handler is re-entrant as another breakpoint can
- * hit within breakpoint handler, especically in kprobes.
- * Use reader/writer locks instead of plain spinlock.
- */
 static LIST_HEAD(user_break_hook);
 static LIST_HEAD(kernel_break_hook);
 
@@ -306,21 +283,25 @@ void register_user_break_hook(struct break_hook *hook)
 {
 	register_debug_hook(&hook->node, &user_break_hook);
 }
+EXPORT_SYMBOL_GPL(register_user_break_hook);
 
 void unregister_user_break_hook(struct break_hook *hook)
 {
 	unregister_debug_hook(&hook->node);
 }
+EXPORT_SYMBOL_GPL(unregister_user_break_hook);
 
 void register_kernel_break_hook(struct break_hook *hook)
 {
 	register_debug_hook(&hook->node, &kernel_break_hook);
 }
+EXPORT_SYMBOL_GPL(register_kernel_break_hook);
 
 void unregister_kernel_break_hook(struct break_hook *hook)
 {
 	unregister_debug_hook(&hook->node);
 }
+EXPORT_SYMBOL_GPL(unregister_kernel_break_hook);
 
 static int call_break_hook(struct pt_regs *regs, unsigned int esr)
 {
@@ -330,36 +311,30 @@ static int call_break_hook(struct pt_regs *regs, unsigned int esr)
 
 	list = user_mode(regs) ? &user_break_hook : &kernel_break_hook;
 
-	rcu_read_lock();
+	/*
+	 * Since brk exception disables interrupt, this function is
+	 * entirely not preemptible, and we can use rcu list safely here.
+	 */
 	list_for_each_entry_rcu(hook, list, node) {
-		unsigned int comment = esr & BRK64_ESR_MASK;
+		unsigned int comment = esr & ESR_ELx_BRK64_ISS_COMMENT_MASK;
 
 		if ((comment & ~hook->mask) == hook->imm)
 			fn = hook->fn;
 	}
-	rcu_read_unlock();
 
 	return fn ? fn(regs, esr) : DBG_HOOK_ERROR;
 }
 NOKPROBE_SYMBOL(call_break_hook);
 
-static int brk_handler(unsigned long addr, unsigned int esr,
+static int brk_handler(unsigned long unused, unsigned int esr,
 		       struct pt_regs *regs)
 {
-	bool handler_found = false;
+	if (call_break_hook(regs, esr) == DBG_HOOK_HANDLED)
+		return 0;
 
-#ifdef	CONFIG_KPROBES
-	if ((esr & BRK64_ESR_MASK) == BRK64_ESR_KPROBES) {
-		if (kprobe_breakpoint_handler(regs, esr) == DBG_HOOK_HANDLED)
-			handler_found = true;
-	}
-#endif
-	if (!handler_found && call_break_hook(regs, esr) == DBG_HOOK_HANDLED)
-		handler_found = true;
-
-	if (!handler_found && user_mode(regs)) {
+	if (user_mode(regs)) {
 		send_user_sigtrap(TRAP_BRKPT);
-	} else if (!handler_found) {
+	} else {
 		pr_warn("Unexpected kernel BRK exception at EL1\n");
 		return -EFAULT;
 	}
@@ -407,15 +382,13 @@ int aarch32_break_handler(struct pt_regs *regs)
 }
 NOKPROBE_SYMBOL(aarch32_break_handler);
 
-static int __init debug_traps_init(void)
+void __init debug_traps_init(void)
 {
 	hook_debug_fault_code(DBG_ESR_EVT_HWSS, single_step_handler, SIGTRAP,
 			      TRAP_TRACE, "single-step handler");
 	hook_debug_fault_code(DBG_ESR_EVT_BRK, brk_handler, SIGTRAP,
-			      TRAP_BRKPT, "ptrace BRK handler");
-	return 0;
+			      TRAP_BRKPT, "BRK handler");
 }
-arch_initcall(debug_traps_init);
 
 /* Re-enable single step for syscall restarting. */
 void user_rewind_single_step(struct task_struct *task)

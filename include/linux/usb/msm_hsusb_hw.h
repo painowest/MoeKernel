@@ -1,16 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (C) 2007 Google, Inc.
- * Author: Brian Swetland <swetland@google.com>
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __LINUX_USB_GADGET_MSM72K_UDC_H__
@@ -112,14 +102,37 @@
 
 /* USB PHY CSR registers and bit definitions */
 
+#define USB_PHY_CSR_PHY_UTMI_CTRL0 (MSM_USB_PHY_CSR_BASE + 0x060)
+#define TERM_SEL BIT(6)
+#define SLEEP_M BIT(1)
+#define PORT_SELECT BIT(2)
+#define OP_MODE_MASK 0x30
+
+#define USB_PHY_CSR_PHY_UTMI_CTRL1 (MSM_USB_PHY_CSR_BASE + 0x064)
+#define DM_PULLDOWN BIT(3)
+#define DP_PULLDOWN BIT(2)
+#define XCVR_SEL_MASK	0x3
+
+#define USB_PHY_CSR_PHY_UTMI_CTRL2 (MSM_USB_PHY_CSR_BASE + 0x068)
+
+#define USB_PHY_CSR_PHY_UTMI_CTRL3 (MSM_USB_PHY_CSR_BASE + 0x06c)
+
+#define USB_PHY_CSR_PHY_UTMI_CTRL4 (MSM_USB_PHY_CSR_BASE + 0x070)
+#define TX_VALID BIT(0)
+
 #define USB_PHY_CSR_PHY_CTRL_COMMON0 (MSM_USB_PHY_CSR_BASE + 0x078)
 #define SIDDQ BIT(2)
 
 #define USB_PHY_CSR_PHY_CTRL1 (MSM_USB_PHY_CSR_BASE + 0x08C)
 #define ID_HV_CLAMP_EN_N BIT(1)
 
+#define USB_PHY_CSR_PHY_CTRL2 (MSM_USB_PHY_CSR_BASE + 0x090)
+#define USB2_SUSPEND_N BIT(6)
+
 #define USB_PHY_CSR_PHY_CTRL3 (MSM_USB_PHY_CSR_BASE + 0x094)
 #define CLAMP_MPM_DPSE_DMSE_EN_N BIT(2)
+
+#define USB_PHY_CSR_PHY_CFG0 (MSM_USB_PHY_CSR_BASE + 0x0c4)
 
 #define USB2_PHY_USB_PHY_IRQ_CMD (MSM_USB_PHY_CSR_BASE + 0x0D0)
 #define USB2_PHY_USB_PHY_INTERRUPT_SRC_STATUS (MSM_USB_PHY_CSR_BASE + 0x05C)

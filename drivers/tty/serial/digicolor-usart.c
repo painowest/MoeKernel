@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  *  Driver for Conexant Digicolor serial ports (USART)
  *
  * Author: Baruch Siach <baruch@tkos.co.il>
  *
  * Copyright (C) 2014 Paradox Innovation Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/module.h>
@@ -477,8 +473,7 @@ static int digicolor_uart_probe(struct platform_device *pdev)
 	if (IS_ERR(uart_clk))
 		return PTR_ERR(uart_clk);
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	dp->port.membase = devm_ioremap_resource(&pdev->dev, res);
+	dp->port.membase = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(dp->port.membase))
 		return PTR_ERR(dp->port.membase);
 	dp->port.mapbase = res->start;

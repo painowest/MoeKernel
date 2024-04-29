@@ -1,19 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * I2C Link Layer for PN544 HCI based Driver
  *
  * Copyright (C) 2012  Intel Corporation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -54,14 +43,14 @@
 #define PN544_HCI_I2C_LLC_MAX_SIZE	(PN544_HCI_I2C_LLC_LEN_CRC + 1 + \
 					 PN544_HCI_I2C_LLC_MAX_PAYLOAD)
 
-static struct i2c_device_id pn544_hci_i2c_id_table[] = {
+static const struct i2c_device_id pn544_hci_i2c_id_table[] = {
 	{"pn544", 0},
 	{}
 };
 
 MODULE_DEVICE_TABLE(i2c, pn544_hci_i2c_id_table);
 
-static const struct acpi_device_id pn544_hci_i2c_acpi_match[] = {
+static const struct acpi_device_id pn544_hci_i2c_acpi_match[] __maybe_unused = {
 	{"NXP5440", 0},
 	{}
 };
@@ -251,8 +240,6 @@ static void pn544_hci_i2c_enable_mode(struct pn544_i2c_phy *phy, int run_mode)
 static int pn544_hci_i2c_enable(void *phy_id)
 {
 	struct pn544_i2c_phy *phy = phy_id;
-
-	pr_info("%s\n", __func__);
 
 	pn544_hci_i2c_enable_mode(phy, PN544_HCI_MODE);
 
@@ -528,7 +515,7 @@ static irqreturn_t pn544_hci_i2c_irq_thread_fn(int irq, void *phy_id)
 	return IRQ_HANDLED;
 }
 
-static struct nfc_phy_ops i2c_phy_ops = {
+static const struct nfc_phy_ops i2c_phy_ops = {
 	.write = pn544_hci_i2c_write,
 	.enable = pn544_hci_i2c_enable,
 	.disable = pn544_hci_i2c_disable,
@@ -886,9 +873,6 @@ static int pn544_hci_i2c_probe(struct i2c_client *client,
 	struct pn544_i2c_phy *phy;
 	int r = 0;
 
-	dev_dbg(&client->dev, "%s\n", __func__);
-	dev_dbg(&client->dev, "IRQ: %d\n", client->irq);
-
 	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C)) {
 		nfc_err(&client->dev, "Need I2C_FUNC_I2C\n");
 		return -ENODEV;
@@ -948,8 +932,6 @@ static int pn544_hci_i2c_remove(struct i2c_client *client)
 {
 	struct pn544_i2c_phy *phy = i2c_get_clientdata(client);
 
-	dev_dbg(&client->dev, "%s\n", __func__);
-
 	cancel_work_sync(&phy->fw_work);
 	if (phy->fw_work_state != FW_WORK_STATE_IDLE)
 		pn544_hci_i2c_fw_work_complete(phy, -ENODEV);
@@ -962,7 +944,7 @@ static int pn544_hci_i2c_remove(struct i2c_client *client)
 	return 0;
 }
 
-static const struct of_device_id of_pn544_i2c_match[] = {
+static const struct of_device_id of_pn544_i2c_match[] __maybe_unused = {
 	{ .compatible = "nxp,pn544-i2c", },
 	{},
 };

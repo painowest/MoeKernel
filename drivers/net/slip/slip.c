@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * slip.c	This module implements the SLIP protocol for kernel-based
  *		devices like TTY.  It interfaces between a raw TTY, and the
@@ -61,6 +62,7 @@
  */
 
 #define SL_CHECK_TRANSMIT
+#include <linux/compat.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 
@@ -79,7 +81,6 @@
 #include <linux/rtnetlink.h>
 #include <linux/if_arp.h>
 #include <linux/if_slip.h>
-#include <linux/compat.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -106,9 +107,9 @@ static int slip_esc6(unsigned char *p, unsigned char *d, int len);
 static void slip_unesc6(struct slip *sl, unsigned char c);
 #endif
 #ifdef CONFIG_SLIP_SMART
-static void sl_keepalive(unsigned long sls);
-static void sl_outfill(unsigned long sls);
-static int sl_ioctl(struct net_device *dev, struct ifreq *rq, int cmd);
+static void sl_keepalive(struct timer_list *t);
+static void sl_outfill(struct timer_list *t);
+static int sl_siocdevprivate(struct net_device *dev, struct ifreq *rq, void __user *data, int cmd);
 #endif
 
 /********************************
@@ -456,15 +457,12 @@ static void slip_write_wakeup(struct tty_struct *tty)
 
 	rcu_read_lock();
 	sl = rcu_dereference(tty->disc_data);
-	if (!sl)
-		goto out;
-
-	schedule_work(&sl->tx_work);
-out:
+	if (sl)
+		schedule_work(&sl->tx_work);
 	rcu_read_unlock();
 }
 
-static void sl_tx_timeout(struct net_device *dev)
+static void sl_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct slip *sl = netdev_priv(dev);
 
@@ -650,7 +648,7 @@ static const struct net_device_ops sl_netdev_ops = {
 	.ndo_change_mtu		= sl_change_mtu,
 	.ndo_tx_timeout		= sl_tx_timeout,
 #ifdef CONFIG_SLIP_SMART
-	.ndo_do_ioctl		= sl_ioctl,
+	.ndo_siocdevprivate	= sl_siocdevprivate,
 #endif
 };
 
@@ -688,7 +686,7 @@ static void sl_setup(struct net_device *dev)
  */
 
 static void slip_receive_buf(struct tty_struct *tty, const unsigned char *cp,
-							char *fp, int count)
+		const char *fp, int count)
 {
 	struct slip *sl = tty->disc_data;
 
@@ -738,7 +736,7 @@ static void sl_sync(void)
 
 
 /* Find a free SLIP channel, and link in this `tty' line. */
-static struct slip *sl_alloc(dev_t line)
+static struct slip *sl_alloc(void)
 {
 	int i;
 	char name[IFNAMSIZ];
@@ -770,12 +768,8 @@ static struct slip *sl_alloc(dev_t line)
 	sl->mode        = SL_MODE_DEFAULT;
 #ifdef CONFIG_SLIP_SMART
 	/* initialize timer_list struct */
-	init_timer(&sl->keepalive_timer);
-	sl->keepalive_timer.data = (unsigned long)sl;
-	sl->keepalive_timer.function = sl_keepalive;
-	init_timer(&sl->outfill_timer);
-	sl->outfill_timer.data = (unsigned long)sl;
-	sl->outfill_timer.function = sl_outfill;
+	timer_setup(&sl->keepalive_timer, sl_keepalive, 0);
+	timer_setup(&sl->outfill_timer, sl_outfill, 0);
 #endif
 	slip_devs[i] = dev;
 	return sl;
@@ -820,7 +814,7 @@ static int slip_open(struct tty_struct *tty)
 
 	/* OK.  Find a free SLIP channel to use. */
 	err = -ENFILE;
-	sl = sl_alloc(tty_devnum(tty));
+	sl = sl_alloc();
 	if (sl == NULL)
 		goto err_exit;
 
@@ -1184,40 +1178,23 @@ static int slip_ioctl(struct tty_struct *tty, struct file *file,
 	}
 }
 
-#ifdef CONFIG_COMPAT
-static long slip_compat_ioctl(struct tty_struct *tty, struct file *file,
-					unsigned int cmd, unsigned long arg)
-{
-	switch (cmd) {
-	case SIOCGIFNAME:
-	case SIOCGIFENCAP:
-	case SIOCSIFENCAP:
-	case SIOCSIFHWADDR:
-	case SIOCSKEEPALIVE:
-	case SIOCGKEEPALIVE:
-	case SIOCSOUTFILL:
-	case SIOCGOUTFILL:
-		return slip_ioctl(tty, file, cmd,
-				  (unsigned long)compat_ptr(arg));
-	}
-
-	return -ENOIOCTLCMD;
-}
-#endif
-
 /* VSV changes start here */
 #ifdef CONFIG_SLIP_SMART
-/* function do_ioctl called from net/core/dev.c
+/* function sl_siocdevprivate called from net/core/dev.c
    to allow get/set outfill/keepalive parameter
    by ifconfig                                 */
 
-static int sl_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
+static int sl_siocdevprivate(struct net_device *dev, struct ifreq *rq,
+			     void __user *data, int cmd)
 {
 	struct slip *sl = netdev_priv(dev);
 	unsigned long *p = (unsigned long *)&rq->ifr_ifru;
 
 	if (sl == NULL)		/* Allocation failed ?? */
 		return -ENODEV;
+
+	if (in_compat_syscall())
+		return -EOPNOTSUPP;
 
 	spin_lock_bh(&sl->lock);
 
@@ -1291,15 +1268,12 @@ static int sl_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 
 static struct tty_ldisc_ops sl_ldisc = {
 	.owner 		= THIS_MODULE,
-	.magic 		= TTY_LDISC_MAGIC,
+	.num		= N_SLIP,
 	.name 		= "slip",
 	.open 		= slip_open,
 	.close	 	= slip_close,
 	.hangup	 	= slip_hangup,
 	.ioctl		= slip_ioctl,
-#ifdef CONFIG_COMPAT
-	.compat_ioctl	= slip_compat_ioctl,
-#endif
 	.receive_buf	= slip_receive_buf,
 	.write_wakeup	= slip_write_wakeup,
 };
@@ -1324,13 +1298,13 @@ static int __init slip_init(void)
 	printk(KERN_INFO "SLIP linefill/keepalive option.\n");
 #endif
 
-	slip_devs = kzalloc(sizeof(struct net_device *)*slip_maxdev,
+	slip_devs = kcalloc(slip_maxdev, sizeof(struct net_device *),
 								GFP_KERNEL);
 	if (!slip_devs)
 		return -ENOMEM;
 
 	/* Fill in our line protocol discipline, and register it */
-	status = tty_register_ldisc(N_SLIP, &sl_ldisc);
+	status = tty_register_ldisc(&sl_ldisc);
 	if (status != 0) {
 		printk(KERN_ERR "SLIP: can't register line discipline (err = %d)\n", status);
 		kfree(slip_devs);
@@ -1391,9 +1365,7 @@ static void __exit slip_exit(void)
 	kfree(slip_devs);
 	slip_devs = NULL;
 
-	i = tty_unregister_ldisc(N_SLIP);
-	if (i != 0)
-		printk(KERN_ERR "SLIP: can't unregister line discipline (err = %d)\n", i);
+	tty_unregister_ldisc(&sl_ldisc);
 }
 
 module_init(slip_init);
@@ -1405,9 +1377,9 @@ module_exit(slip_exit);
  * added by Stanislav Voronyi. All changes before marked VSV
  */
 
-static void sl_outfill(unsigned long sls)
+static void sl_outfill(struct timer_list *t)
 {
-	struct slip *sl = (struct slip *)sls;
+	struct slip *sl = from_timer(sl, t, outfill_timer);
 
 	spin_lock(&sl->lock);
 
@@ -1436,9 +1408,9 @@ out:
 	spin_unlock(&sl->lock);
 }
 
-static void sl_keepalive(unsigned long sls)
+static void sl_keepalive(struct timer_list *t)
 {
-	struct slip *sl = (struct slip *)sls;
+	struct slip *sl = from_timer(sl, t, keepalive_timer);
 
 	spin_lock(&sl->lock);
 

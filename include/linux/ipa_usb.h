@@ -1,17 +1,16 @@
-/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _IPA_USB_H_
 #define _IPA_USB_H_
+
+#include <linux/if_ether.h>
+#include <linux/ipa.h>
+#include <linux/msm_gsi.h>
+#include <linux/msm_ipa.h>
+#include <linux/types.h>
 
 enum ipa_usb_teth_prot {
 	IPA_USB_RNDIS = 0,
@@ -177,7 +176,7 @@ struct ipa_req_chan_out_params {
 	u32 db_reg_phs_addr_msb;
 };
 
-#ifdef CONFIG_IPA3
+#if IS_ENABLED(CONFIG_IPA3)
 
 /**
  * ipa_usb_init_teth_prot - Peripheral should call this function to initialize
@@ -292,7 +291,16 @@ int ipa_usb_xdci_suspend(u32 ul_clnt_hdl, u32 dl_clnt_hdl,
 int ipa_usb_xdci_resume(u32 ul_clnt_hdl, u32 dl_clnt_hdl,
 			enum ipa_usb_teth_prot teth_prot);
 
-#else /* CONFIG_IPA3 */
+/**
+ * ipa_usb_is_teth_prot_connected - Internal API for checking USB
+ *		protocol is connected
+ *
+ * @usb_teth_prot:   USB tethering protocol
+ * @Return true if connected, false if not
+ */
+bool ipa_usb_is_teth_prot_connected(enum ipa_usb_teth_prot usb_teth_prot);
+
+#else /* IS_ENABLED(CONFIG_IPA3) */
 
 static inline int ipa_usb_init_teth_prot(enum ipa_usb_teth_prot teth_prot,
 			   struct ipa_usb_teth_params *teth_params,
@@ -337,7 +345,12 @@ static inline int ipa_usb_xdci_resume(u32 ul_clnt_hdl, u32 dl_clnt_hdl,
 	return -EPERM;
 }
 
+static inline int ipa_usb_is_teth_prot_connected(enum ipa_usb_teth_prot usb_teth_prot)
+{
+	return -EPERM;
+}
 
-#endif /* CONFIG_IPA3 */
+
+#endif /* IS_ENABLED(CONFIG_IPA3) */
 
 #endif /* _IPA_USB_H_ */

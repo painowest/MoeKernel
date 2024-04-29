@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
 ** mux.c:
 **	serial driver for the Mux console found in some PA-RISC servers.
 **
 **	(c) Copyright 2002 Ryan Bradetich
 **	(c) Copyright 2002 Hewlett-Packard Company
-**
-** This program is free software; you can redistribute it and/or modify
-** it under the terms of the GNU General Public License as published by
-** the Free Software Foundation; either version 2 of the License, or
-** (at your option) any later version.
 **
 ** This Driver currently only supports the console (port 0) on the MUX.
 ** Additional work will be needed on this driver to enable the full
@@ -25,15 +21,11 @@
 #include <linux/console.h>
 #include <linux/delay.h> /* for udelay */
 #include <linux/device.h>
-#include <asm/io.h>
+#include <linux/io.h>
 #include <asm/irq.h>
 #include <asm/parisc-device.h>
 
-#if defined(CONFIG_SERIAL_MUX_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
 #include <linux/sysrq.h>
-#define SUPPORT_SYSRQ
-#endif
-
 #include <linux/serial_core.h>
 
 #define MUX_OFFSET 0x800
@@ -375,7 +367,7 @@ static int mux_verify_port(struct uart_port *port, struct serial_struct *ser)
  *
  * This function periodically polls the Serial MUX to check for new data.
  */
-static void mux_poll(unsigned long unused)
+static void mux_poll(struct timer_list *unused)
 {  
 	int i;
 
@@ -478,7 +470,7 @@ static int __init mux_probe(struct parisc_device *dev)
 		port->iobase	= 0;
 		port->mapbase	= dev->hpa.start + MUX_OFFSET +
 						(i * MUX_LINE_OFFSET);
-		port->membase	= ioremap_nocache(port->mapbase, MUX_LINE_OFFSET);
+		port->membase	= ioremap(port->mapbase, MUX_LINE_OFFSET);
 		port->iotype	= UPIO_MEM;
 		port->type	= PORT_MUX;
 		port->irq	= 0;
@@ -487,6 +479,7 @@ static int __init mux_probe(struct parisc_device *dev)
 		port->ops	= &mux_pops;
 		port->flags	= UPF_BOOT_AUTOCONF;
 		port->line	= port_cnt;
+		port->has_sysrq = IS_ENABLED(CONFIG_SERIAL_MUX_CONSOLE);
 
 		/* The port->timeout needs to match what is present in
 		 * uart_wait_until_sent in serial_core.c.  Otherwise
@@ -503,7 +496,7 @@ static int __init mux_probe(struct parisc_device *dev)
 	return 0;
 }
 
-static int __exit mux_remove(struct parisc_device *dev)
+static void __exit mux_remove(struct parisc_device *dev)
 {
 	int i, j;
 	int port_count = (long)dev_get_drvdata(&dev->dev);
@@ -525,7 +518,6 @@ static int __exit mux_remove(struct parisc_device *dev)
 	}
 
 	release_mem_region(dev->hpa.start + MUX_OFFSET, port_count * MUX_LINE_OFFSET);
-	return 0;
 }
 
 /* Hack.  This idea was taken from the 8250_gsc.c on how to properly order
@@ -576,8 +568,7 @@ static int __init mux_init(void)
 
 	if(port_cnt > 0) {
 		/* Start the Mux timer */
-		init_timer(&mux_timer);
-		mux_timer.function = mux_poll;
+		timer_setup(&mux_timer, mux_poll, 0);
 		mod_timer(&mux_timer, jiffies + MUX_POLL_DELAY);
 
 #ifdef CONFIG_SERIAL_MUX_CONSOLE

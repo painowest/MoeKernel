@@ -1,19 +1,16 @@
-/* Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
  */
 
 #ifndef __QCOM_ADC_TM_H_CLIENTS__
 #define __QCOM_ADC_TM_H_CLIENTS__
 
+#include <linux/err.h>
+#include <linux/types.h>
+
 struct adc_tm_chip;
+struct adc5_chip;
 
 /**
  * enum adc_tm_state - This lets the client know whether the threshold
@@ -66,6 +63,7 @@ enum adc_tm_state_request {
 };
 
 struct adc_tm_param {
+	unsigned long		id;
 	int			low_thr;
 	int			high_thr;
 	uint32_t				channel;
@@ -75,25 +73,30 @@ struct adc_tm_param {
 						void *ctx);
 };
 
+struct device;
+
 /* Public API */
-#if defined(CONFIG_QTI_ADC_TM)
-struct adc_tm_chip *get_adc_tm(struct device *dev, const char *name);
-int32_t adc_tm5_channel_measure(struct adc_tm_chip *chip,
+
+#if IS_ENABLED(CONFIG_QCOM_SPMI_ADC5_GEN3)
+struct adc5_chip *get_adc_tm_gen3(struct device *dev, const char *name);
+int32_t adc_tm_channel_measure_gen3(struct adc5_chip *chip,
 					struct adc_tm_param *param);
-int32_t adc_tm5_disable_chan_meas(struct adc_tm_chip *chip,
+int32_t adc_tm_disable_chan_meas_gen3(struct adc5_chip *chip,
 					struct adc_tm_param *param);
 #else
-static inline struct adc_tm_chip *get_adc_tm(
+static inline struct adc5_chip *get_adc_tm_gen3(
 	struct device *dev, const char *name)
 { return ERR_PTR(-ENXIO); }
-static inline int32_t adc_tm5_channel_measure(
-					struct adc_tm_chip *chip,
+
+static inline int32_t adc_tm_channel_measure_gen3(
+					struct adc5_chip *chip,
 					struct adc_tm_param *param)
 { return -ENXIO; }
-static inline int32_t adc_tm5_disable_chan_meas(
-					struct adc_tm_chip *chip,
+static inline int32_t adc_tm_disable_chan_meas_gen3(
+					struct adc5_chip *chip,
 					struct adc_tm_param *param)
 { return -ENXIO; }
+
 #endif
 
 #endif /* __QCOM_ADC_TM_H_CLIENTS__ */

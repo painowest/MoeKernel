@@ -120,7 +120,7 @@ ar9003_set_txdesc(struct ath_hw *ah, void *ds, struct ath_tx_info *i)
 	switch (i->aggr) {
 	case AGGR_BUF_FIRST:
 		ctl17 |= SM(i->aggr_len, AR_AggrLen);
-		/* fall through */
+		fallthrough;
 	case AGGR_BUF_MIDDLE:
 		ctl12 |= AR_IsAggr | AR_MoreAggr;
 		ctl17 |= SM(i->ndelim, AR_PadDelim);
@@ -480,7 +480,7 @@ EXPORT_SYMBOL(ath9k_hw_addrxbuf_edma);
 int ath9k_hw_process_rxdesc_edma(struct ath_hw *ah, struct ath_rx_status *rxs,
 				 void *buf_addr)
 {
-	struct ar9003_rxs *rxsp = (struct ar9003_rxs *) buf_addr;
+	struct ar9003_rxs *rxsp = buf_addr;
 	unsigned int phyerr;
 
 	if ((rxsp->status11 & AR_RxDone) == 0)
@@ -522,6 +522,8 @@ int ath9k_hw_process_rxdesc_edma(struct ath_hw *ah, struct ath_rx_status *rxs,
 	rxs->rs_moreaggr = (rxsp->status11 & AR_RxMoreAggr) ? 1 : 0;
 	rxs->rs_antenna = (MS(rxsp->status4, AR_RxAntenna) & 0x7);
 	rxs->enc_flags |= (rxsp->status4 & AR_GI) ? RX_ENC_FLAG_SHORT_GI : 0;
+	rxs->enc_flags |=
+		(rxsp->status4 & AR_STBC) ? (1 << RX_ENC_FLAG_STBC_SHIFT) : 0;
 	rxs->bw = (rxsp->status4 & AR_2040) ? RATE_INFO_BW_40 : RATE_INFO_BW_20;
 
 	rxs->evm0 = rxsp->status6;
@@ -610,7 +612,7 @@ void ath9k_hw_setup_statusring(struct ath_hw *ah, void *ts_start,
 	ah->ts_paddr_start = ts_paddr_start;
 	ah->ts_paddr_end = ts_paddr_start + (size * sizeof(struct ar9003_txs));
 	ah->ts_size = size;
-	ah->ts_ring = (struct ar9003_txs *) ts_start;
+	ah->ts_ring = ts_start;
 
 	ath9k_hw_reset_txstatus_ring(ah);
 }

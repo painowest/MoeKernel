@@ -1,4 +1,4 @@
-obj-$(CONFIG_USE_OF) += board-dt.o
+# SPDX-License-Identifier: GPL-2.0-only
 obj-$(CONFIG_SMP)	+= platsmp.o
 obj-$(CONFIG_ARCH_QCS405) += board-qcs405.o
 obj-$(CONFIG_ARCH_QCS403) += board-qcs403.o

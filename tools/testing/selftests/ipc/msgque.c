@@ -69,7 +69,7 @@ int restore_queue(struct msgque_data *msgque)
 			printf("msgsnd failed (%m)\n");
 			ret = -errno;
 			goto destroy;
-		};
+		}
 	}
 	return 0;
 
@@ -180,7 +180,7 @@ int fill_msgque(struct msgque_data *msgque)
 				IPC_NOWAIT) != 0) {
 		printf("First message send failed (%m)\n");
 		return -errno;
-	};
+	}
 
 	msgbuf.mtype = ANOTHER_MSG_TYPE;
 	memcpy(msgbuf.mtext, ANOTHER_TEST_STRING, sizeof(ANOTHER_TEST_STRING));
@@ -188,7 +188,7 @@ int fill_msgque(struct msgque_data *msgque)
 				IPC_NOWAIT) != 0) {
 		printf("Second message send failed (%m)\n");
 		return -errno;
-	};
+	}
 	return 0;
 }
 
@@ -197,10 +197,9 @@ int main(int argc, char **argv)
 	int msg, pid, err;
 	struct msgque_data msgque;
 
-	if (getuid() != 0) {
-		printf("Please run the test as root - Exiting.\n");
-		return ksft_exit_fail();
-	}
+	if (getuid() != 0)
+		return ksft_exit_skip(
+				"Please run the test as root - Exiting.\n");
 
 	msgque.key = ftok(argv[0], 822155650);
 	if (msgque.key == -1) {

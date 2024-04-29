@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*******************************************************************************
  * This file contains main functions related to iSCSI Parameter negotiation.
  *
@@ -5,15 +6,6 @@
  *
  * Author: Nicholas A. Bellinger <nab@linux-iscsi.org>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  ******************************************************************************/
 
 #include <linux/ctype.h>
@@ -36,7 +28,6 @@
 #include "iscsi_target_auth.h"
 
 #define MAX_LOGIN_PDUS  7
-#define TEXT_LEN	4096
 
 void convert_null_to_semi(char *buf, int len)
 {
@@ -127,13 +118,6 @@ static u32 iscsi_handle_authentication(
 					" CHAP auth\n");
 			return -1;
 		}
-		iscsi_nacl = container_of(se_nacl, struct iscsi_node_acl,
-				se_node_acl);
-		if (!iscsi_nacl) {
-			pr_err("Unable to locate struct iscsi_node_acl for"
-					" CHAP auth\n");
-			return -1;
-		}
 
 		if (se_nacl->dynamic_node_acl) {
 			iscsi_tpg = container_of(se_nacl->se_tpg,
@@ -160,22 +144,11 @@ static u32 iscsi_handle_authentication(
 
 	if (strstr("None", authtype))
 		return 1;
-#ifdef CANSRP
-	else if (strstr("SRP", authtype))
-		return srp_main_loop(conn, auth, in_buf, out_buf,
-				&in_length, out_length);
-#endif
 	else if (strstr("CHAP", authtype))
 		return chap_main_loop(conn, auth, in_buf, out_buf,
 				&in_length, out_length);
-	else if (strstr("SPKM1", authtype))
-		return 2;
-	else if (strstr("SPKM2", authtype))
-		return 2;
-	else if (strstr("KRB5", authtype))
-		return 2;
-	else
-		return 2;
+	/* SRP, SPKM1, SPKM2 and KRB5 are unsupported */
+	return 2;
 }
 
 static void iscsi_remove_failed_auth_entry(struct iscsi_conn *conn)
@@ -500,7 +473,7 @@ static bool __iscsi_target_sk_check_close(struct sock *sk)
 {
 	if (sk->sk_state == TCP_CLOSE_WAIT || sk->sk_state == TCP_CLOSE) {
 		pr_debug("__iscsi_target_sk_check_close: TCP_CLOSE_WAIT|TCP_CLOSE,"
-			"returning FALSE\n");
+			"returning TRUE\n");
 		return true;
 	}
 	return false;
@@ -561,9 +534,15 @@ static void iscsi_target_login_drop(struct iscsi_conn *conn, struct iscsi_login 
 	iscsi_target_login_sess_out(conn, zero_tsih, true);
 }
 
-static void iscsi_target_login_timeout(unsigned long data)
+struct conn_timeout {
+	struct timer_list timer;
+	struct iscsi_conn *conn;
+};
+
+static void iscsi_target_login_timeout(struct timer_list *t)
 {
-	struct iscsi_conn *conn = (struct iscsi_conn *)data;
+	struct conn_timeout *timeout = from_timer(timeout, t, timer);
+	struct iscsi_conn *conn = timeout->conn;
 
 	pr_debug("Entering iscsi_target_login_timeout >>>>>>>>>>>>>>>>>>>\n");
 
@@ -582,7 +561,7 @@ static void iscsi_target_do_login_rx(struct work_struct *work)
 	struct iscsi_np *np = login->np;
 	struct iscsi_portal_group *tpg = conn->tpg;
 	struct iscsi_tpg_np *tpg_np = conn->tpg_np;
-	struct timer_list login_timer;
+	struct conn_timeout timeout;
 	int rc, zero_tsih = login->zero_tsih;
 	bool state;
 
@@ -620,15 +599,14 @@ static void iscsi_target_do_login_rx(struct work_struct *work)
 	conn->login_kworker = current;
 	allow_signal(SIGINT);
 
-	init_timer(&login_timer);
-	login_timer.expires = (get_jiffies_64() + TA_LOGIN_TIMEOUT * HZ);
-	login_timer.data = (unsigned long)conn;
-	login_timer.function = iscsi_target_login_timeout;
-	add_timer(&login_timer);
-	pr_debug("Starting login_timer for %s/%d\n", current->comm, current->pid);
+	timeout.conn = conn;
+	timer_setup_on_stack(&timeout.timer, iscsi_target_login_timeout, 0);
+	mod_timer(&timeout.timer, jiffies + TA_LOGIN_TIMEOUT * HZ);
+	pr_debug("Starting login timer for %s/%d\n", current->comm, current->pid);
 
 	rc = conn->conn_transport->iscsit_get_login_rx(conn, login);
-	del_timer_sync(&login_timer);
+	del_timer_sync(&timeout.timer);
+	destroy_timer_on_stack(&timeout.timer);
 	flush_signals(current);
 	conn->login_kworker = NULL;
 
@@ -638,13 +616,37 @@ static void iscsi_target_do_login_rx(struct work_struct *work)
 	pr_debug("iscsi_target_do_login_rx after rx_login_io, %p, %s:%d\n",
 			conn, current->comm, current->pid);
 
+	/*
+	 * LOGIN_FLAGS_READ_ACTIVE is cleared so that sk_data_ready
+	 * could be triggered again after this.
+	 *
+	 * LOGIN_FLAGS_WRITE_ACTIVE is cleared after we successfully
+	 * process a login PDU, so that sk_state_chage can do login
+	 * cleanup as needed if the socket is closed. If a delayed work is
+	 * ongoing (LOGIN_FLAGS_WRITE_ACTIVE or LOGIN_FLAGS_READ_ACTIVE),
+	 * sk_state_change will leave the cleanup to the delayed work or
+	 * it will schedule a delayed work to do cleanup.
+	 */
+	if (conn->sock) {
+		struct sock *sk = conn->sock->sk;
+
+		write_lock_bh(&sk->sk_callback_lock);
+		if (!test_bit(LOGIN_FLAGS_INITIAL_PDU, &conn->login_flags)) {
+			clear_bit(LOGIN_FLAGS_READ_ACTIVE, &conn->login_flags);
+			set_bit(LOGIN_FLAGS_WRITE_ACTIVE, &conn->login_flags);
+		}
+		write_unlock_bh(&sk->sk_callback_lock);
+	}
+
 	rc = iscsi_target_do_login(conn, login);
 	if (rc < 0) {
 		goto err;
 	} else if (!rc) {
-		if (iscsi_target_sk_check_and_clear(conn, LOGIN_FLAGS_READ_ACTIVE))
+		if (iscsi_target_sk_check_and_clear(conn,
+						    LOGIN_FLAGS_WRITE_ACTIVE))
 			goto err;
 	} else if (rc == 1) {
+		cancel_delayed_work(&conn->login_work);
 		iscsi_target_nego_release(conn);
 		iscsi_post_login_handler(np, conn, zero_tsih);
 		iscsit_deaccess_np(np, tpg, tpg_np);
@@ -653,6 +655,7 @@ static void iscsi_target_do_login_rx(struct work_struct *work)
 
 err:
 	iscsi_target_restore_sock_callbacks(conn);
+	cancel_delayed_work(&conn->login_work);
 	iscsi_target_login_drop(conn, login);
 	iscsit_deaccess_np(np, tpg, tpg_np);
 }
@@ -683,9 +686,10 @@ static void iscsi_target_sk_state_change(struct sock *sk)
 	state = __iscsi_target_sk_check_close(sk);
 	pr_debug("__iscsi_target_sk_close_change: state: %d\n", state);
 
-	if (test_bit(LOGIN_FLAGS_READ_ACTIVE, &conn->login_flags)) {
-		pr_debug("Got LOGIN_FLAGS_READ_ACTIVE=1 sk_state_change"
-			 " conn: %p\n", conn);
+	if (test_bit(LOGIN_FLAGS_READ_ACTIVE, &conn->login_flags) ||
+	    test_bit(LOGIN_FLAGS_WRITE_ACTIVE, &conn->login_flags)) {
+		pr_debug("Got LOGIN_FLAGS_{READ|WRITE}_ACTIVE=1"
+			 " sk_state_change conn: %p\n", conn);
 		if (state)
 			set_bit(LOGIN_FLAGS_CLOSED, &conn->login_flags);
 		write_unlock_bh(&sk->sk_callback_lock);
@@ -1072,14 +1076,12 @@ int iscsi_target_locate_portal(
 	login_req = (struct iscsi_login_req *) login->req;
 	payload_length = ntoh24(login_req->dlength);
 
-	tmpbuf = kzalloc(payload_length + 1, GFP_KERNEL);
+	tmpbuf = kmemdup_nul(login->req_buf, payload_length, GFP_KERNEL);
 	if (!tmpbuf) {
 		pr_err("Unable to allocate memory for tmpbuf.\n");
 		return -1;
 	}
 
-	memcpy(tmpbuf, login->req_buf, payload_length);
-	tmpbuf[payload_length] = '\0';
 	start = tmpbuf;
 	end = (start + payload_length);
 

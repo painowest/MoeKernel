@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: GPL-2.0
+// SPDX-License-Identifier: GPL-2.0 or MIT
 /*
  * Copyright 2018 Noralf Trønnes
  */
 
+#include <linux/dma-buf-map.h>
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
@@ -15,10 +16,10 @@
 #include <drm/drm_drv.h>
 #include <drm/drm_file.h>
 #include <drm/drm_fourcc.h>
+#include <drm/drm_framebuffer.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_mode.h>
 #include <drm/drm_print.h>
-#include <drm/drmP.h>
 
 #include "drm_crtc_internal.h"
 #include "drm_internal.h"
@@ -80,9 +81,8 @@ int drm_client_init(struct drm_device *dev, struct drm_client_dev *client,
 {
 	int ret;
 
-	if (!drm_core_check_feature(dev, DRIVER_MODESET) ||
-	    !dev->driver->dumb_create || !dev->driver->gem_prime_vmap)
-		return -ENOTSUPP;
+	if (!drm_core_check_feature(dev, DRIVER_MODESET) || !dev->driver->dumb_create)
+		return -EOPNOTSUPP;
 
 	if (funcs && !try_module_get(funcs->owner))
 		return -ENODEV;
@@ -99,9 +99,10 @@ int drm_client_init(struct drm_device *dev, struct drm_client_dev *client,
 	if (ret)
 		goto err_free;
 
-	drm_dev_ref(dev);
+	drm_dev_get(dev);
 
 	return 0;
+
 err_free:
 	drm_client_modeset_free(client);
 err_put_module:
@@ -150,22 +151,15 @@ void drm_client_release(struct drm_client_dev *client)
 {
 	struct drm_device *dev = client->dev;
 
-	DRM_DEV_DEBUG_KMS(dev->dev, "%s\n", client->name);
+	drm_dbg_kms(dev, "%s\n", client->name);
 
 	drm_client_modeset_free(client);
 	drm_client_close(client);
-	drm_dev_unref(dev);
+	drm_dev_put(dev);
 	if (client->funcs)
 		module_put(client->funcs->owner);
 }
 EXPORT_SYMBOL(drm_client_release);
-
-void drm_client_dev_register(struct drm_device *dev)
-{
-#ifdef CONFIG_DRM_CLIENT_BOOTSPLASH
-	drm_bootsplash_client_register(dev);
-#endif
-}
 
 void drm_client_dev_unregister(struct drm_device *dev)
 {
@@ -186,7 +180,6 @@ void drm_client_dev_unregister(struct drm_device *dev)
 	}
 	mutex_unlock(&dev->clientlist_mutex);
 }
-EXPORT_SYMBOL(drm_client_dev_unregister);
 
 /**
  * drm_client_dev_hotplug - Send hotplug event to clients
@@ -211,7 +204,7 @@ void drm_client_dev_hotplug(struct drm_device *dev)
 			continue;
 
 		ret = client->funcs->hotplug(client);
-		DRM_DEV_DEBUG_KMS(dev->dev, "%s: ret=%d\n", client->name, ret);
+		drm_dbg_kms(dev, "%s: ret=%d\n", client->name, ret);
 	}
 	mutex_unlock(&dev->clientlist_mutex);
 }
@@ -231,7 +224,7 @@ void drm_client_dev_restore(struct drm_device *dev)
 			continue;
 
 		ret = client->funcs->restore(client);
-		DRM_DEV_DEBUG_KMS(dev->dev, "%s: ret=%d\n", client->name, ret);
+		drm_dbg_kms(dev, "%s: ret=%d\n", client->name, ret);
 		if (!ret) /* The first one to return zero gets the privilege to restore */
 			break;
 	}
@@ -242,20 +235,21 @@ static void drm_client_buffer_delete(struct drm_client_buffer *buffer)
 {
 	struct drm_device *dev = buffer->client->dev;
 
-	if (buffer->vaddr && dev->driver->gem_prime_vunmap)
-		dev->driver->gem_prime_vunmap(buffer->gem, buffer->vaddr);
+	drm_gem_vunmap(buffer->gem, &buffer->map);
 
 	if (buffer->gem)
-		drm_gem_object_put_unlocked(buffer->gem);
+		drm_gem_object_put(buffer->gem);
 
 	if (buffer->handle)
 		drm_mode_destroy_dumb(dev, buffer->handle, buffer->client->file);
+
 	kfree(buffer);
 }
 
 static struct drm_client_buffer *
 drm_client_buffer_create(struct drm_client_dev *client, u32 width, u32 height, u32 format)
 {
+	const struct drm_format_info *info = drm_format_info(format);
 	struct drm_mode_create_dumb dumb_args = { };
 	struct drm_device *dev = client->dev;
 	struct drm_client_buffer *buffer;
@@ -270,7 +264,7 @@ drm_client_buffer_create(struct drm_client_dev *client, u32 width, u32 height, u
 
 	dumb_args.width = width;
 	dumb_args.height = height;
-	dumb_args.bpp = drm_format_plane_cpp(format, 0) * 8;
+	dumb_args.bpp = info->cpp[0] * 8;
 	ret = drm_mode_create_dumb(dev, &dumb_args, client->file);
 	if (ret)
 		goto err_delete;
@@ -297,28 +291,28 @@ err_delete:
 /**
  * drm_client_buffer_vmap - Map DRM client buffer into address space
  * @buffer: DRM client buffer
+ * @map_copy: Returns the mapped memory's address
  *
  * This function maps a client buffer into kernel address space. If the
- * buffer is already mapped, it returns the mapping's address.
+ * buffer is already mapped, it returns the existing mapping's address.
  *
  * Client buffer mappings are not ref'counted. Each call to
  * drm_client_buffer_vmap() should be followed by a call to
  * drm_client_buffer_vunmap(); or the client buffer should be mapped
- * throughout its lifetime. The latter is the default.
+ * throughout its lifetime.
+ *
+ * The returned address is a copy of the internal value. In contrast to
+ * other vmap interfaces, you don't need it for the client's vunmap
+ * function. So you can modify it at will during blit and draw operations.
  *
  * Returns:
- *	The mapped memory's address
+ *	0 on success, or a negative errno code otherwise.
  */
-void *drm_client_buffer_vmap(struct drm_client_buffer *buffer)
+int
+drm_client_buffer_vmap(struct drm_client_buffer *buffer, struct dma_buf_map *map_copy)
 {
-	struct drm_device *dev = buffer->client->dev;
-	void *vaddr;
-
-	if (buffer->vaddr)
-		return buffer->vaddr;
-
-	if (!dev->driver->gem_prime_vmap)
-		return ERR_PTR(-ENOTSUPP);
+	struct dma_buf_map *map = &buffer->map;
+	int ret;
 
 	/*
 	 * FIXME: The dependency on GEM here isn't required, we could
@@ -328,14 +322,13 @@ void *drm_client_buffer_vmap(struct drm_client_buffer *buffer)
 	 * fd_install step out of the driver backend hooks, to make that
 	 * final step optional for internal users.
 	 */
-	vaddr = dev->driver->gem_prime_vmap(buffer->gem);
-	if (IS_ERR(vaddr)) {
-		return vaddr;
-	}
+	ret = drm_gem_vmap(buffer->gem, map);
+	if (ret)
+		return ret;
 
-	buffer->vaddr = vaddr;
+	*map_copy = *map;
 
-	return vaddr;
+	return 0;
 }
 EXPORT_SYMBOL(drm_client_buffer_vmap);
 
@@ -343,18 +336,15 @@ EXPORT_SYMBOL(drm_client_buffer_vmap);
  * drm_client_buffer_vunmap - Unmap DRM client buffer
  * @buffer: DRM client buffer
  *
- * This function removes a client buffer's memory mapping. This
- * function is only required by clients that manage their buffers
- * by themselves. By default, DRM client buffers are mapped throughout
- * their entire lifetime.
+ * This function removes a client buffer's memory mapping. Calling this
+ * function is only required by clients that manage their buffer mappings
+ * by themselves.
  */
 void drm_client_buffer_vunmap(struct drm_client_buffer *buffer)
 {
-	struct drm_device *dev = buffer->client->dev;
+	struct dma_buf_map *map = &buffer->map;
 
-	if (buffer->vaddr && dev->driver->gem_prime_vunmap)
-		dev->driver->gem_prime_vunmap(buffer->gem, buffer->vaddr);
-	buffer->vaddr = NULL;
+	drm_gem_vunmap(buffer->gem, map);
 }
 EXPORT_SYMBOL(drm_client_buffer_vunmap);
 
@@ -367,8 +357,8 @@ static void drm_client_buffer_rmfb(struct drm_client_buffer *buffer)
 
 	ret = drm_mode_rmfb(buffer->client->dev, buffer->fb->base.id, buffer->client->file);
 	if (ret)
-		DRM_DEV_ERROR(buffer->client->dev->dev,
-			      "Error removing FB:%u (%d)\n", buffer->fb->base.id, ret);
+		drm_err(buffer->client->dev,
+			"Error removing FB:%u (%d)\n", buffer->fb->base.id, ret);
 
 	buffer->fb = NULL;
 }
@@ -453,6 +443,39 @@ void drm_client_framebuffer_delete(struct drm_client_buffer *buffer)
 }
 EXPORT_SYMBOL(drm_client_framebuffer_delete);
 
+/**
+ * drm_client_framebuffer_flush - Manually flush client framebuffer
+ * @buffer: DRM client buffer (can be NULL)
+ * @rect: Damage rectangle (if NULL flushes all)
+ *
+ * This calls &drm_framebuffer_funcs->dirty (if present) to flush buffer changes
+ * for drivers that need it.
+ *
+ * Returns:
+ * Zero on success or negative error code on failure.
+ */
+int drm_client_framebuffer_flush(struct drm_client_buffer *buffer, struct drm_rect *rect)
+{
+	if (!buffer || !buffer->fb || !buffer->fb->funcs->dirty)
+		return 0;
+
+	if (rect) {
+		struct drm_clip_rect clip = {
+			.x1 = rect->x1,
+			.y1 = rect->y1,
+			.x2 = rect->x2,
+			.y2 = rect->y2,
+		};
+
+		return buffer->fb->funcs->dirty(buffer->fb, buffer->client->file,
+						0, 0, &clip, 1);
+	}
+
+	return buffer->fb->funcs->dirty(buffer->fb, buffer->client->file,
+					0, 0, NULL, 0);
+}
+EXPORT_SYMBOL(drm_client_framebuffer_flush);
+
 #ifdef CONFIG_DEBUG_FS
 static int drm_client_debugfs_internal_clients(struct seq_file *m, void *data)
 {
@@ -473,10 +496,10 @@ static const struct drm_info_list drm_client_debugfs_list[] = {
 	{ "internal_clients", drm_client_debugfs_internal_clients, 0 },
 };
 
-int drm_client_debugfs_init(struct drm_minor *minor)
+void drm_client_debugfs_init(struct drm_minor *minor)
 {
-	return drm_debugfs_create_files(drm_client_debugfs_list,
-					ARRAY_SIZE(drm_client_debugfs_list),
-					minor->debugfs_root, minor);
+	drm_debugfs_create_files(drm_client_debugfs_list,
+				 ARRAY_SIZE(drm_client_debugfs_list),
+				 minor->debugfs_root, minor);
 }
 #endif

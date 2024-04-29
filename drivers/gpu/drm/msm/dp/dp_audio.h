@@ -1,15 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2016-2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _DP_AUDIO_H_
@@ -19,6 +10,7 @@
 
 #include "dp_panel.h"
 #include "dp_catalog.h"
+#include <sound/hdmi-codec.h>
 
 /**
  * struct dp_audio
@@ -28,28 +20,6 @@
 struct dp_audio {
 	u32 lane_count;
 	u32 bw_code;
-
-	/**
-	 * on()
-	 *
-	 * Enables the audio by notifying the user module.
-	 *
-	 * @dp_audio: an instance of struct dp_audio.
-	 *
-	 * Returns the error code in case of failure, 0 in success case.
-	 */
-	int (*on)(struct dp_audio *dp_audio);
-
-	/**
-	 * off()
-	 *
-	 * Disables the audio by notifying the user module.
-	 *
-	 * @dp_audio: an instance of struct dp_audio.
-	 *
-	 * Returns the error code in case of failure, 0 in success case.
-	 */
-	int (*off)(struct dp_audio *dp_audio);
 };
 
 /**
@@ -59,14 +29,31 @@ struct dp_audio {
  *
  * @pdev: caller's platform device instance.
  * @panel: an instance of dp_panel module.
- * @catalog: an instance of dp_catalog_audio module.
+ * @catalog: an instance of dp_catalog module.
  *
  * Returns the error code in case of failure, otherwize
  * an instance of newly created dp_module.
  */
 struct dp_audio *dp_audio_get(struct platform_device *pdev,
 			struct dp_panel *panel,
-			struct dp_catalog_audio *catalog);
+			struct dp_catalog *catalog);
+
+/**
+ * dp_register_audio_driver()
+ *
+ * Registers DP device with hdmi_codec interface.
+ *
+ * @dev: DP device instance.
+ * @dp_audio: an instance of dp_audio module.
+ *
+ *
+ * Returns the error code in case of failure, otherwise
+ * zero on success.
+ */
+int dp_register_audio_driver(struct device *dev,
+		struct dp_audio *dp_audio);
+
+void dp_unregister_audio_driver(struct device *dev, struct dp_audio *dp_audio);
 
 /**
  * dp_audio_put()
@@ -76,6 +63,12 @@ struct dp_audio *dp_audio_get(struct platform_device *pdev,
  * @dp_audio: an instance of dp_audio.
  */
 void dp_audio_put(struct dp_audio *dp_audio);
+
+int dp_audio_hw_params(struct device *dev,
+	void *data,
+	struct hdmi_codec_daifmt *daifmt,
+	struct hdmi_codec_params *params);
+
 #endif /* _DP_AUDIO_H_ */
 
 

@@ -1,13 +1,6 @@
-/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2015-2020, The Linux Foundation. All rights reserved.
  */
 
 #define DRIVER_NAME "msm_sharedmem"
@@ -88,7 +81,7 @@ static void setup_shared_ram_perms(u32 client_id, phys_addr_t addr, u32 size,
 		int dest_vmids[3] = {VMID_HLOS, VMID_MSS_MSA, VMID_NAV};
 		int dest_perms[3] = {PERM_READ|PERM_WRITE,
 				     PERM_READ|PERM_WRITE,
-				     PERM_READ|PERM_WRITE};
+					PERM_READ|PERM_WRITE};
 
 		ret = hyp_assign_phys(addr, size, source_vmlist, 1, dest_vmids,
 					dest_perms, 3);
@@ -102,7 +95,7 @@ static void setup_shared_ram_perms(u32 client_id, phys_addr_t addr, u32 size,
 	}
 	if (ret != 0) {
 		if (ret == -EINVAL)
-			pr_warn("hyp_assign_phys is not supported!");
+			pr_warn("hyp_assign_phys is not supported!\n");
 		else
 			pr_err("hyp_assign_phys failed IPA=0x016%pa size=%u err=%d\n",
 				&addr, size, ret);
@@ -173,11 +166,8 @@ static int msm_sharedmem_probe(struct platform_device *pdev)
 
 		shared_mem = dma_alloc_coherent(&pdev->dev, shared_mem_tot_sz,
 					&shared_mem_pyhsical, GFP_KERNEL);
-		if (shared_mem == NULL) {
-			pr_err("Shared mem alloc client=%s, size=%u\n",
-				clnt_res->name, shared_mem_size);
+		if (shared_mem == NULL)
 			return -ENOMEM;
-		}
 		if (guard_memory)
 			shared_mem_pyhsical += SZ_4K;
 	}
@@ -233,7 +223,6 @@ static struct platform_driver msm_sharedmem_driver = {
 	.remove         = msm_sharedmem_remove,
 	.driver         = {
 		.name   = DRIVER_NAME,
-		.owner	= THIS_MODULE,
 		.of_match_table = msm_sharedmem_of_match,
 	},
 };

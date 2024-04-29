@@ -13,12 +13,10 @@
 /* image of the saved processor state */
 struct saved_context {
 	/*
-	 * On x86_32, all segment registers, with the possible exception of
-	 * gs, are saved at kernel entry in pt_regs.
+	 * On x86_32, all segment registers except gs are saved at kernel
+	 * entry in pt_regs.
 	 */
-#ifdef CONFIG_X86_32_LAZY_GS
 	u16 gs;
-#endif
 	unsigned long cr0, cr2, cr3, cr4;
 	u64 misc_enable;
 	struct saved_msrs saved_msrs;
@@ -31,5 +29,9 @@ struct saved_context {
 	unsigned long return_address;
 	bool misc_enable_saved;
 } __attribute__((packed));
+
+/* routines for saving/restoring kernel state */
+extern char core_restore_code[];
+extern char restore_registers[];
 
 #endif /* _ASM_X86_SUSPEND_32_H */

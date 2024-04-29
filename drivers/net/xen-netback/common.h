@@ -253,10 +253,27 @@ struct xenvif_hash_cache {
 struct xenvif_hash {
 	unsigned int alg;
 	u32 flags;
+	bool mapping_sel;
 	u8 key[XEN_NETBK_MAX_HASH_KEY_SIZE];
-	u32 mapping[XEN_NETBK_MAX_HASH_MAPPING_SIZE];
+	u32 mapping[2][XEN_NETBK_MAX_HASH_MAPPING_SIZE];
 	unsigned int size;
 	struct xenvif_hash_cache cache;
+};
+
+struct backend_info {
+	struct xenbus_device *dev;
+	struct xenvif *vif;
+
+	/* This is the state that will be reflected in xenstore when any
+	 * active hotplug script completes.
+	 */
+	enum xenbus_state state;
+
+	enum xenbus_state frontend_state;
+	struct xenbus_watch hotplug_status_watch;
+	u8 have_hotplug_status_watch:1;
+
+	const char *hotplug_script;
 };
 
 struct xenvif {
@@ -276,6 +293,9 @@ struct xenvif {
 	u8 ipv6_csum:1;
 	u8 multicast_control:1;
 
+	/* headroom requested by xen-netfront */
+	u16 xdp_headroom;
+
 	/* Is this interface disabled? True when backend discovers
 	 * frontend is rogue.
 	 */
@@ -293,6 +313,8 @@ struct xenvif {
 
 	struct xenbus_watch credit_watch;
 	struct xenbus_watch mcast_ctrl_watch;
+
+	struct backend_info *be;
 
 	spinlock_t lock;
 
@@ -319,7 +341,7 @@ static inline struct xenbus_device *xenvif_to_xenbus_device(struct xenvif *vif)
 	return to_xenbus_device(vif->dev->dev.parent);
 }
 
-void xenvif_tx_credit_callback(unsigned long data);
+void xenvif_tx_credit_callback(struct timer_list *t);
 
 struct xenvif *xenvif_alloc(struct device *parent,
 			    domid_t domid,
@@ -369,7 +391,8 @@ bool xenvif_rx_queue_tail(struct xenvif_queue *queue, struct sk_buff *skb);
 void xenvif_carrier_on(struct xenvif *vif);
 
 /* Callback from stack when TX packet can be released */
-void xenvif_zerocopy_callback(struct ubuf_info *ubuf, bool zerocopy_success);
+void xenvif_zerocopy_callback(struct sk_buff *skb, struct ubuf_info *ubuf,
+			      bool zerocopy_success);
 
 static inline pending_ring_idx_t nr_pending_reqs(struct xenvif_queue *queue)
 {
@@ -380,6 +403,7 @@ static inline pending_ring_idx_t nr_pending_reqs(struct xenvif_queue *queue)
 irqreturn_t xenvif_interrupt(int irq, void *dev_id);
 
 extern bool separate_tx_rx_irq;
+extern bool provides_xdp_headroom;
 
 extern unsigned int rx_drain_timeout_msecs;
 extern unsigned int rx_stall_timeout_msecs;

@@ -7,16 +7,17 @@
  * Copyright (c) 2007 Dave Airlie <airlied@linux.ie>
  */
 
+#include "drm/drm_modeset_lock.h"
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
 
 #include <drm/drm_atomic.h>
-#include <drm/drm_atomic_helper.h>
 #include <drm/drm_client.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_crtc.h>
 #include <drm/drm_device.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_encoder.h>
 #include <drm/drm_print.h>
 
@@ -115,6 +116,33 @@ drm_client_find_modeset(struct drm_client_dev *client, struct drm_crtc *crtc)
 }
 
 static struct drm_display_mode *
+drm_connector_get_tiled_mode(struct drm_connector *connector)
+{
+	struct drm_display_mode *mode;
+
+	list_for_each_entry(mode, &connector->modes, head) {
+		if (mode->hdisplay == connector->tile_h_size &&
+		    mode->vdisplay == connector->tile_v_size)
+			return mode;
+	}
+	return NULL;
+}
+
+static struct drm_display_mode *
+drm_connector_fallback_non_tiled_mode(struct drm_connector *connector)
+{
+	struct drm_display_mode *mode;
+
+	list_for_each_entry(mode, &connector->modes, head) {
+		if (mode->hdisplay == connector->tile_h_size &&
+		    mode->vdisplay == connector->tile_v_size)
+			continue;
+		return mode;
+	}
+	return NULL;
+}
+
+static struct drm_display_mode *
 drm_connector_has_preferred_mode(struct drm_connector *connector, int width, int height)
 {
 	struct drm_display_mode *mode;
@@ -159,7 +187,7 @@ again:
 			continue;
 
 		if (cmdline_mode->refresh_specified) {
-			if (mode->vrefresh != cmdline_mode->refresh)
+			if (drm_mode_vrefresh(mode) != cmdline_mode->refresh)
 				continue;
 		}
 
@@ -190,6 +218,9 @@ static bool drm_connector_enabled(struct drm_connector *connector, bool strict)
 {
 	bool enable;
 
+	if (connector->display_info.non_desktop)
+		return false;
+
 	if (strict)
 		enable = connector->status == connector_status_connected;
 	else
@@ -210,7 +241,7 @@ static void drm_client_connectors_enabled(struct drm_connector **connectors,
 		connector = connectors[i];
 		enabled[i] = drm_connector_enabled(connector, true);
 		DRM_DEBUG_KMS("connector %d enabled? %s\n", connector->base.id,
-			      enabled[i] ? "yes" : "no");
+			      connector->display_info.non_desktop ? "non desktop" : enabled[i] ? "yes" : "no");
 
 		any_enabled |= enabled[i];
 	}
@@ -278,6 +309,9 @@ static bool drm_client_target_cloned(struct drm_device *dev,
 	can_clone = true;
 	dmt_mode = drm_mode_find_dmt(dev, 1024, 768, 60, false);
 
+	if (!dmt_mode)
+		goto fail;
+
 	for (i = 0; i < connector_count; i++) {
 		if (!enabled[i])
 			continue;
@@ -293,11 +327,13 @@ static bool drm_client_target_cloned(struct drm_device *dev,
 		if (!modes[i])
 			can_clone = false;
 	}
+	kfree(dmt_mode);
 
 	if (can_clone) {
 		DRM_DEBUG_KMS("can clone using 1024x768\n");
 		return true;
 	}
+fail:
 	DRM_INFO("kms: can't enable cloning when we probably wanted to.\n");
 	return false;
 }
@@ -345,7 +381,14 @@ static bool drm_client_target_preferred(struct drm_connector **connectors,
 	struct drm_connector *connector;
 	u64 conn_configured = 0;
 	int tile_pass = 0;
+	int num_tiled_conns = 0;
 	int i;
+
+	for (i = 0; i < connector_count; i++) {
+		if (connectors[i]->has_tile &&
+		    connectors[i]->status == connector_status_connected)
+			num_tiled_conns++;
+	}
 
 retry:
 	for (i = 0; i < connector_count; i++) {
@@ -396,6 +439,28 @@ retry:
 			list_for_each_entry(modes[i], &connector->modes, head)
 				break;
 		}
+		/*
+		 * In case of tiled mode if all tiles not present fallback to
+		 * first available non tiled mode.
+		 * After all tiles are present, try to find the tiled mode
+		 * for all and if tiled mode not present due to fbcon size
+		 * limitations, use first non tiled mode only for
+		 * tile 0,0 and set to no mode for all other tiles.
+		 */
+		if (connector->has_tile) {
+			if (num_tiled_conns <
+			    connector->num_h_tile * connector->num_v_tile ||
+			    (connector->tile_h_loc == 0 &&
+			     connector->tile_v_loc == 0 &&
+			     !drm_connector_get_tiled_mode(connector))) {
+				DRM_DEBUG_KMS("Falling back to non tiled mode on Connector %d\n",
+					      connector->base.id);
+				modes[i] = drm_connector_fallback_non_tiled_mode(connector);
+			} else {
+				modes[i] = drm_connector_get_tiled_mode(connector);
+			}
+		}
+
 		DRM_DEBUG_KMS("found mode %s\n", modes[i] ? modes[i]->name :
 			  "none");
 		conn_configured |= BIT_ULL(i);
@@ -412,9 +477,8 @@ static bool connector_has_possible_crtc(struct drm_connector *connector,
 					struct drm_crtc *crtc)
 {
 	struct drm_encoder *encoder;
-	int i;
 
-	drm_connector_for_each_possible_encoder(connector, encoder, i) {
+	drm_connector_for_each_possible_encoder(connector, encoder) {
 		if (encoder->possible_crtcs & drm_crtc_mask(crtc))
 			return true;
 	}
@@ -505,7 +569,7 @@ static bool drm_client_firmware_config(struct drm_client_dev *client,
 				       struct drm_client_offset *offsets,
 				       bool *enabled, int width, int height)
 {
-	unsigned int count = min_t(unsigned int, connector_count, BITS_PER_LONG);
+	const int count = min_t(unsigned int, connector_count, BITS_PER_LONG);
 	unsigned long conn_configured, conn_seq, mask;
 	struct drm_device *dev = client->dev;
 	int i, j;
@@ -513,9 +577,13 @@ static bool drm_client_firmware_config(struct drm_client_dev *client,
 	bool fallback = true, ret = true;
 	int num_connectors_enabled = 0;
 	int num_connectors_detected = 0;
+	int num_tiled_conns = 0;
 	struct drm_modeset_acquire_ctx ctx;
 
 	if (!drm_drv_uses_atomic_modeset(dev))
+		return false;
+
+	if (WARN_ON(count <= 0))
 		return false;
 
 	save_enabled = kcalloc(count, sizeof(bool), GFP_KERNEL);
@@ -530,6 +598,11 @@ static bool drm_client_firmware_config(struct drm_client_dev *client,
 	memcpy(save_enabled, enabled, count);
 	mask = GENMASK(count - 1, 0);
 	conn_configured = 0;
+	for (i = 0; i < count; i++) {
+		if (connectors[i]->has_tile &&
+		    connectors[i]->status == connector_status_connected)
+			num_tiled_conns++;
+	}
 retry:
 	conn_seq = conn_configured;
 	for (i = 0; i < count; i++) {
@@ -628,6 +701,16 @@ retry:
 			DRM_DEBUG_KMS("looking for current mode on connector %s\n",
 				      connector->name);
 			modes[i] = &connector->state->crtc->mode;
+		}
+		/*
+		 * In case of tiled modes, if all tiles are not present
+		 * then fallback to a non tiled mode.
+		 */
+		if (connector->has_tile &&
+		    num_tiled_conns < connector->num_h_tile * connector->num_v_tile) {
+			DRM_DEBUG_KMS("Falling back to non tiled mode on Connector %d\n",
+				      connector->base.id);
+			modes[i] = drm_connector_fallback_non_tiled_mode(connector);
 		}
 		crtcs[i] = new_crtc;
 
@@ -782,6 +865,7 @@ int drm_client_modeset_probe(struct drm_client_dev *client, unsigned int width, 
 				break;
 			}
 
+			kfree(modeset->mode);
 			modeset->mode = drm_mode_duplicate(dev, mode);
 			drm_connector_get(connector);
 			modeset->connectors[modeset->num_connectors++] = connector;
@@ -805,7 +889,94 @@ free_connectors:
 }
 EXPORT_SYMBOL(drm_client_modeset_probe);
 
-static int drm_client_modeset_commit_atomic(struct drm_client_dev *client, bool active)
+/**
+ * drm_client_rotation() - Check the initial rotation value
+ * @modeset: DRM modeset
+ * @rotation: Returned rotation value
+ *
+ * This function checks if the primary plane in @modeset can hw rotate
+ * to match the rotation needed on its connector.
+ *
+ * Note: Currently only 0 and 180 degrees are supported.
+ *
+ * Return:
+ * True if the plane can do the rotation, false otherwise.
+ */
+bool drm_client_rotation(struct drm_mode_set *modeset, unsigned int *rotation)
+{
+	struct drm_connector *connector = modeset->connectors[0];
+	struct drm_plane *plane = modeset->crtc->primary;
+	struct drm_cmdline_mode *cmdline;
+	u64 valid_mask = 0;
+	unsigned int i;
+
+	if (!modeset->num_connectors)
+		return false;
+
+	switch (connector->display_info.panel_orientation) {
+	case DRM_MODE_PANEL_ORIENTATION_BOTTOM_UP:
+		*rotation = DRM_MODE_ROTATE_180;
+		break;
+	case DRM_MODE_PANEL_ORIENTATION_LEFT_UP:
+		*rotation = DRM_MODE_ROTATE_90;
+		break;
+	case DRM_MODE_PANEL_ORIENTATION_RIGHT_UP:
+		*rotation = DRM_MODE_ROTATE_270;
+		break;
+	default:
+		*rotation = DRM_MODE_ROTATE_0;
+	}
+
+	/**
+	 * The panel already defined the default rotation
+	 * through its orientation. Whatever has been provided
+	 * on the command line needs to be added to that.
+	 *
+	 * Unfortunately, the rotations are at different bit
+	 * indices, so the math to add them up are not as
+	 * trivial as they could.
+	 *
+	 * Reflections on the other hand are pretty trivial to deal with, a
+	 * simple XOR between the two handle the addition nicely.
+	 */
+	cmdline = &connector->cmdline_mode;
+	if (cmdline->specified && cmdline->rotation_reflection) {
+		unsigned int cmdline_rest, panel_rest;
+		unsigned int cmdline_rot, panel_rot;
+		unsigned int sum_rot, sum_rest;
+
+		panel_rot = ilog2(*rotation & DRM_MODE_ROTATE_MASK);
+		cmdline_rot = ilog2(cmdline->rotation_reflection & DRM_MODE_ROTATE_MASK);
+		sum_rot = (panel_rot + cmdline_rot) % 4;
+
+		panel_rest = *rotation & ~DRM_MODE_ROTATE_MASK;
+		cmdline_rest = cmdline->rotation_reflection & ~DRM_MODE_ROTATE_MASK;
+		sum_rest = panel_rest ^ cmdline_rest;
+
+		*rotation = (1 << sum_rot) | sum_rest;
+	}
+
+	/*
+	 * TODO: support 90 / 270 degree hardware rotation,
+	 * depending on the hardware this may require the framebuffer
+	 * to be in a specific tiling format.
+	 */
+	if (((*rotation & DRM_MODE_ROTATE_MASK) != DRM_MODE_ROTATE_0 &&
+	     (*rotation & DRM_MODE_ROTATE_MASK) != DRM_MODE_ROTATE_180) ||
+	    !plane->rotation_property)
+		return false;
+
+	for (i = 0; i < plane->rotation_property->num_values; i++)
+		valid_mask |= (1ULL << plane->rotation_property->values[i]);
+
+	if (!(*rotation & valid_mask))
+		return false;
+
+	return true;
+}
+EXPORT_SYMBOL(drm_client_rotation);
+
+static int drm_client_modeset_commit_atomic(struct drm_client_dev *client, bool active, bool check)
 {
 	struct drm_device *dev = client->dev;
 	struct drm_plane *plane;
@@ -845,6 +1016,17 @@ retry:
 	}
 
 	drm_client_for_each_modeset(mode_set, client) {
+		struct drm_plane *primary = mode_set->crtc->primary;
+		unsigned int rotation;
+
+		if (drm_client_rotation(mode_set, &rotation)) {
+			struct drm_plane_state *plane_state;
+
+			/* Cannot fail as we've already gotten the plane state above */
+			plane_state = drm_atomic_get_new_plane_state(state, primary);
+			plane_state->rotation = rotation;
+		}
+
 		ret = __drm_atomic_helper_set_config(mode_set, state);
 		if (ret != 0)
 			goto out_state;
@@ -861,12 +1043,16 @@ retry:
 		}
 	}
 
-	ret = drm_atomic_commit(state);
+	if (check)
+		ret = drm_atomic_check_only(state);
+	else
+		ret = drm_atomic_commit(state);
 
 out_state:
 	if (ret == -EDEADLK)
 		goto backoff;
 
+	drm_atomic_state_put(state);
 out_ctx:
 	drm_modeset_drop_locks(&ctx);
 	drm_modeset_acquire_fini(&ctx);
@@ -891,6 +1077,11 @@ static int drm_client_modeset_commit_legacy(struct drm_client_dev *client)
 	drm_for_each_plane(plane, dev) {
 		if (plane->type != DRM_PLANE_TYPE_PRIMARY)
 			drm_plane_force_disable(plane);
+
+		if (plane->rotation_property)
+			drm_mode_plane_set_obj_prop(plane,
+						    plane->rotation_property,
+						    DRM_MODE_ROTATE_0);
 	}
 
 	drm_client_for_each_modeset(mode_set, client) {
@@ -917,29 +1108,55 @@ out:
 }
 
 /**
- * drm_client_modeset_commit_force() - Force commit CRTC configuration
+ * drm_client_modeset_check() - Check modeset configuration
  * @client: DRM client
  *
- * Commit modeset configuration to crtcs without checking if there is a DRM master.
+ * Check modeset configuration.
  *
  * Returns:
  * Zero on success or negative error code on failure.
  */
-int drm_client_modeset_commit_force(struct drm_client_dev *client)
+int drm_client_modeset_check(struct drm_client_dev *client)
+{
+	int ret;
+
+	if (!drm_drv_uses_atomic_modeset(client->dev))
+		return 0;
+
+	mutex_lock(&client->modeset_mutex);
+	ret = drm_client_modeset_commit_atomic(client, true, true);
+	mutex_unlock(&client->modeset_mutex);
+
+	return ret;
+}
+EXPORT_SYMBOL(drm_client_modeset_check);
+
+/**
+ * drm_client_modeset_commit_locked() - Force commit CRTC configuration
+ * @client: DRM client
+ *
+ * Commit modeset configuration to crtcs without checking if there is a DRM
+ * master. The assumption is that the caller already holds an internal DRM
+ * master reference acquired with drm_master_internal_acquire().
+ *
+ * Returns:
+ * Zero on success or negative error code on failure.
+ */
+int drm_client_modeset_commit_locked(struct drm_client_dev *client)
 {
 	struct drm_device *dev = client->dev;
 	int ret;
 
 	mutex_lock(&client->modeset_mutex);
 	if (drm_drv_uses_atomic_modeset(dev))
-		ret = drm_client_modeset_commit_atomic(client, true);
+		ret = drm_client_modeset_commit_atomic(client, true, false);
 	else
 		ret = drm_client_modeset_commit_legacy(client);
 	mutex_unlock(&client->modeset_mutex);
 
 	return ret;
 }
-EXPORT_SYMBOL(drm_client_modeset_commit_force);
+EXPORT_SYMBOL(drm_client_modeset_commit_locked);
 
 /**
  * drm_client_modeset_commit() - Commit CRTC configuration
@@ -958,7 +1175,7 @@ int drm_client_modeset_commit(struct drm_client_dev *client)
 	if (!drm_master_internal_acquire(dev))
 		return -EBUSY;
 
-	ret = drm_client_modeset_commit_force(client);
+	ret = drm_client_modeset_commit_locked(client);
 
 	drm_master_internal_release(dev);
 
@@ -971,9 +1188,11 @@ static void drm_client_modeset_dpms_legacy(struct drm_client_dev *client, int dp
 	struct drm_device *dev = client->dev;
 	struct drm_connector *connector;
 	struct drm_mode_set *modeset;
+	struct drm_modeset_acquire_ctx ctx;
 	int j;
+	int ret;
 
-	drm_modeset_lock_all(dev);
+	DRM_MODESET_LOCK_ALL_BEGIN(dev, ctx, 0, ret);
 	drm_client_for_each_modeset(modeset, client) {
 		if (!modeset->crtc->enabled)
 			continue;
@@ -985,7 +1204,7 @@ static void drm_client_modeset_dpms_legacy(struct drm_client_dev *client, int dp
 				dev->mode_config.dpms_property, dpms_mode);
 		}
 	}
-	drm_modeset_unlock_all(dev);
+	DRM_MODESET_LOCK_ALL_END(dev, ctx, ret);
 }
 
 /**
@@ -1008,7 +1227,7 @@ int drm_client_modeset_dpms(struct drm_client_dev *client, int mode)
 
 	mutex_lock(&client->modeset_mutex);
 	if (drm_drv_uses_atomic_modeset(dev))
-		ret = drm_client_modeset_commit_atomic(client, mode == DRM_MODE_DPMS_ON);
+		ret = drm_client_modeset_commit_atomic(client, mode == DRM_MODE_DPMS_ON, false);
 	else
 		drm_client_modeset_dpms_legacy(client, mode);
 	mutex_unlock(&client->modeset_mutex);

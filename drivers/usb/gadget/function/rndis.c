@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * RNDIS MSG parser
  *
  * Authors:	Benedikt Spranger, Pengutronix
  *		Robert Schwebel, Pengutronix
- *
- *              This program is free software; you can redistribute it and/or
- *              modify it under the terms of the GNU General Public License
- *              version 2, as published by the Free Software Foundation.
  *
  *		This software was originally developed in conformance with
  *		Microsoft's Remote NDIS Specification License Agreement.
@@ -85,7 +82,7 @@ static rndis_resp_t *rndis_add_response(struct rndis_params *params,
 
 #ifdef CONFIG_USB_GADGET_DEBUG_FILES
 
-static const struct file_operations rndis_proc_fops;
+static const struct proc_ops rndis_proc_ops;
 
 #endif /* CONFIG_USB_GADGET_DEBUG_FILES */
 
@@ -880,6 +877,9 @@ int rndis_msg_parser(struct rndis_params *params, u8 *buf)
 		 */
 		pr_warn("%s: unknown RNDIS message 0x%08X len %d\n",
 			__func__, MsgType, MsgLength);
+		/* Garbled message can be huge, so limit what we display */
+		if (MsgLength > 16)
+			MsgLength = 16;
 		print_hex_dump_bytes(__func__, DUMP_PREFIX_OFFSET,
 				     buf, MsgLength);
 		break;
@@ -929,7 +929,7 @@ struct rndis_params *rndis_register(void (*resp_avail)(void *v), void *v,
 
 		sprintf(name, NAME_TEMPLATE, i);
 		proc_entry = proc_create_data(name, 0660, NULL,
-					      &rndis_proc_fops, params);
+					      &rndis_proc_ops, params);
 		if (!proc_entry) {
 			kfree(params);
 			rndis_put_nr(i);
@@ -948,6 +948,7 @@ struct rndis_params *rndis_register(void (*resp_avail)(void *v), void *v,
 	params->flow_ctrl_enable = flow_ctrl_enable;
 	params->v = v;
 	INIT_LIST_HEAD(&params->resp_queue);
+	spin_lock_init(&params->resp_lock);
 	pr_debug("%s: configNr = %d\n", __func__, i);
 
 	return params;
@@ -1133,6 +1134,7 @@ u8 *rndis_get_next_response(struct rndis_params *params, u32 *length)
 			return r->buf;
 		}
 	}
+
 	spin_unlock(&params->resp_lock);
 	return NULL;
 }
@@ -1332,13 +1334,12 @@ static int rndis_proc_open(struct inode *inode, struct file *file)
 	return single_open(file, rndis_proc_show, PDE_DATA(inode));
 }
 
-static const struct file_operations rndis_proc_fops = {
-	.owner		= THIS_MODULE,
-	.open		= rndis_proc_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-	.write		= rndis_proc_write,
+static const struct proc_ops rndis_proc_ops = {
+	.proc_open	= rndis_proc_open,
+	.proc_read	= seq_read,
+	.proc_lseek	= seq_lseek,
+	.proc_release	= single_release,
+	.proc_write	= rndis_proc_write,
 };
 
 #define	NAME_TEMPLATE "driver/rndis-%03d"

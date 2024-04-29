@@ -1,17 +1,11 @@
-/* Copyright (c) 2010-2017,2019 The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2011-2017, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
-#ifndef __ARCH_ARM_MACH_MSM_SPM_H
-#define __ARCH_ARM_MACH_MSM_SPM_H
+#ifndef __SOC_QCOM_SPM_H
+#define __SOC_QCOM_SPM_H
 
 enum {
 	MSM_SPM_MODE_DISABLED,
@@ -35,7 +29,6 @@ struct device_node;
 #if defined(CONFIG_MSM_SPM)
 
 int msm_spm_set_low_power_mode(unsigned int mode, bool notify_rpm);
-void msm_spm_set_rpm_hs(bool allow_rpm_hs);
 int msm_spm_probe_done(void);
 int msm_spm_set_vdd(unsigned int cpu, unsigned int vlevel);
 int msm_spm_get_vdd(unsigned int cpu);
@@ -43,8 +36,6 @@ int msm_spm_turn_on_cpu_rail(struct device_node *l2ccc_node,
 		unsigned int val, int cpu, int vctl_offset);
 struct msm_spm_device *msm_spm_get_device_by_name(const char *name);
 int msm_spm_config_low_power_mode(struct msm_spm_device *dev,
-		unsigned int mode, bool notify_rpm);
-int msm_spm_config_low_power_mode_addr(struct msm_spm_device *dev,
 		unsigned int mode, bool notify_rpm);
 int msm_spm_device_init(void);
 bool msm_spm_is_mode_avail(unsigned int mode);
@@ -59,8 +50,6 @@ int msm_spm_avs_disable_irq(unsigned int cpu, enum msm_spm_avs_irq irq);
 int msm_spm_avs_clear_irq(unsigned int cpu, enum msm_spm_avs_irq irq);
 
 #if defined(CONFIG_MSM_L2_SPM)
-
-/* Public functions */
 
 int msm_spm_apcs_set_phase(int cpu, unsigned int phase_cnt);
 int msm_spm_enable_fts_lpm(int cpu, uint32_t mode);
@@ -82,8 +71,6 @@ static inline int msm_spm_set_low_power_mode(unsigned int mode, bool notify_rpm)
 {
 	return -ENODEV;
 }
-
-static inline void msm_spm_set_rpm_hs(bool allow_rpm_hs) {}
 
 static inline int msm_spm_probe_done(void)
 {
@@ -119,13 +106,6 @@ static inline int msm_spm_config_low_power_mode(struct msm_spm_device *dev,
 {
 	return -ENODEV;
 }
-
-static inline int msm_spm_config_low_power_mode_addr(
-	struct msm_spm_device *dev, unsigned int mode, bool notify_rpm)
-{
-	return -ENODEV;
-}
-
 static inline struct msm_spm_device *msm_spm_get_device_by_name(
 				const char *name)
 {
@@ -177,4 +157,4 @@ static inline int msm_spm_avs_clear_irq(unsigned int cpu,
 }
 
 #endif  /* defined (CONFIG_MSM_SPM) */
-#endif  /* __ARCH_ARM_MACH_MSM_SPM_H */
+#endif  /* __SOC_QCOM_SPM_H */

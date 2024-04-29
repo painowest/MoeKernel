@@ -1,13 +1,6 @@
-/* Copyright (c) 2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _CRYPTO_INLINE_CRYPTO_ENGINE_REGS_H_
@@ -16,11 +9,7 @@
 #include <linux/io.h>
 
 /* Register bits for ICE version */
-#if IS_ENABLED(CONFIG_MMC_QTI_NONCMDQ_ICE)
-#define ICE_CORE_CURRENT_MAJOR_VERSION 0x02
-#else
 #define ICE_CORE_CURRENT_MAJOR_VERSION 0x03
-#endif
 
 #define ICE_CORE_STEP_REV_MASK		0xFFFF
 #define ICE_CORE_STEP_REV		0 /* bit 15-0 */
@@ -159,9 +148,16 @@
 			 ICE_QTIC_DBG_OPEN_EVENT |	  \
 			 ICE_KEYS_RAM_RESET_COMPLETED)
 
-#define ice_writel(ice_entry, val, reg)	\
-	writel_relaxed((val), (ice_entry)->icemmio_base + (reg))
-#define ice_readl(ice_entry, reg)	\
-	readl_relaxed((ice_entry)->icemmio_base + (reg))
+#define ice_writel(ice_mmio, val, reg)	\
+	writel_relaxed((val), ice_mmio + (reg))
+#define ice_readl(ice_mmio, reg)	\
+	readl_relaxed(ice_mmio + (reg))
+
+#if IS_ENABLED(CONFIG_QTI_CRYPTO_FDE)
+#define crypto_qti_ice_writel(ice, val, reg)    \
+	writel_relaxed((val), (ice)->mmio + (reg))
+#define crypto_qti_ice_readl(ice, reg)  \
+	readl_relaxed((ice)->mmio + (reg))
+#endif /* CONFIG_QTI_CRYPTO_FDE */
 
 #endif /* _CRYPTO_INLINE_CRYPTO_ENGINE_REGS_H_ */

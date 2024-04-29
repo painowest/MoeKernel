@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Debugfs support for hosts and cards
  *
  * Copyright (C) 2008 Atmel Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #include <linux/moduleparam.h>
 #include <linux/export.h>
@@ -30,6 +27,7 @@
 static DECLARE_FAULT_ATTR(fail_default_attr);
 static char *fail_request;
 module_param(fail_request, charp, 0);
+MODULE_PARM_DESC(fail_request, "default fault injection attributes");
 
 #endif /* CONFIG_FAIL_MMC_REQUEST */
 
@@ -217,18 +215,7 @@ static int mmc_ios_show(struct seq_file *s, void *data)
 
 	return 0;
 }
-
-static int mmc_ios_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, mmc_ios_show, inode->i_private);
-}
-
-static const struct file_operations mmc_ios_fops = {
-	.open		= mmc_ios_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
+DEFINE_SHOW_ATTRIBUTE(mmc_ios);
 
 static int mmc_clock_opt_get(void *data, u64 *val)
 {
@@ -254,180 +241,55 @@ static int mmc_clock_opt_set(void *data, u64 val)
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(mmc_clock_fops, mmc_clock_opt_get, mmc_clock_opt_set,
+DEFINE_DEBUGFS_ATTRIBUTE(mmc_clock_fops, mmc_clock_opt_get, mmc_clock_opt_set,
 	"%llu\n");
-
-#include <linux/delay.h>
-
-static int mmc_scale_get(void *data, u64 *val)
-{
-	struct mmc_host *host = data;
-
-	*val = host->clk_scaling.curr_freq;
-
-	return 0;
-}
-
-static int mmc_scale_set(void *data, u64 val)
-{
-	int err = 0;
-	struct mmc_host *host = data;
-
-	mmc_claim_host(host);
-	mmc_host_clk_hold(host);
-
-	/* change frequency from sysfs manually */
-	err = mmc_clk_update_freq(host, val, host->clk_scaling.state);
-	if (err == -EAGAIN)
-		err = 0;
-	else if (err)
-		pr_err("%s: clock scale to %llu failed with error %d\n",
-			mmc_hostname(host), val, err);
-	else
-		pr_debug("%s: clock change to %llu finished successfully (%s)\n",
-			mmc_hostname(host), val, current->comm);
-
-	mmc_host_clk_release(host);
-	mmc_release_host(host);
-
-	return err;
-}
-
-DEFINE_SIMPLE_ATTRIBUTE(mmc_scale_fops, mmc_scale_get, mmc_scale_set,
-	"%llu\n");
-
-static int mmc_max_clock_get(void *data, u64 *val)
-{
-	struct mmc_host *host = data;
-
-	if (!host)
-		return -EINVAL;
-
-	*val = host->f_max;
-
-	return 0;
-}
-
-static int mmc_max_clock_set(void *data, u64 val)
-{
-	struct mmc_host *host = data;
-	int err = -EINVAL;
-	unsigned long freq = val;
-	unsigned int old_freq;
-
-	if (!host || (val < host->f_min))
-		goto out;
-
-	mmc_claim_host(host);
-	if (host->bus_ops && host->bus_ops->change_bus_speed) {
-		old_freq = host->f_max;
-		host->f_max = freq;
-
-		err = host->bus_ops->change_bus_speed(host, &freq);
-
-		if (err)
-			host->f_max = old_freq;
-	}
-	mmc_release_host(host);
-out:
-	return err;
-}
-
-DEFINE_SIMPLE_ATTRIBUTE(mmc_max_clock_fops, mmc_max_clock_get,
-		mmc_max_clock_set, "%llu\n");
-
-static int mmc_force_err_set(void *data, u64 val)
-{
-	struct mmc_host *host = data;
-
-	if (host && host->card && host->ops &&
-			host->ops->force_err_irq) {
-		/*
-		 * To access the force error irq reg, we need to make
-		 * sure the host is powered up and host clock is ticking.
-		 */
-		mmc_get_card(host->card);
-		host->ops->force_err_irq(host, val);
-		mmc_put_card(host->card);
-	}
-
-	return 0;
-}
-
-DEFINE_SIMPLE_ATTRIBUTE(mmc_force_err_fops, NULL, mmc_force_err_set, "%llu\n");
 
 static int mmc_err_state_get(void *data, u64 *val)
 {
 	struct mmc_host *host = data;
+	int i;
 
-	if (!host)
-		return -EINVAL;
-
-	*val = host->err_occurred ? 1 : 0;
-
-	return 0;
-}
-
-static int mmc_err_state_clear(void *data, u64 val)
-{
-	struct mmc_host *host = data;
-
-	if (!host)
-		return -EINVAL;
-
-	host->err_occurred = false;
+	*val = 0;
+	for (i = 0; i < ARRAY_SIZE(host->err_stats); i++) {
+		if (host->err_stats[i]) {
+			*val = 1;
+			break;
+		}
+	}
 
 	return 0;
 }
 
-DEFINE_SIMPLE_ATTRIBUTE(mmc_err_state, mmc_err_state_get,
-		mmc_err_state_clear, "%llu\n");
+DEFINE_DEBUGFS_ATTRIBUTE(mmc_err_state, mmc_err_state_get, NULL, "%llu\n");
 
 static int mmc_err_stats_show(struct seq_file *file, void *data)
 {
 	struct mmc_host *host = (struct mmc_host *)file->private;
+	static const char *desc[MMC_ERR_MAX] = {
+		[MMC_ERR_CMD_TIMEOUT] = "Command Timeout Occurred",
+		[MMC_ERR_CMD_CRC] = "Command CRC Errors Occurred",
+		[MMC_ERR_DAT_TIMEOUT] = "Data Timeout Occurred",
+		[MMC_ERR_DAT_CRC] = "Data CRC Errors Occurred",
+		[MMC_ERR_AUTO_CMD] = "Auto-Cmd Error Occurred",
+		[MMC_ERR_ADMA] = "ADMA Error Occurred",
+		[MMC_ERR_TUNING] = "Tuning Error Occurred",
+		[MMC_ERR_CMDQ_RED] = "CMDQ RED Errors",
+		[MMC_ERR_CMDQ_GCE] = "CMDQ GCE Errors",
+		[MMC_ERR_CMDQ_ICCE] = "CMDQ ICCE Errors",
+		[MMC_ERR_REQ_TIMEOUT] = "Request Timedout",
+		[MMC_ERR_CMDQ_REQ_TIMEOUT] = "CMDQ Request Timedout",
+		[MMC_ERR_ICE_CFG] = "ICE Config Errors",
+		[MMC_ERR_CTRL_TIMEOUT] = "Controller Timedout errors",
+		[MMC_ERR_UNEXPECTED_IRQ] = "Unexpected IRQ errors",
+	};
+	int i;
 
-	if (!host)
-		return -EINVAL;
+	for (i = 0; i < ARRAY_SIZE(desc); i++) {
+		if (desc[i])
+			seq_printf(file, "# %s:\t %d\n",
+					desc[i], host->err_stats[i]);
+	}
 
-	seq_printf(file, "# Command Timeout Occurred:\t %d\n",
-		   host->err_stats[MMC_ERR_CMD_TIMEOUT]);
-
-	seq_printf(file, "# Command CRC Errors Occurred:\t %d\n",
-		   host->err_stats[MMC_ERR_CMD_CRC]);
-
-	seq_printf(file, "# Data Timeout Occurred:\t %d\n",
-		   host->err_stats[MMC_ERR_DAT_TIMEOUT]);
-
-	seq_printf(file, "# Data CRC Errors Occurred:\t %d\n",
-		   host->err_stats[MMC_ERR_DAT_CRC]);
-
-	seq_printf(file, "# Auto-Cmd Error Occurred:\t %d\n",
-		   host->err_stats[MMC_ERR_ADMA]);
-
-	seq_printf(file, "# ADMA Error Occurred:\t %d\n",
-		   host->err_stats[MMC_ERR_ADMA]);
-
-	seq_printf(file, "# Tuning Error Occurred:\t %d\n",
-		   host->err_stats[MMC_ERR_TUNING]);
-
-	seq_printf(file, "# CMDQ RED Errors:\t\t %d\n",
-		   host->err_stats[MMC_ERR_CMDQ_RED]);
-
-	seq_printf(file, "# CMDQ GCE Errors:\t\t %d\n",
-		   host->err_stats[MMC_ERR_CMDQ_GCE]);
-
-	seq_printf(file, "# CMDQ ICCE Errors:\t\t %d\n",
-		   host->err_stats[MMC_ERR_CMDQ_ICCE]);
-
-	seq_printf(file, "# Request Timedout:\t %d\n",
-		   host->err_stats[MMC_ERR_REQ_TIMEOUT]);
-
-	seq_printf(file, "# CMDQ Request Timedout:\t %d\n",
-		   host->err_stats[MMC_ERR_CMDQ_REQ_TIMEOUT]);
-
-	seq_printf(file, "# ICE Config Errors:\t\t %d\n",
-		   host->err_stats[MMC_ERR_ICE_CFG]);
 	return 0;
 }
 
@@ -441,10 +303,7 @@ static ssize_t mmc_err_stats_write(struct file *filp, const char __user *ubuf,
 {
 	struct mmc_host *host = filp->f_mapping->host->i_private;
 
-	if (!host)
-		return -EINVAL;
-
-	pr_debug("%s: Resetting MMC error statistics", __func__);
+	pr_debug("%s: Resetting MMC error statistics\n", __func__);
 	memset(host->err_stats, 0, sizeof(host->err_stats));
 
 	return cnt;
@@ -461,22 +320,18 @@ void mmc_add_host_debugfs(struct mmc_host *host)
 	struct dentry *root;
 
 	root = debugfs_create_dir(mmc_hostname(host), NULL);
-	if (IS_ERR(root))
-		/* Don't complain -- debugfs just isn't enabled */
-		return;
-	if (!root)
-		/* Complain -- debugfs is enabled, but it failed to
-		 * create the directory. */
-		goto err_root;
-
 	host->debugfs_root = root;
 
-	if (!debugfs_create_file("ios", 0400, root, host, &mmc_ios_fops))
-		goto err_node;
+	debugfs_create_file("ios", S_IRUSR, root, host, &mmc_ios_fops);
+	debugfs_create_x32("caps", S_IRUSR, root, &host->caps);
+	debugfs_create_x32("caps2", S_IRUSR, root, &host->caps2);
+	debugfs_create_file_unsafe("clock", S_IRUSR | S_IWUSR, root, host,
+				   &mmc_clock_fops);
 
-	if (!debugfs_create_file("clock", 0600, root, host,
-			&mmc_clock_fops))
-		goto err_node;
+	debugfs_create_file("err_state", 0600, root, host,
+			    &mmc_err_state);
+	debugfs_create_file("err_stats", 0600, root, host,
+			    &mmc_err_stats_fops);
 
 	if (!debugfs_create_file("max_clock", 0600, root, host,
 		&mmc_max_clock_fops))
@@ -523,22 +378,9 @@ void mmc_add_host_debugfs(struct mmc_host *host)
 	if (fail_request)
 		setup_fault_attr(&fail_default_attr, fail_request);
 	host->fail_mmc_request = fail_default_attr;
-	if (IS_ERR(fault_create_debugfs_attr("fail_mmc_request",
-					     root,
-					     &host->fail_mmc_request)))
-		goto err_node;
+	fault_create_debugfs_attr("fail_mmc_request", root,
+				  &host->fail_mmc_request);
 #endif
-	if (!debugfs_create_file("force_error", 0200, root, host,
-		&mmc_force_err_fops))
-		goto err_node;
-
-	return;
-
-err_node:
-	debugfs_remove_recursive(root);
-	host->debugfs_root = NULL;
-err_root:
-	dev_err(&host->class_dev, "failed to initialize debugfs\n");
 }
 
 void mmc_remove_host_debugfs(struct mmc_host *host)
@@ -638,32 +480,9 @@ void mmc_add_card_debugfs(struct mmc_card *card)
 		return;
 
 	root = debugfs_create_dir(mmc_card_id(card), host->debugfs_root);
-	if (IS_ERR(root))
-		/* Don't complain -- debugfs just isn't enabled */
-		return;
-	if (!root)
-		/* Complain -- debugfs is enabled, but it failed to
-		 * create the directory. */
-		goto err;
-
 	card->debugfs_root = root;
 
-	if (!debugfs_create_x32("state", 0400, root, &card->state))
-		goto err;
-
-	if (mmc_card_mmc(card) && (card->ext_csd.rev >= 5) &&
-	    (mmc_card_configured_auto_bkops(card) ||
-	     mmc_card_configured_manual_bkops(card)))
-		if (!debugfs_create_file("bkops_stats", 0400, root, card,
-					 &mmc_dbg_bkops_stats_fops))
-			goto err;
-
-	return;
-
-err:
-	debugfs_remove_recursive(root);
-	card->debugfs_root = NULL;
-	dev_err(&card->dev, "failed to initialize debugfs\n");
+	debugfs_create_x32("state", S_IRUSR, root, &card->state);
 }
 
 void mmc_remove_card_debugfs(struct mmc_card *card)

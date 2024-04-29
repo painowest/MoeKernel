@@ -11,6 +11,10 @@
 #include <linux/rwsem.h>
 #include <linux/memcontrol.h>
 #include <linux/highmem.h>
+#ifndef __GENKSYMS__
+#define PROTECT_TRACE_INCLUDE_PATH
+#include <trace/hooks/mm.h>
+#endif
 
 extern int isolate_lru_page(struct page *page);
 extern void putback_lru_page(struct page *page);
@@ -43,16 +47,7 @@ struct anon_vma {
 	 */
 	atomic_t refcount;
 
-	/*
-	 * Count of child anon_vmas. Equals to the count of all anon_vmas that
-	 * have ->parent pointing to this one, including itself.
-	 *
-	 * This counter is used for making decision about reusing anon_vma
-	 * instead of forking new one. See comments in function anon_vma_clone.
-	 */
-	unsigned long num_children;
-	/* Count of VMAs whose ->anon_vma pointer points to this object. */
-	unsigned long num_active_vmas;
+	unsigned degree;		/* ANDROID: KABI preservation, DO NOT USE! */
 
 	struct anon_vma *parent;	/* Parent of this anon_vma */
 
@@ -67,6 +62,25 @@ struct anon_vma {
 
 	/* Interval tree of private "related" vmas */
 	struct rb_root_cached rb_root;
+
+	/*
+	 * ANDROID: KABI preservation, it's safe to put these at the end of this structure as it's
+	 * only passed by a pointer everywhere, the size and internal structures are local to the
+	 * core kernel.
+	 */
+#ifndef __GENKSYMS__
+	/*
+	 * Count of child anon_vmas. Equals to the count of all anon_vmas that
+	 * have ->parent pointing to this one, including itself.
+	 *
+	 * This counter is used for making decision about reusing anon_vma
+	 * instead of forking new one. See comments in function anon_vma_clone.
+	 */
+	unsigned long num_children;
+	/* Count of VMAs whose ->anon_vma pointer points to this object. */
+	unsigned long num_active_vmas;
+#endif
+
 };
 
 /*
@@ -85,7 +99,7 @@ struct anon_vma {
 struct anon_vma_chain {
 	struct vm_area_struct *vma;
 	struct anon_vma *anon_vma;
-	struct list_head same_vma;   /* locked by mmap_sem & page_table_lock */
+	struct list_head same_vma;   /* locked by mmap_lock & page_table_lock */
 	struct rb_node rb;			/* locked by anon_vma->rwsem */
 	unsigned long rb_subtree_last;
 #ifdef CONFIG_DEBUG_VM_RB
@@ -94,20 +108,15 @@ struct anon_vma_chain {
 };
 
 enum ttu_flags {
-	TTU_MIGRATION		= 0x1,	/* migration mode */
-	TTU_MUNLOCK		= 0x2,	/* munlock mode */
-
 	TTU_SPLIT_HUGE_PMD	= 0x4,	/* split huge PMD if any */
 	TTU_IGNORE_MLOCK	= 0x8,	/* ignore mlock */
-	TTU_IGNORE_ACCESS	= 0x10,	/* don't age */
+	TTU_SYNC		= 0x10,	/* avoid racy checks with PVMW_SYNC */
 	TTU_IGNORE_HWPOISON	= 0x20,	/* corrupted page is recoverable */
 	TTU_BATCH_FLUSH		= 0x40,	/* Batch TLB flushes where possible
 					 * and caller guarantees they will
 					 * do a final flush if necessary */
 	TTU_RMAP_LOCKED		= 0x80,	/* do not grab rmap lock:
 					 * caller holds it */
-	TTU_SPLIT_FREEZE	= 0x100, /* freeze pte under splitting thp */
-	TTU_SYNC		= 0x200, /* avoid racy checks with PVMW_SYNC */
 };
 
 #ifdef CONFIG_MMU
@@ -137,6 +146,11 @@ static inline void anon_vma_unlock_write(struct anon_vma *anon_vma)
 static inline void anon_vma_lock_read(struct anon_vma *anon_vma)
 {
 	down_read(&anon_vma->root->rwsem);
+}
+
+static inline int anon_vma_trylock_read(struct anon_vma *anon_vma)
+{
+	return down_read_trylock(&anon_vma->root->rwsem);
 }
 
 static inline void anon_vma_unlock_read(struct anon_vma *anon_vma)
@@ -203,7 +217,12 @@ void hugepage_add_new_anon_rmap(struct page *, struct vm_area_struct *,
 
 static inline void page_dup_rmap(struct page *page, bool compound)
 {
-	atomic_inc(compound ? compound_mapcount_ptr(page) : &page->_mapcount);
+	bool success = false;
+
+	if (!compound)
+		trace_android_vh_update_page_mapcount(page, true, compound, NULL, &success);
+	if (!success)
+		atomic_inc(compound ? compound_mapcount_ptr(page) : &page->_mapcount);
 }
 
 /*
@@ -212,8 +231,12 @@ static inline void page_dup_rmap(struct page *page, bool compound)
 int page_referenced(struct page *, int is_locked,
 			struct mem_cgroup *memcg, unsigned long *vm_flags);
 
-bool try_to_unmap(struct page *page, enum ttu_flags flags,
-				struct vm_area_struct *vma);
+void try_to_migrate(struct page *page, enum ttu_flags flags);
+void try_to_unmap(struct page *, enum ttu_flags flags);
+
+int make_device_exclusive_range(struct mm_struct *mm, unsigned long start,
+				unsigned long end, struct page **pages,
+				void *arg);
 
 /* Avoid racy checks */
 #define PVMW_SYNC		(1 << 0)
@@ -258,21 +281,18 @@ int page_mkclean(struct page *);
  * called in munlock()/munmap() path to check for other vmas holding
  * the page mlocked.
  */
-void try_to_munlock(struct page *);
+void page_mlock(struct page *page);
 
 void remove_migration_ptes(struct page *old, struct page *new, bool locked);
 
-/*
- * Called by memory-failure.c to kill processes.
- */
-struct anon_vma *page_lock_anon_vma_read(struct page *page);
-void page_unlock_anon_vma_read(struct anon_vma *anon_vma);
 int page_mapped_in_vma(struct page *page, struct vm_area_struct *vma);
 
 /*
  * rmap_walk_control: To control rmap traversing for specific needs
  *
  * arg: passed to rmap_one() and invalid_vma()
+ * try_lock: bail out if the rmap lock is contended
+ * contended: indicate the rmap traversal bailed out due to lock contention
  * rmap_one: executed on each vma where page is mapped
  * done: for checking traversing termination condition
  * anon_lock: for getting anon_lock by optimized way rather than default
@@ -280,7 +300,8 @@ int page_mapped_in_vma(struct page *page, struct vm_area_struct *vma);
  */
 struct rmap_walk_control {
 	void *arg;
-	struct vm_area_struct *target_vma;
+	bool try_lock;
+	bool contended;
 	/*
 	 * Return false if page table scanning in rmap_walk should be stopped.
 	 * Otherwise, return true.
@@ -288,12 +309,20 @@ struct rmap_walk_control {
 	bool (*rmap_one)(struct page *page, struct vm_area_struct *vma,
 					unsigned long addr, void *arg);
 	int (*done)(struct page *page);
-	struct anon_vma *(*anon_lock)(struct page *page);
+	struct anon_vma *(*anon_lock)(struct page *page,
+				      struct rmap_walk_control *rwc);
 	bool (*invalid_vma)(struct vm_area_struct *vma, void *arg);
 };
 
 void rmap_walk(struct page *page, struct rmap_walk_control *rwc);
 void rmap_walk_locked(struct page *page, struct rmap_walk_control *rwc);
+
+/*
+ * Called by memory-failure.c to kill processes.
+ */
+struct anon_vma *page_lock_anon_vma_read(struct page *page,
+					 struct rmap_walk_control *rwc);
+void page_unlock_anon_vma_read(struct anon_vma *anon_vma);
 
 #else	/* !CONFIG_MMU */
 
@@ -309,7 +338,9 @@ static inline int page_referenced(struct page *page, int is_locked,
 	return 0;
 }
 
-#define try_to_unmap(page, refs, vma) false
+static inline void try_to_unmap(struct page *page, enum ttu_flags flags)
+{
+}
 
 static inline int page_mkclean(struct page *page)
 {

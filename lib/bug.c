@@ -47,6 +47,9 @@
 #include <linux/bug.h>
 #include <linux/sched.h>
 #include <linux/rculist.h>
+#include <linux/ftrace.h>
+
+#include <trace/hooks/bug.h>
 
 extern struct bug_entry __start___bug_table[], __stop___bug_table[];
 
@@ -90,8 +93,6 @@ void module_bug_finalize(const Elf_Ehdr *hdr, const Elf_Shdr *sechdrs,
 	char *secstrings;
 	unsigned int i;
 
-	lockdep_assert_held(&module_mutex);
-
 	mod->bug_table = NULL;
 	mod->num_bugs = 0;
 
@@ -117,7 +118,6 @@ void module_bug_finalize(const Elf_Ehdr *hdr, const Elf_Shdr *sechdrs,
 
 void module_bug_cleanup(struct module *mod)
 {
-	lockdep_assert_held(&module_mutex);
 	list_del_rcu(&mod->bug_list);
 }
 
@@ -128,6 +128,22 @@ static inline struct bug_entry *module_find_bug(unsigned long bugaddr)
 	return NULL;
 }
 #endif
+
+void bug_get_file_line(struct bug_entry *bug, const char **file,
+		       unsigned int *line)
+{
+#ifdef CONFIG_DEBUG_BUGVERBOSE
+#ifndef CONFIG_GENERIC_BUG_RELATIVE_POINTERS
+	*file = bug->file;
+#else
+	*file = (const char *)bug + bug->file_disp;
+#endif
+	*line = bug->line;
+#else
+	*file = NULL;
+	*line = 0;
+#endif
+}
 
 struct bug_entry *find_bug(unsigned long bugaddr)
 {
@@ -153,17 +169,10 @@ enum bug_trap_type report_bug(unsigned long bugaddr, struct pt_regs *regs)
 	if (!bug)
 		return BUG_TRAP_TYPE_NONE;
 
-	file = NULL;
-	line = 0;
+	disable_trace_on_warning();
 
-#ifdef CONFIG_DEBUG_BUGVERBOSE
-#ifndef CONFIG_GENERIC_BUG_RELATIVE_POINTERS
-	file = bug->file;
-#else
-	file = (const char *)bug + bug->file_disp;
-#endif
-	line = bug->line;
-#endif
+	bug_get_file_line(bug, &file, &line);
+
 	warning = (bug->flags & BUGFLAG_WARNING) != 0;
 	once = (bug->flags & BUGFLAG_ONCE) != 0;
 	done = (bug->flags & BUGFLAG_DONE) != 0;
@@ -178,6 +187,15 @@ enum bug_trap_type report_bug(unsigned long bugaddr, struct pt_regs *regs)
 		bug->flags |= BUGFLAG_DONE;
 	}
 
+	/*
+	 * BUG() and WARN_ON() families don't print a custom debug message
+	 * before triggering the exception handler, so we must add the
+	 * "cut here" line now. WARN() issues its own "cut here" before the
+	 * extra debugging message it writes before triggering the handler.
+	 */
+	if ((bug->flags & BUGFLAG_NO_CUT_HERE) == 0)
+		printk(KERN_DEFAULT CUT_HERE);
+
 	if (warning) {
 		/* this is a WARN_ON rather than BUG/BUG_ON */
 		__warn(file, line, (void *)bugaddr, BUG_GET_TAINT(bug), regs,
@@ -185,13 +203,36 @@ enum bug_trap_type report_bug(unsigned long bugaddr, struct pt_regs *regs)
 		return BUG_TRAP_TYPE_WARN;
 	}
 
-	printk(KERN_DEFAULT "------------[ cut here ]------------\n");
-
 	if (file)
 		pr_crit("kernel BUG at %s:%u!\n", file, line);
 	else
-		pr_crit("Kernel BUG at %p [verbose debug info unavailable]\n",
+		pr_crit("Kernel BUG at %pB [verbose debug info unavailable]\n",
 			(void *)bugaddr);
 
+	trace_android_rvh_report_bug(file, line, bugaddr);
+
 	return BUG_TRAP_TYPE_BUG;
+}
+
+static void clear_once_table(struct bug_entry *start, struct bug_entry *end)
+{
+	struct bug_entry *bug;
+
+	for (bug = start; bug < end; bug++)
+		bug->flags &= ~BUGFLAG_DONE;
+}
+
+void generic_bug_clear_once(void)
+{
+#ifdef CONFIG_MODULES
+	struct module *mod;
+
+	rcu_read_lock_sched();
+	list_for_each_entry_rcu(mod, &module_bug_list, bug_list)
+		clear_once_table(mod->bug_table,
+				 mod->bug_table + mod->num_bugs);
+	rcu_read_unlock_sched();
+#endif
+
+	clear_once_table(__start___bug_table, __stop___bug_table);
 }

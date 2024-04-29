@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * RPR-0521 ROHM Ambient Light and Proximity Sensor
  *
  * Copyright (c) 2015, Intel Corporation.
- *
- * This file is subject to the terms and conditions of version 2 of
- * the GNU General Public License.  See the file COPYING in the main
- * directory of this archive for more details.
  *
  * IIO driver for RPR-0521RS (7-bit I2C slave address 0x38).
  *
@@ -363,7 +360,7 @@ static int rpr0521_set_power_state(struct rpr0521_data *data, bool on,
 	 * both stay enabled until _suspend().
 	 */
 	if (on) {
-		ret = pm_runtime_get_sync(&data->client->dev);
+		ret = pm_runtime_resume_and_get(&data->client->dev);
 	} else {
 		pm_runtime_mark_last_busy(&data->client->dev);
 		ret = pm_runtime_put_autosuspend(&data->client->dev);
@@ -372,9 +369,6 @@ static int rpr0521_set_power_state(struct rpr0521_data *data, bool on,
 		dev_err(&data->client->dev,
 			"Failed: rpr0521_set_power_state for %d, ret %d\n",
 			on, ret);
-		if (on)
-			pm_runtime_put_noidle(&data->client->dev);
-
 		return ret;
 	}
 
@@ -547,7 +541,6 @@ static int rpr0521_pxs_drdy_set_state(struct iio_trigger *trigger,
 
 static const struct iio_trigger_ops rpr0521_trigger_ops = {
 	.set_trigger_state = rpr0521_pxs_drdy_set_state,
-	.owner = THIS_MODULE,
 	};
 
 
@@ -583,8 +576,6 @@ static int rpr0521_buffer_postdisable(struct iio_dev *indio_dev)
 
 static const struct iio_buffer_setup_ops rpr0521_buffer_setup_ops = {
 	.preenable = rpr0521_buffer_preenable,
-	.postenable = iio_triggered_buffer_postenable,
-	.predisable = iio_triggered_buffer_predisable,
 	.postdisable = rpr0521_buffer_postdisable,
 };
 
@@ -839,7 +830,6 @@ static int rpr0521_write_raw(struct iio_dev *indio_dev,
 }
 
 static const struct iio_info rpr0521_info = {
-	.driver_module	= THIS_MODULE,
 	.read_raw	= rpr0521_read_raw,
 	.write_raw	= rpr0521_write_raw,
 	.attrs		= &rpr0521_attribute_group,
@@ -962,7 +952,6 @@ static int rpr0521_probe(struct i2c_client *client,
 
 	mutex_init(&data->lock);
 
-	indio_dev->dev.parent = &client->dev;
 	indio_dev->info = &rpr0521_info;
 	indio_dev->name = RPR0521_DRV_NAME;
 	indio_dev->channels = rpr0521_channels;
@@ -993,12 +982,11 @@ static int rpr0521_probe(struct i2c_client *client,
 		/* Trigger0 producer setup */
 		data->drdy_trigger0 = devm_iio_trigger_alloc(
 			indio_dev->dev.parent,
-			"%s-dev%d", indio_dev->name, indio_dev->id);
+			"%s-dev%d", indio_dev->name, iio_device_id(indio_dev));
 		if (!data->drdy_trigger0) {
 			ret = -ENOMEM;
 			goto err_pm_disable;
 		}
-		data->drdy_trigger0->dev.parent = indio_dev->dev.parent;
 		data->drdy_trigger0->ops = &rpr0521_trigger_ops;
 		indio_dev->available_scan_masks = rpr0521_available_scan_masks;
 		iio_trigger_set_drvdata(data->drdy_trigger0, indio_dev);
@@ -1047,7 +1035,6 @@ static int rpr0521_probe(struct i2c_client *client,
 err_pm_disable:
 	pm_runtime_disable(&client->dev);
 	pm_runtime_set_suspended(&client->dev);
-	pm_runtime_put_noidle(&client->dev);
 err_poweroff:
 	rpr0521_poweroff(data);
 
@@ -1062,7 +1049,6 @@ static int rpr0521_remove(struct i2c_client *client)
 
 	pm_runtime_disable(&client->dev);
 	pm_runtime_set_suspended(&client->dev);
-	pm_runtime_put_noidle(&client->dev);
 
 	rpr0521_poweroff(iio_priv(indio_dev));
 

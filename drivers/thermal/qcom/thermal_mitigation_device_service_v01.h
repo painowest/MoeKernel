@@ -1,14 +1,7 @@
-/* Copyright (c) 2017-2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef THERMAL_MITIGATION_DEVICE_SERVICE_V01_H
@@ -35,6 +28,7 @@
 
 #define QMI_TMD_MITIGATION_DEV_ID_LENGTH_MAX_V01 32
 #define QMI_TMD_MITIGATION_DEV_LIST_MAX_V01 32
+#define QMI_TMD_MITIGATION_DEV_LIST_EXT01_MAX_V01 64
 
 struct tmd_mitigation_dev_id_type_v01 {
 	char mitigation_dev_id[QMI_TMD_MITIGATION_DEV_ID_LENGTH_MAX_V01 + 1];
@@ -57,8 +51,12 @@ struct tmd_get_mitigation_device_list_resp_msg_v01 {
 	uint32_t mitigation_device_list_len;
 	struct tmd_mitigation_dev_list_type_v01
 		mitigation_device_list[QMI_TMD_MITIGATION_DEV_LIST_MAX_V01];
+	uint8_t mitigation_device_list_ext01_valid;
+	uint32_t mitigation_device_list_ext01_len;
+	struct tmd_mitigation_dev_list_type_v01
+		mitigation_device_list_ext01[QMI_TMD_MITIGATION_DEV_LIST_EXT01_MAX_V01];
 };
-#define TMD_GET_MITIGATION_DEVICE_LIST_RESP_MSG_V01_MAX_MSG_LEN 1099
+#define TMD_GET_MITIGATION_DEVICE_LIST_RESP_MSG_V01_MAX_MSG_LEN 3279
 extern struct qmi_elem_info tmd_get_mitigation_device_list_resp_msg_v01_ei[];
 
 struct tmd_set_mitigation_level_req_msg_v01 {

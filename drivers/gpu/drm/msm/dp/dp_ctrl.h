@@ -1,15 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _DP_CTRL_H_
@@ -23,35 +14,26 @@
 #include "dp_catalog.h"
 
 struct dp_ctrl {
-	int (*init)(struct dp_ctrl *dp_ctrl, bool flip, bool reset);
-	void (*deinit)(struct dp_ctrl *dp_ctrl);
-	int (*on)(struct dp_ctrl *dp_ctrl, bool mst_mode, bool fec_en,
-			bool shallow);
-	void (*off)(struct dp_ctrl *dp_ctrl);
-	void (*abort)(struct dp_ctrl *dp_ctrl, bool reset);
-	void (*isr)(struct dp_ctrl *dp_ctrl);
-	bool (*handle_sink_request)(struct dp_ctrl *dp_ctrl);
-	void (*process_phy_test_request)(struct dp_ctrl *dp_ctrl);
-	int (*link_maintenance)(struct dp_ctrl *dp_ctrl);
-	int (*stream_on)(struct dp_ctrl *dp_ctrl, struct dp_panel *panel);
-	void (*stream_off)(struct dp_ctrl *dp_ctrl, struct dp_panel *panel);
-	void (*stream_pre_off)(struct dp_ctrl *dp_ctrl, struct dp_panel *panel);
-	void (*set_mst_channel_info)(struct dp_ctrl *dp_ctrl,
-			enum dp_stream_id strm,
-			u32 ch_start_slot, u32 ch_tot_slots);
+	bool orientation;
+	atomic_t aborted;
+	u32 pixel_rate;
 };
 
-struct dp_ctrl_in {
-	struct device *dev;
-	struct dp_panel *panel;
-	struct dp_aux *aux;
-	struct dp_link *link;
-	struct dp_parser *parser;
-	struct dp_power *power;
-	struct dp_catalog_ctrl *catalog;
-};
+int dp_ctrl_on_link(struct dp_ctrl *dp_ctrl);
+int dp_ctrl_on_stream(struct dp_ctrl *dp_ctrl, bool force_link_train);
+int dp_ctrl_off_link_stream(struct dp_ctrl *dp_ctrl);
+int dp_ctrl_off(struct dp_ctrl *dp_ctrl);
+void dp_ctrl_push_idle(struct dp_ctrl *dp_ctrl);
+void dp_ctrl_isr(struct dp_ctrl *dp_ctrl);
+void dp_ctrl_handle_sink_request(struct dp_ctrl *dp_ctrl);
+struct dp_ctrl *dp_ctrl_get(struct device *dev, struct dp_link *link,
+			struct dp_panel *panel,	struct drm_dp_aux *aux,
+			struct dp_power *power, struct dp_catalog *catalog,
+			struct dp_parser *parser);
 
-struct dp_ctrl *dp_ctrl_get(struct dp_ctrl_in *in);
-void dp_ctrl_put(struct dp_ctrl *dp_ctrl);
+void dp_ctrl_reset_irq_ctrl(struct dp_ctrl *dp_ctrl, bool enable);
+void dp_ctrl_phy_init(struct dp_ctrl *dp_ctrl);
+void dp_ctrl_phy_exit(struct dp_ctrl *dp_ctrl);
+void dp_ctrl_irq_phy_exit(struct dp_ctrl *dp_ctrl);
 
 #endif /* _DP_CTRL_H_ */

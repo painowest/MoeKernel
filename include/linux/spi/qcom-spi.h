@@ -1,4 +1,7 @@
-/* Copyright (c) 2014-2018, 2020 The Linux Foundation. All rights reserved.
+/* SPDX-License-Identifier: GPL-2.0-only
+ *
+ * Copyright (c) 2014-2018, 2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,21 +11,12 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- */
-/*
- * SPI driver for Qualcomm MSM platforms.
  */
 
-/**
+/*
  * msm_spi_platform_data: msm spi-controller's configuration data
  *
  * @max_clock_speed max spi clock speed
- * @active_only when set, votes when system active and removes the vote when
- *       system goes idle (optimises for performance). When unset, voting using
- *       runtime pm (optimizes for power).
- * @master_id master id number of the controller's wrapper (BLSP or GSBI).
- *       When zero, clock path voting is disabled.
  * @gpio_config pointer to function for configuring gpio
  * @gpio_release pointer to function for releasing gpio pins
  * @dma_config function poniter for configuring dma engine
@@ -41,8 +35,6 @@
  */
 struct msm_spi_platform_data {
 	u32 max_clock_speed;
-	u32  master_id;
-	u32 bus_width;
 	int (*gpio_config)(void);
 	void (*gpio_release)(void);
 	int (*dma_config)(void);

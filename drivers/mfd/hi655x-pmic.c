@@ -1,15 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Device driver for MFD hi655x PMIC
  *
- * Copyright (c) 2016 Hisilicon.
+ * Copyright (c) 2016 HiSilicon Ltd.
  *
  * Authors:
  * Chen Feng <puck.chen@hisilicon.com>
  * Fei  Wang <w.f@huawei.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/gpio.h>
@@ -52,7 +49,7 @@ static struct regmap_config hi655x_regmap_config = {
 	.max_register = HI655X_BUS_ADDR(0x400) - HI655X_STRIDE,
 };
 
-static struct resource pwrkey_resources[] = {
+static const struct resource pwrkey_resources[] = {
 	{
 		.name	= "down",
 		.start	= PWRON_D20R_INT,

@@ -1,14 +1,6 @@
-/* Copyright (c) 2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include "phy-qcom-ufs-qmp-v4.h"
@@ -19,14 +11,29 @@
 	((major == 0x4) && (minor == 0x000) && (step == 0x0000))
 #define check_v2(major, minor, step) \
 	((major == 0x4) && (minor == 0x001) && (step == 0x0000))
+static inline void ufs_qcom_phy_qmp_v4_start_serdes(struct ufs_qcom_phy *phy);
+static int ufs_qcom_phy_qmp_v4_is_pcs_ready(struct ufs_qcom_phy *phy_common);
 
 static
-int ufs_qcom_phy_qmp_v4_phy_calibrate(struct ufs_qcom_phy *ufs_qcom_phy,
-					bool is_rate_B, bool is_g4)
+int ufs_qcom_phy_qmp_v4_phy_calibrate(struct phy *generic_phy)
 {
+	struct ufs_qcom_phy *ufs_qcom_phy = get_ufs_qcom_phy(generic_phy);
+	struct device *dev = ufs_qcom_phy->dev;
+	bool is_g4, is_rate_B;
+	int err;
 	u8 major = ufs_qcom_phy->host_ctrl_rev_major;
 	u16 minor = ufs_qcom_phy->host_ctrl_rev_minor;
 	u16 step = ufs_qcom_phy->host_ctrl_rev_step;
+
+	err = reset_control_assert(ufs_qcom_phy->ufs_reset);
+	if (err) {
+		dev_err(dev, "Failed to assert UFS PHY reset %d\n", err);
+		goto out;
+	}
+
+	/* For UFS PHY's submode, 1 = G4, 0 = non-G4 */
+	is_g4 = !!ufs_qcom_phy->submode;
+	is_rate_B = (ufs_qcom_phy->mode == PHY_MODE_UFS_HS_B) ? true : false;
 
 	writel_relaxed(0x01, ufs_qcom_phy->mmio + UFS_PHY_SW_RESET);
 	/* Ensure PHY is in reset before writing PHY calibration data */
@@ -96,7 +103,18 @@ int ufs_qcom_phy_qmp_v4_phy_calibrate(struct ufs_qcom_phy *ufs_qcom_phy,
 	/* flush buffered writes */
 	wmb();
 
-	return 0;
+	err = reset_control_deassert(ufs_qcom_phy->ufs_reset);
+	if (err) {
+		dev_err(dev, "Failed to deassert UFS PHY reset %d\n", err);
+		goto out;
+	}
+
+	ufs_qcom_phy_qmp_v4_start_serdes(ufs_qcom_phy);
+
+	err = ufs_qcom_phy_qmp_v4_is_pcs_ready(ufs_qcom_phy);
+
+out:
+	return err;
 }
 
 static int ufs_qcom_phy_qmp_v4_init(struct phy *generic_phy)
@@ -119,12 +137,31 @@ static int ufs_qcom_phy_qmp_v4_init(struct phy *generic_phy)
 		goto out;
 	}
 
+	/* Optional */
+	ufs_qcom_phy_get_reset(phy_common);
+
 out:
 	return err;
 }
 
 static int ufs_qcom_phy_qmp_v4_exit(struct phy *generic_phy)
 {
+	return 0;
+}
+
+static
+int ufs_qcom_phy_qmp_v4_set_mode(struct phy *generic_phy,
+				   enum phy_mode mode, int submode)
+{
+	struct ufs_qcom_phy *phy_common = get_ufs_qcom_phy(generic_phy);
+
+	phy_common->mode = PHY_MODE_INVALID;
+
+	if (mode > 0)
+		phy_common->mode = mode;
+
+	phy_common->submode = submode;
+
 	return 0;
 }
 
@@ -211,6 +248,8 @@ static void ufs_qcom_phy_qmp_v4_dbg_register_dump(struct ufs_qcom_phy *phy)
 {
 	ufs_qcom_phy_dump_regs(phy, COM_BASE, COM_SIZE,
 					"PHY QSERDES COM Registers ");
+	ufs_qcom_phy_dump_regs(phy, PCS2_BASE, PCS2_SIZE,
+					"PHY PCS2 Registers ");
 	ufs_qcom_phy_dump_regs(phy, PHY_BASE, PHY_SIZE,
 					"PHY Registers ");
 	ufs_qcom_phy_dump_regs(phy, RX_BASE(0), RX_SIZE,
@@ -223,16 +262,17 @@ static void ufs_qcom_phy_qmp_v4_dbg_register_dump(struct ufs_qcom_phy *phy)
 					"PHY TX1 Registers ");
 }
 
-struct phy_ops ufs_qcom_phy_qmp_v4_phy_ops = {
+static const struct phy_ops ufs_qcom_phy_qmp_v4_phy_ops = {
 	.init		= ufs_qcom_phy_qmp_v4_init,
 	.exit		= ufs_qcom_phy_qmp_v4_exit,
 	.power_on	= ufs_qcom_phy_power_on,
 	.power_off	= ufs_qcom_phy_power_off,
+	.set_mode	= ufs_qcom_phy_qmp_v4_set_mode,
+	.calibrate	= ufs_qcom_phy_qmp_v4_phy_calibrate,
 	.owner		= THIS_MODULE,
 };
 
-struct ufs_qcom_phy_specific_ops phy_v4_ops = {
-	.calibrate_phy		= ufs_qcom_phy_qmp_v4_phy_calibrate,
+static struct ufs_qcom_phy_specific_ops phy_v4_ops = {
 	.start_serdes		= ufs_qcom_phy_qmp_v4_start_serdes,
 	.is_physical_coding_sublayer_ready = ufs_qcom_phy_qmp_v4_is_pcs_ready,
 	.set_tx_lane_enable	= ufs_qcom_phy_qmp_v4_set_tx_lane_enable,
@@ -266,7 +306,7 @@ static int ufs_qcom_phy_qmp_v4_probe(struct platform_device *pdev)
 
 	phy_set_drvdata(generic_phy, phy);
 
-	strlcpy(phy->common_cfg.name, UFS_PHY_NAME,
+	strscpy(phy->common_cfg.name, UFS_PHY_NAME,
 		sizeof(phy->common_cfg.name));
 
 out:
@@ -284,7 +324,6 @@ static struct platform_driver ufs_qcom_phy_qmp_v4_driver = {
 	.driver = {
 		.of_match_table = ufs_qcom_phy_qmp_v4_of_match,
 		.name = "ufs_qcom_phy_qmp_v4",
-		.owner = THIS_MODULE,
 	},
 };
 

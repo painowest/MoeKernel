@@ -1,15 +1,7 @@
-/* Copyright (c) 2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
-
 #define pr_fmt(fmt) "%s: " fmt, __func__
 
 #include <linux/spinlock.h>
@@ -23,9 +15,11 @@
 #include <linux/delay.h>
 #include <linux/completion.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/regulator/driver.h>
 #include <linux/regulator/machine.h>
 #include <linux/regulator/of_regulator.h>
+#include <linux/regulator/debug-regulator.h>
 
 #define VIRTIO_REGULATOR_MAX_NAME		20
 #define VIRTIO_REGULATOR_VOLTAGE_UNKNOWN	1
@@ -63,7 +57,7 @@ static int virtio_regulator_enable(struct regulator_dev *rdev)
 	if (!req)
 		return -ENOMEM;
 
-	strlcpy(req->name, reg->rdesc.name, sizeof(req->name));
+	strscpy(req->name, reg->rdesc.name, sizeof(req->name));
 	req->type = cpu_to_virtio32(vreg->vdev, VIRTIO_REGULATOR_T_ENABLE);
 	sg_init_one(sg, req, sizeof(*req));
 
@@ -112,7 +106,7 @@ static int virtio_regulator_disable(struct regulator_dev *rdev)
 	if (!req)
 		return -ENOMEM;
 
-	strlcpy(req->name, reg->rdesc.name, sizeof(req->name));
+	strscpy(req->name, reg->rdesc.name, sizeof(req->name));
 	req->type = cpu_to_virtio32(vreg->vdev, VIRTIO_REGULATOR_T_DISABLE);
 	sg_init_one(sg, req, sizeof(*req));
 
@@ -171,7 +165,7 @@ static int virtio_regulator_set_voltage(struct regulator_dev *rdev, int min_uV,
 	if (!req)
 		return -ENOMEM;
 
-	strlcpy(req->name, reg->rdesc.name, sizeof(req->name));
+	strscpy(req->name, reg->rdesc.name, sizeof(req->name));
 	req->type = cpu_to_virtio32(vreg->vdev, VIRTIO_REGULATOR_T_SET_VOLTAGE);
 	req->data[0] = cpu_to_virtio32(vreg->vdev, DIV_ROUND_UP(min_uV, 1000));
 	req->data[1] = cpu_to_virtio32(vreg->vdev, max_uV / 1000);
@@ -220,7 +214,7 @@ static int virtio_regulator_get_voltage(struct regulator_dev *rdev)
 	if (!req)
 		return -ENOMEM;
 
-	strlcpy(req->name, reg->rdesc.name, sizeof(req->name));
+	strscpy(req->name, reg->rdesc.name, sizeof(req->name));
 	req->type = cpu_to_virtio32(vreg->vdev, VIRTIO_REGULATOR_T_GET_VOLTAGE);
 	sg_init_one(sg, req, sizeof(*req));
 
@@ -273,7 +267,7 @@ static int virtio_regulator_set_mode(struct regulator_dev *rdev,
 	if (!req)
 		return -ENOMEM;
 
-	strlcpy(req->name, reg->rdesc.name, sizeof(req->name));
+	strscpy(req->name, reg->rdesc.name, sizeof(req->name));
 	req->type = cpu_to_virtio32(vreg->vdev, VIRTIO_REGULATOR_T_SET_MODE);
 	req->data[0] = cpu_to_virtio32(vreg->vdev, mode);
 	sg_init_one(sg, req, sizeof(*req));
@@ -321,7 +315,7 @@ static unsigned int virtio_regulator_get_mode(struct regulator_dev *rdev)
 	if (!req)
 		return -ENOMEM;
 
-	strlcpy(req->name, reg->rdesc.name, sizeof(req->name));
+	strscpy(req->name, reg->rdesc.name, sizeof(req->name));
 	req->type = cpu_to_virtio32(vreg->vdev, VIRTIO_REGULATOR_T_GET_MODE);
 	sg_init_one(sg, req, sizeof(*req));
 
@@ -373,7 +367,7 @@ static int virtio_regulator_set_load(struct regulator_dev *rdev, int load_ua)
 	if (!req)
 		return -ENOMEM;
 
-	strlcpy(req->name, reg->rdesc.name, sizeof(req->name));
+	strscpy(req->name, reg->rdesc.name, sizeof(req->name));
 	req->type = cpu_to_virtio32(vreg->vdev, VIRTIO_REGULATOR_T_SET_LOAD);
 	req->data[0] = cpu_to_virtio32(vreg->vdev, load_ua);
 	sg_init_one(sg, req, sizeof(*req));
@@ -408,7 +402,7 @@ out:
 	return ret;
 }
 
-static struct regulator_ops virtio_regulator_ops = {
+static const struct regulator_ops virtio_regulator_ops = {
 	.enable			= virtio_regulator_enable,
 	.disable		= virtio_regulator_disable,
 	.is_enabled		= virtio_regulator_is_enabled,
@@ -417,6 +411,12 @@ static struct regulator_ops virtio_regulator_ops = {
 	.set_mode		= virtio_regulator_set_mode,
 	.get_mode		= virtio_regulator_get_mode,
 	.set_load		= virtio_regulator_set_load,
+};
+
+static const struct regulator_ops virtio_regulator_switch_ops = {
+	.enable			= virtio_regulator_enable,
+	.disable		= virtio_regulator_disable,
+	.is_enabled		= virtio_regulator_is_enabled,
 };
 
 static void virtio_regulator_isr(struct virtqueue *vq)
@@ -444,17 +444,19 @@ static int virtio_regulator_init_vqs(struct virtio_regulator *vreg)
 
 static int virtio_regulator_allocate_reg(struct virtio_regulator *vreg)
 {
-	struct device_node *parent_node, *node;
+	struct device_node *parent_node, *node, *child_node;
 	int i, ret;
 
 	vreg->regs_count = 0;
 	parent_node = vreg->vdev->dev.parent->of_node;
 
 	for_each_available_child_of_node(parent_node, node) {
-		/* Skip child nodes handled by other drivers. */
-		if (of_find_property(node, "compatible", NULL))
-			continue;
-		vreg->regs_count++;
+		for_each_available_child_of_node(node, child_node) {
+			/* Skip child nodes handled by other drivers. */
+			if (of_find_property(child_node, "compatible", NULL))
+				continue;
+			vreg->regs_count++;
+		}
 	}
 
 	if (vreg->regs_count == 0) {
@@ -470,22 +472,24 @@ static int virtio_regulator_allocate_reg(struct virtio_regulator *vreg)
 
 	i = 0;
 	for_each_available_child_of_node(parent_node, node) {
-		/* Skip child nodes handled by other drivers. */
-		if (of_find_property(node, "compatible", NULL))
-			continue;
+		for_each_available_child_of_node(node, child_node) {
+			/* Skip child nodes handled by other drivers. */
+			if (of_find_property(child_node, "compatible", NULL))
+				continue;
 
-		vreg->regs[i].of_node = node;
-		vreg->regs[i].vreg = vreg;
+			vreg->regs[i].of_node = child_node;
+			vreg->regs[i].vreg = vreg;
 
-		ret = of_property_read_string(node, "regulator-name",
-						&vreg->regs[i].rdesc.name);
-		if (ret) {
-			dev_err(&vreg->vdev->dev,
-					"could not read regulator-name\n");
-			return ret;
+			ret = of_property_read_string(child_node, "regulator-name",
+							&vreg->regs[i].rdesc.name);
+			if (ret) {
+				dev_err(&vreg->vdev->dev,
+						"could not read regulator-name\n");
+				return ret;
+			}
+
+			i++;
 		}
-
-		i++;
 	}
 
 	return 0;
@@ -506,8 +510,20 @@ static int virtio_regulator_init_reg(struct reg_virtio *reg)
 	if (init_data == NULL)
 		return -ENOMEM;
 
-	init_data->constraints.input_uV = init_data->constraints.max_uV;
-	init_data->constraints.valid_ops_mask |= REGULATOR_CHANGE_VOLTAGE;
+	if (init_data->constraints.min_uV == 0 &&
+	    init_data->constraints.max_uV == 0)
+		reg->rdesc.n_voltages = 0;
+	else if (init_data->constraints.min_uV == init_data->constraints.max_uV)
+		reg->rdesc.n_voltages = 1;
+	else
+		reg->rdesc.n_voltages = 2;
+
+	if (reg->rdesc.n_voltages == 0) {
+		reg->rdesc.ops = &virtio_regulator_switch_ops;
+	} else {
+		init_data->constraints.input_uV = init_data->constraints.max_uV;
+		init_data->constraints.valid_ops_mask |= REGULATOR_CHANGE_VOLTAGE;
+	}
 
 	reg_config.dev			= dev;
 	reg_config.init_data		= init_data;
@@ -565,12 +581,20 @@ static int virtio_regulator_probe(struct virtio_device *vdev)
 				vreg->regs[i].rdesc.name);
 			goto err_init_reg;
 		}
+
+		ret = devm_regulator_debug_register(&vdev->dev, vreg->regs[i].rdev);
+		if (ret) {
+			dev_err(&vdev->dev, "fail to register regulator %s debugfs\n",
+				vreg->regs[i].rdesc.name);
+			goto err_register_reg_debug;
+		}
 	}
 
 	dev_dbg(&vdev->dev, "virtio regulator probe successfully\n");
 
 	return 0;
 
+err_register_reg_debug:
 err_init_reg:
 err_allocate_reg:
 	vdev->config->del_vqs(vdev);

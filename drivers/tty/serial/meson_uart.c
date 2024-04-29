@@ -1,17 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  Based on meson_uart.c, by AMLOGIC, INC.
  *
  * Copyright (C) 2014 Carlo Caione <carlo@caione.org>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published
- * by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 
 #include <linux/clk.h>
@@ -19,6 +10,7 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/of.h>
@@ -39,9 +31,15 @@
 /* AML_UART_CONTROL bits */
 #define AML_UART_TX_EN			BIT(12)
 #define AML_UART_RX_EN			BIT(13)
+#define AML_UART_TWO_WIRE_EN		BIT(15)
+#define AML_UART_STOP_BIT_LEN_MASK	(0x03 << 16)
+#define AML_UART_STOP_BIT_1SB		(0x00 << 16)
+#define AML_UART_STOP_BIT_2SB		(0x01 << 16)
+#define AML_UART_PARITY_TYPE		BIT(18)
+#define AML_UART_PARITY_EN		BIT(19)
 #define AML_UART_TX_RST			BIT(22)
 #define AML_UART_RX_RST			BIT(23)
-#define AML_UART_CLR_ERR		BIT(24)
+#define AML_UART_CLEAR_ERR		BIT(24)
 #define AML_UART_RX_INT_EN		BIT(27)
 #define AML_UART_TX_INT_EN		BIT(28)
 #define AML_UART_DATA_LEN_MASK		(0x03 << 20)
@@ -62,15 +60,6 @@
 					 AML_UART_FRAME_ERR  | \
 					 AML_UART_TX_FIFO_WERR)
 
-/* AML_UART_CONTROL bits */
-#define AML_UART_TWO_WIRE_EN		BIT(15)
-#define AML_UART_PARITY_TYPE		BIT(18)
-#define AML_UART_PARITY_EN		BIT(19)
-#define AML_UART_CLEAR_ERR		BIT(24)
-#define AML_UART_STOP_BIN_LEN_MASK	(0x03 << 16)
-#define AML_UART_STOP_BIN_1SB		(0x00 << 16)
-#define AML_UART_STOP_BIN_2SB		(0x01 << 16)
-
 /* AML_UART_MISC bits */
 #define AML_UART_XMIT_IRQ(c)		(((c) & 0xff) << 8)
 #define AML_UART_RECV_IRQ(c)		((c) & 0xff)
@@ -80,9 +69,12 @@
 #define AML_UART_BAUD_USE		BIT(23)
 #define AML_UART_BAUD_XTAL		BIT(24)
 
-#define AML_UART_PORT_NUM		6
+#define AML_UART_PORT_NUM		12
+#define AML_UART_PORT_OFFSET		6
 #define AML_UART_DEV_NAME		"ttyAML"
 
+#define AML_UART_POLL_USEC		5
+#define AML_UART_TIMEOUT_USEC		10000
 
 static struct uart_driver meson_uart_driver;
 
@@ -183,12 +175,12 @@ static void meson_receive_chars(struct uart_port *port)
 {
 	struct tty_port *tport = &port->state->port;
 	char flag;
-	u32 status, ch, mode;
+	u32 ostatus, status, ch, mode;
 
 	do {
 		flag = TTY_NORMAL;
 		port->icount.rx++;
-		status = readl(port->membase + AML_UART_STATUS);
+		ostatus = status = readl(port->membase + AML_UART_STATUS);
 
 		if (status & AML_UART_ERR) {
 			if (status & AML_UART_TX_FIFO_WERR)
@@ -216,6 +208,16 @@ static void meson_receive_chars(struct uart_port *port)
 		ch = readl(port->membase + AML_UART_RFIFO);
 		ch &= 0xff;
 
+		if ((ostatus & AML_UART_FRAME_ERR) && (ch == 0)) {
+			port->icount.brk++;
+			flag = TTY_BREAK;
+			if (uart_handle_break(port))
+				continue;
+		}
+
+		if (uart_handle_sysrq_char(port, ch))
+			continue;
+
 		if ((status & port->ignore_status_mask) == 0)
 			tty_insert_flip_char(tport, ch, flag);
 
@@ -224,9 +226,7 @@ static void meson_receive_chars(struct uart_port *port)
 
 	} while (!(readl(port->membase + AML_UART_STATUS) & AML_UART_RX_EMPTY));
 
-	spin_unlock(&port->lock);
 	tty_flip_buffer_push(tport);
-	spin_lock(&port->lock);
 }
 
 static irqreturn_t meson_uart_interrupt(int irq, void *dev_id)
@@ -266,10 +266,10 @@ static void meson_uart_reset(struct uart_port *port)
 	u32 val;
 
 	val = readl(port->membase + AML_UART_CONTROL);
-	val |= (AML_UART_RX_RST | AML_UART_TX_RST | AML_UART_CLR_ERR);
+	val |= (AML_UART_RX_RST | AML_UART_TX_RST | AML_UART_CLEAR_ERR);
 	writel(val, port->membase + AML_UART_CONTROL);
 
-	val &= ~(AML_UART_RX_RST | AML_UART_TX_RST | AML_UART_CLR_ERR);
+	val &= ~(AML_UART_RX_RST | AML_UART_TX_RST | AML_UART_CLEAR_ERR);
 	writel(val, port->membase + AML_UART_CONTROL);
 }
 
@@ -282,9 +282,9 @@ static int meson_uart_startup(struct uart_port *port)
 	spin_lock_irqsave(&port->lock, flags);
 
 	val = readl(port->membase + AML_UART_CONTROL);
-	val |= AML_UART_CLR_ERR;
+	val |= AML_UART_CLEAR_ERR;
 	writel(val, port->membase + AML_UART_CONTROL);
-	val &= ~AML_UART_CLR_ERR;
+	val &= ~AML_UART_CLEAR_ERR;
 	writel(val, port->membase + AML_UART_CONTROL);
 
 	val |= (AML_UART_RX_EN | AML_UART_TX_EN);
@@ -362,11 +362,11 @@ static void meson_uart_set_termios(struct uart_port *port,
 	else
 		val &= ~AML_UART_PARITY_TYPE;
 
-	val &= ~AML_UART_STOP_BIN_LEN_MASK;
+	val &= ~AML_UART_STOP_BIT_LEN_MASK;
 	if (cflags & CSTOPB)
-		val |= AML_UART_STOP_BIN_2SB;
+		val |= AML_UART_STOP_BIT_2SB;
 	else
-		val |= AML_UART_STOP_BIN_1SB;
+		val |= AML_UART_STOP_BIT_1SB;
 
 	if (cflags & CRTSCTS)
 		val &= ~AML_UART_TWO_WIRE_EN;
@@ -375,7 +375,7 @@ static void meson_uart_set_termios(struct uart_port *port,
 
 	writel(val, port->membase + AML_UART_CONTROL);
 
-	baud = uart_get_baud_rate(port, termios, old, 9600, 4000000);
+	baud = uart_get_baud_rate(port, termios, old, 50, 4000000);
 	meson_uart_change_speed(port, baud);
 
 	port->read_status_mask = AML_UART_TX_FIFO_WERR;
@@ -421,7 +421,7 @@ static int meson_uart_request_port(struct uart_port *port)
 		return -EBUSY;
 	}
 
-	port->membase = devm_ioremap_nocache(port->dev, port->mapbase,
+	port->membase = devm_ioremap(port->dev, port->mapbase,
 					     port->mapsize);
 	if (!port->membase)
 		return -ENOMEM;
@@ -436,6 +436,64 @@ static void meson_uart_config_port(struct uart_port *port, int flags)
 		meson_uart_request_port(port);
 	}
 }
+
+#ifdef CONFIG_CONSOLE_POLL
+/*
+ * Console polling routines for writing and reading from the uart while
+ * in an interrupt or debug context (i.e. kgdb).
+ */
+
+static int meson_uart_poll_get_char(struct uart_port *port)
+{
+	u32 c;
+	unsigned long flags;
+
+	spin_lock_irqsave(&port->lock, flags);
+
+	if (readl(port->membase + AML_UART_STATUS) & AML_UART_RX_EMPTY)
+		c = NO_POLL_CHAR;
+	else
+		c = readl(port->membase + AML_UART_RFIFO);
+
+	spin_unlock_irqrestore(&port->lock, flags);
+
+	return c;
+}
+
+static void meson_uart_poll_put_char(struct uart_port *port, unsigned char c)
+{
+	unsigned long flags;
+	u32 reg;
+	int ret;
+
+	spin_lock_irqsave(&port->lock, flags);
+
+	/* Wait until FIFO is empty or timeout */
+	ret = readl_poll_timeout_atomic(port->membase + AML_UART_STATUS, reg,
+					reg & AML_UART_TX_EMPTY,
+					AML_UART_POLL_USEC,
+					AML_UART_TIMEOUT_USEC);
+	if (ret == -ETIMEDOUT) {
+		dev_err(port->dev, "Timeout waiting for UART TX EMPTY\n");
+		goto out;
+	}
+
+	/* Write the character */
+	writel(c, port->membase + AML_UART_WFIFO);
+
+	/* Wait until FIFO is empty or timeout */
+	ret = readl_poll_timeout_atomic(port->membase + AML_UART_STATUS, reg,
+					reg & AML_UART_TX_EMPTY,
+					AML_UART_POLL_USEC,
+					AML_UART_TIMEOUT_USEC);
+	if (ret == -ETIMEDOUT)
+		dev_err(port->dev, "Timeout waiting for UART TX EMPTY\n");
+
+out:
+	spin_unlock_irqrestore(&port->lock, flags);
+}
+
+#endif /* CONFIG_CONSOLE_POLL */
 
 static const struct uart_ops meson_uart_ops = {
 	.set_mctrl      = meson_uart_set_mctrl,
@@ -452,6 +510,10 @@ static const struct uart_ops meson_uart_ops = {
 	.request_port	= meson_uart_request_port,
 	.release_port	= meson_uart_release_port,
 	.verify_port	= meson_uart_verify_port,
+#ifdef CONFIG_CONSOLE_POLL
+	.poll_get_char	= meson_uart_poll_get_char,
+	.poll_put_char	= meson_uart_poll_put_char,
+#endif
 };
 
 #ifdef CONFIG_SERIAL_MESON_CONSOLE
@@ -553,7 +615,6 @@ static int __init meson_serial_console_init(void)
 	register_console(&meson_serial_console);
 	return 0;
 }
-console_initcall(meson_serial_console_init);
 
 static void meson_serial_early_console_write(struct console *co,
 					     const char *s,
@@ -583,6 +644,9 @@ OF_EARLYCON_DECLARE(meson, "amlogic,meson-ao-uart",
 
 #define MESON_SERIAL_CONSOLE	(&meson_serial_console)
 #else
+static int __init meson_serial_console_init(void) {
+	return 0;
+}
 #define MESON_SERIAL_CONSOLE	NULL
 #endif
 
@@ -664,10 +728,22 @@ static int meson_uart_probe(struct platform_device *pdev)
 {
 	struct resource *res_mem, *res_irq;
 	struct uart_port *port;
+	u32 fifosize = 64; /* Default is 64, 128 for EE UART_0 */
 	int ret = 0;
 
 	if (pdev->dev.of_node)
 		pdev->id = of_alias_get_id(pdev->dev.of_node, "serial");
+
+	if (pdev->id < 0) {
+		int id;
+
+		for (id = AML_UART_PORT_OFFSET; id < AML_UART_PORT_NUM; id++) {
+			if (!meson_ports[id]) {
+				pdev->id = id;
+				break;
+			}
+		}
+	}
 
 	if (pdev->id < 0 || pdev->id >= AML_UART_PORT_NUM)
 		return -EINVAL;
@@ -679,6 +755,8 @@ static int meson_uart_probe(struct platform_device *pdev)
 	res_irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
 	if (!res_irq)
 		return -ENODEV;
+
+	of_property_read_u32(pdev->dev.of_node, "fifo-size", &fifosize);
 
 	if (meson_ports[pdev->id]) {
 		dev_err(&pdev->dev, "port %d already allocated\n", pdev->id);
@@ -703,12 +781,13 @@ static int meson_uart_probe(struct platform_device *pdev)
 	port->mapsize = resource_size(res_mem);
 	port->irq = res_irq->start;
 	port->flags = UPF_BOOT_AUTOCONF | UPF_LOW_LATENCY;
+	port->has_sysrq = IS_ENABLED(CONFIG_SERIAL_MESON_CONSOLE);
 	port->dev = &pdev->dev;
 	port->line = pdev->id;
 	port->type = PORT_MESON;
 	port->x_char = 0;
 	port->ops = &meson_uart_ops;
-	port->fifosize = 64;
+	port->fifosize = fifosize;
 
 	meson_ports[pdev->id] = port;
 	platform_set_drvdata(pdev, port);
@@ -762,6 +841,10 @@ static int __init meson_uart_init(void)
 {
 	int ret;
 
+	ret = meson_serial_console_init();
+	if (ret)
+		return ret;
+	
 	ret = uart_register_driver(&meson_uart_driver);
 	if (ret)
 		return ret;

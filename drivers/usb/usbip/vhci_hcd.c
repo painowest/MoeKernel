@@ -1,21 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright (C) 2003-2008 Takahiro Hirofuchi
  * Copyright (C) 2015-2016 Nobuo Iwata
- *
- * This is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307,
- * USA.
  */
 
 #include <linux/init.h>
@@ -530,6 +516,7 @@ static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 		case USB_PORT_FEAT_U1_TIMEOUT:
 			usbip_dbg_vhci_rh(
 				" SetPortFeature: USB_PORT_FEAT_U1_TIMEOUT\n");
+			fallthrough;
 		case USB_PORT_FEAT_U2_TIMEOUT:
 			usbip_dbg_vhci_rh(
 				" SetPortFeature: USB_PORT_FEAT_U2_TIMEOUT\n");
@@ -582,7 +569,7 @@ static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 				       "supported for USB 2.0 roothub\n");
 				goto error;
 			}
-			/* FALLS THROUGH */
+			fallthrough;
 		case USB_PORT_FEAT_RESET:
 			usbip_dbg_vhci_rh(
 				" SetPortFeature: USB_PORT_FEAT_RESET\n");
@@ -605,8 +592,7 @@ static int vhci_hub_control(struct usb_hcd *hcd, u16 typeReq, u16 wValue,
 
 			/* 50msec reset signaling */
 			vhci_hcd->re_timeout = jiffies + msecs_to_jiffies(50);
-
-			/* FALLS THROUGH */
+			fallthrough;
 		default:
 			usbip_dbg_vhci_rh(" SetPortFeature: default %d\n",
 					  wValue);
@@ -678,14 +664,8 @@ error:
 static void vhci_tx_urb(struct urb *urb, struct vhci_device *vdev)
 {
 	struct vhci_priv *priv;
-	struct vhci_hcd *vhci_hcd;
+	struct vhci_hcd *vhci_hcd = vdev_to_vhci_hcd(vdev);
 	unsigned long flags;
-
-	if (!vdev) {
-		pr_err("could not get virtual device");
-		return;
-	}
-	vhci_hcd = vdev_to_vhci_hcd(vdev);
 
 	priv = kzalloc(sizeof(struct vhci_priv), GFP_ATOMIC);
 	if (!priv) {
@@ -827,8 +807,14 @@ no_need_xmit:
 	usb_hcd_unlink_urb_from_ep(hcd, urb);
 no_need_unlink:
 	spin_unlock_irqrestore(&vhci->lock, flags);
-	if (!ret)
+	if (!ret) {
+		/* usb_hcd_giveback_urb() should be called with
+		 * irqs disabled
+		 */
+		local_irq_disable();
 		usb_hcd_giveback_urb(hcd, urb, urb->status);
+		local_irq_enable();
+	}
 	return ret;
 }
 
@@ -965,7 +951,8 @@ static int vhci_urb_dequeue(struct usb_hcd *hcd, struct urb *urb, int status)
 	return 0;
 }
 
-static void vhci_device_unlink_cleanup(struct vhci_device *vdev)
+static void vhci_cleanup_unlink_list(struct vhci_device *vdev,
+		struct list_head *unlink_list)
 {
 	struct vhci_hcd *vhci_hcd = vdev_to_vhci_hcd(vdev);
 	struct usb_hcd *hcd = vhci_hcd_to_hcd(vhci_hcd);
@@ -976,49 +963,11 @@ static void vhci_device_unlink_cleanup(struct vhci_device *vdev)
 	spin_lock_irqsave(&vhci->lock, flags);
 	spin_lock(&vdev->priv_lock);
 
-	list_for_each_entry_safe(unlink, tmp, &vdev->unlink_tx, list) {
+	list_for_each_entry_safe(unlink, tmp, unlink_list, list) {
 		struct urb *urb;
-
-		/* give back urb of unsent unlink request */
-		pr_info("unlink cleanup tx %lu\n", unlink->unlink_seqnum);
 
 		urb = pickup_urb_and_free_priv(vdev, unlink->unlink_seqnum);
 		if (!urb) {
-			list_del(&unlink->list);
-			kfree(unlink);
-			continue;
-		}
-
-		urb->status = -ENODEV;
-
-		usb_hcd_unlink_urb_from_ep(hcd, urb);
-
-		list_del(&unlink->list);
-
-		spin_unlock(&vdev->priv_lock);
-		spin_unlock_irqrestore(&vhci->lock, flags);
-
-		usb_hcd_giveback_urb(hcd, urb, urb->status);
-
-		spin_lock_irqsave(&vhci->lock, flags);
-		spin_lock(&vdev->priv_lock);
-
-		kfree(unlink);
-	}
-
-	while (!list_empty(&vdev->unlink_rx)) {
-		struct urb *urb;
-
-		unlink = list_first_entry(&vdev->unlink_rx, struct vhci_unlink,
-			list);
-
-		/* give back URB of unanswered unlink request */
-		pr_info("unlink cleanup rx %lu\n", unlink->unlink_seqnum);
-
-		urb = pickup_urb_and_free_priv(vdev, unlink->unlink_seqnum);
-		if (!urb) {
-			pr_info("the urb (seqnum %lu) was already given back\n",
-				unlink->unlink_seqnum);
 			list_del(&unlink->list);
 			kfree(unlink);
 			continue;
@@ -1043,6 +992,15 @@ static void vhci_device_unlink_cleanup(struct vhci_device *vdev)
 
 	spin_unlock(&vdev->priv_lock);
 	spin_unlock_irqrestore(&vhci->lock, flags);
+}
+
+static void vhci_device_unlink_cleanup(struct vhci_device *vdev)
+{
+	/* give back URB of unsent unlink request */
+	vhci_cleanup_unlink_list(vdev, &vdev->unlink_tx);
+
+	/* give back URB of unanswered unlink request */
+	vhci_cleanup_unlink_list(vdev, &vdev->unlink_rx);
 }
 
 /*
@@ -1249,12 +1207,12 @@ static int vhci_start(struct usb_hcd *hcd)
 	if (id == 0 && usb_hcd_is_primary_hcd(hcd)) {
 		err = vhci_init_attr_group();
 		if (err) {
-			pr_err("init attr group\n");
+			dev_err(hcd_dev(hcd), "init attr group failed, err = %d\n", err);
 			return err;
 		}
 		err = sysfs_create_group(&hcd_dev(hcd)->kobj, &vhci_attr_group);
 		if (err) {
-			pr_err("create sysfs files\n");
+			dev_err(hcd_dev(hcd), "create sysfs files failed, err = %d\n", err);
 			vhci_finish_attr_group();
 			return err;
 		}

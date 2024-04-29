@@ -1,150 +1,100 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2020, Linux Foundation. All rights reserved.
+ * Crypto TZ library for storage encryption.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
-#include <linux/module.h>
 #include <asm/cacheflush.h>
-#include <soc/qcom/scm.h>
+#include <linux/qcom_scm.h>
+#include <linux/qtee_shmbridge.h>
 #include <linux/crypto-qti-common.h>
+#include <linux/module.h>
 #include "crypto-qti-platform.h"
-#include "crypto-qti-tz.h"
 
-unsigned int storage_type = SDCC_CE;
+#define ICE_CIPHER_MODE_XTS_256 3
 
-#define ICE_BUFFER_SIZE 128
-
-static uint8_t ice_buffer[ICE_BUFFER_SIZE];
-static uint8_t secret_buffer[32];
-
-int crypto_qti_program_key(struct crypto_vops_qti_entry *ice_entry,
-			   const struct blk_crypto_key *key,
-			   unsigned int slot, unsigned int data_unit_mask,
-			   int capid)
+int crypto_qti_program_key(const struct ice_mmio_data *mmio_data,
+			   const struct blk_crypto_key *key, unsigned int slot,
+			   unsigned int data_unit_mask, int capid, int storage_type)
 {
 	int err = 0;
-	uint32_t smc_id = 0;
-	char *tzbuf = NULL;
-	struct scm_desc desc = {0};
-	int i;
-	union {
-		u8 bytes[BLK_CRYPTO_MAX_WRAPPED_KEY_SIZE];
-		u32 words[BLK_CRYPTO_MAX_WRAPPED_KEY_SIZE / sizeof(u32)];
-	} key_new;
+	struct qtee_shm shm;
 
-	tzbuf = ice_buffer;
+	err = qtee_shmbridge_allocate_shm(key->size, &shm);
+	if (err)
+		return -ENOMEM;
 
-	memcpy(key_new.bytes, key->raw, key->size);
-	if (!key->is_hw_wrapped) {
-		for (i = 0; i < ARRAY_SIZE(key_new.words); i++)
-			__cpu_to_be32s(&key_new.words[i]);
-	}
+	memcpy(shm.vaddr, key->raw, key->size);
+	qtee_shmbridge_flush_shm_buf(&shm);
 
-	memcpy(tzbuf, key_new.bytes, key->size);
-	dmac_flush_range(tzbuf, tzbuf + key->size);
+	err = qcom_scm_config_set_ice_key(slot, shm.paddr, key->size,
+						ICE_CIPHER_MODE_XTS_256,
+						data_unit_mask, storage_type);
 
-	smc_id = TZ_ES_CONFIG_SET_ICE_KEY_ID;
-	desc.arginfo = TZ_ES_CONFIG_SET_ICE_KEY_PARAM_ID;
-	desc.args[0] = slot;
-	desc.args[1] = virt_to_phys(tzbuf);
-	desc.args[2] = key->size;
-	desc.args[3] = ICE_CIPHER_MODE_XTS_256;
-	desc.args[4] = data_unit_mask;
-
-
-	err = scm_call2_noretry(smc_id, &desc);
 	if (err)
 		pr_err("%s:SCM call Error: 0x%x slot %d\n",
 				__func__, err, slot);
 
+	qtee_shmbridge_inv_shm_buf(&shm);
+	qtee_shmbridge_free_shm(&shm);
+
 	return err;
 }
+EXPORT_SYMBOL(crypto_qti_program_key);
 
-int crypto_qti_invalidate_key(
-		struct crypto_vops_qti_entry *ice_entry, unsigned int slot)
+int crypto_qti_invalidate_key(const struct ice_mmio_data *mmio_data,
+			      unsigned int slot, int storage_type)
 {
 	int err = 0;
-	uint32_t smc_id = 0;
-	struct scm_desc desc = {0};
 
-	smc_id = TZ_ES_INVALIDATE_ICE_KEY_ID;
+	err = qcom_scm_clear_ice_key(slot, storage_type);
 
-	desc.arginfo = TZ_ES_INVALIDATE_ICE_KEY_PARAM_ID;
-	desc.args[0] = slot;
-
-	err = scm_call2_noretry(smc_id, &desc);
 	if (err)
 		pr_err("%s:SCM call Error: 0x%x\n", __func__, err);
+
 	return err;
 }
+EXPORT_SYMBOL(crypto_qti_invalidate_key);
 
-int crypto_qti_tz_raw_secret(const u8 *wrapped_key,
-			     unsigned int wrapped_key_size, u8 *secret,
-			     unsigned int secret_size)
+int crypto_qti_derive_raw_secret_platform(
+				const u8 *wrapped_key,
+				unsigned int wrapped_key_size, u8 *secret,
+				unsigned int secret_size)
 {
 	int err = 0;
-	uint32_t smc_id = 0;
+	struct qtee_shm shm_key, shm_secret;
 
-	struct scm_desc desc = {0};
-	char *tzbuf_key, *secret_key;
+	err = qtee_shmbridge_allocate_shm(wrapped_key_size, &shm_key);
+	if (err)
+		return -ENOMEM;
 
-	tzbuf_key = ice_buffer;
-	secret_key = secret_buffer;
-	memcpy(tzbuf_key, wrapped_key, wrapped_key_size);
-	dmac_flush_range(tzbuf_key, tzbuf_key + wrapped_key_size);
+	err = qtee_shmbridge_allocate_shm(secret_size, &shm_secret);
+	if (err)
+		return -ENOMEM;
 
-	smc_id = TZ_ES_RETRIEVE_RAW_SECRET_CE_TYPE_ID;
-	desc.arginfo = TZ_ES_RETRIEVE_RAW_SECRET_CE_TYPE_PARAM_ID;
-	desc.args[0] = virt_to_phys(tzbuf_key);
-	desc.args[1] = wrapped_key_size;
-	desc.args[2] = virt_to_phys(secret_key);
-	desc.args[3] = secret_size;
+	memcpy(shm_key.vaddr, wrapped_key, wrapped_key_size);
+	qtee_shmbridge_flush_shm_buf(&shm_key);
 
-	memset(secret_key, 0, secret_size);
-	dmac_flush_range(secret_key, secret_key + secret_size);
+	memset(shm_secret.vaddr, 0, secret_size);
+	qtee_shmbridge_flush_shm_buf(&shm_secret);
 
-	err = scm_call2_noretry(smc_id, &desc);
+	err = qcom_scm_derive_raw_secret(shm_key.paddr, wrapped_key_size,
+					shm_secret.paddr, secret_size);
 	if (err) {
-		pr_err("%s failed to retrieve raw secret\n", __func__, err);
-		return err;
+		pr_err("%s:SCM call Error for derive raw secret: 0x%x\n",
+				__func__, err);
 	}
 
-	dmac_inv_range(secret_key, secret_key + secret_size);
-	memcpy(secret, secret_key, secret_size);
+	qtee_shmbridge_inv_shm_buf(&shm_secret);
+	memcpy(secret, shm_secret.vaddr, secret_size);
 
+	qtee_shmbridge_inv_shm_buf(&shm_key);
+	qtee_shmbridge_free_shm(&shm_key);
+	qtee_shmbridge_free_shm(&shm_secret);
 	return err;
 }
+EXPORT_SYMBOL(crypto_qti_derive_raw_secret_platform);
 
-static int crypto_qti_storage_type(unsigned int *s_type)
-{
-	char boot[20] = {'\0'};
-	char *match = (char *)strnstr(saved_command_line,
-				"androidboot.bootdevice=",
-				strlen(saved_command_line));
-	if (match) {
-		memcpy(boot, (match + strlen("androidboot.bootdevice=")),
-			sizeof(boot) - 1);
-		if (strnstr(boot, "ufs", strlen(boot)))
-			*s_type = UFS_CE;
-
-		return 0;
-	}
-	return -EINVAL;
-}
-
-static int __init crypto_qti_init(void)
-{
-	return crypto_qti_storage_type(&storage_type);
-}
-
-module_init(crypto_qti_init);
+MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("Crypto TZ library for storage encryption");

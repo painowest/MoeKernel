@@ -1,6 +1,7 @@
-/* drivers/serial/msm_serial_hs_hwreg.h
+/* SPDX-License-Identifier: GPL-2.0-only
  *
  * Copyright (c) 2007-2009, 2012-2018,The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * All source code in this file is licensed under the following license
  * except where indicated.
@@ -32,9 +33,9 @@
 #define ADM1_CRCI_GSBI6_RX_SEL         0x800
 #define ADM1_CRCI_GSBI6_TX_SEL         0x400
 
-#define MSM_ENABLE_UART_CLOCK TIOCPMGET
-#define MSM_DISABLE_UART_CLOCK TIOCPMPUT
-#define MSM_GET_UART_CLOCK_STATUS TIOCPMACT
+#define MSM_ENABLE_UART_CLOCK		0x54ED
+#define MSM_DISABLE_UART_CLOCK		0x54EE
+#define MSM_GET_UART_CLOCK_STATUS	0x54EF
 
 enum msm_hsl_regs {
 	UARTDM_MR1,
@@ -207,12 +208,12 @@ enum msm_hs_regs {
 
 /* bits per character configuration */
 #define FIVE_BPC  (0 << 4)
-#define SIX_BPC   (1 << 4)
+#define SIX_BPC   BIT(4)
 #define SEVEN_BPC (2 << 4)
 #define EIGHT_BPC (3 << 4)
 
 #define UARTDM_MR2_STOP_BIT_LEN_BMSK 0xc
-#define STOP_BIT_ONE (1 << 2)
+#define STOP_BIT_ONE BIT(2)
 #define STOP_BIT_TWO (3 << 2)
 
 #define UARTDM_MR2_PARITY_MODE_BMSK 0x3

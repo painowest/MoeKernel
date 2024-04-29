@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * AppliedMicro X-Gene SoC SATA Host Controller Driver
  *
@@ -6,21 +7,7 @@
  *         Tuan Phan <tphan@apm.com>
  *         Suman Tripathi <stripathi@apm.com>
  *
- * This program is free software; you can redistribute  it and/or modify it
- * under  the terms of  the GNU General  Public License as published by the
- * Free Software Foundation;  either version 2 of the  License, or (at your
- * option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
- *
  * NOTE: PM support is not currently available.
- *
  */
 #include <linux/acpi.h>
 #include <linux/module.h>
@@ -378,7 +365,7 @@ static int xgene_ahci_do_hardreset(struct ata_link *link,
 	do {
 		/* clear D2H reception area to properly wait for D2H FIS */
 		ata_tf_init(link->device, &tf);
-		tf.command = ATA_BUSY;
+		tf.status = ATA_BUSY;
 		ata_tf_to_fis(&tf, 0, 0, d2h_fis);
 		rc = sata_link_hardreset(link, timing, deadline, online,
 				 ahci_check_ready);
@@ -550,7 +537,7 @@ softreset_retry:
 
 /**
  * xgene_ahci_handle_broken_edge_irq - Handle the broken irq.
- * @ata_host: Host that recieved the irq
+ * @host: Host that recieved the irq
  * @irq_masked: HOST_IRQ_STAT value
  *
  * For hardware with broken edge trigger latch
@@ -755,7 +742,7 @@ static int xgene_ahci_probe(struct platform_device *pdev)
 					      &xgene_ahci_v2_port_info };
 	int rc;
 
-	hpriv = ahci_platform_get_resources(pdev);
+	hpriv = ahci_platform_get_resources(pdev, 0);
 	if (IS_ERR(hpriv))
 		return PTR_ERR(hpriv);
 

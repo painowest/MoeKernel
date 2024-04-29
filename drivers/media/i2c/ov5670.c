@@ -1,16 +1,5 @@
-/*
- * Copyright (c) 2017 Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License version
- * 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- */
+// SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2017 Intel Corporation.
 
 #include <linux/acpi.h>
 #include <linux/i2c.h>
@@ -18,6 +7,7 @@
 #include <linux/pm_runtime.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
+#include <media/v4l2-fwnode.h>
 
 #define OV5670_REG_CHIP_ID		0x300a
 #define OV5670_CHIP_ID			0x005670
@@ -390,7 +380,10 @@ static const struct ov5670_reg mode_2592x1944_regs[] = {
 	{0x5792, 0x00},
 	{0x5793, 0x52},
 	{0x5794, 0xa3},
-	{0x3503, 0x00}
+	{0x3503, 0x00},
+	{0x5045, 0x05},
+	{0x4003, 0x40},
+	{0x5048, 0x40}
 };
 
 static const struct ov5670_reg mode_1296x972_regs[] = {
@@ -653,7 +646,10 @@ static const struct ov5670_reg mode_1296x972_regs[] = {
 	{0x5792, 0x00},
 	{0x5793, 0x52},
 	{0x5794, 0xa3},
-	{0x3503, 0x00}
+	{0x3503, 0x00},
+	{0x5045, 0x05},
+	{0x4003, 0x40},
+	{0x5048, 0x40}
 };
 
 static const struct ov5670_reg mode_648x486_regs[] = {
@@ -916,7 +912,10 @@ static const struct ov5670_reg mode_648x486_regs[] = {
 	{0x5792, 0x00},
 	{0x5793, 0x52},
 	{0x5794, 0xa3},
-	{0x3503, 0x00}
+	{0x3503, 0x00},
+	{0x5045, 0x05},
+	{0x4003, 0x40},
+	{0x5048, 0x40}
 };
 
 static const struct ov5670_reg mode_2560x1440_regs[] = {
@@ -1178,7 +1177,10 @@ static const struct ov5670_reg mode_2560x1440_regs[] = {
 	{0x5791, 0x06},
 	{0x5792, 0x00},
 	{0x5793, 0x52},
-	{0x5794, 0xa3}
+	{0x5794, 0xa3},
+	{0x5045, 0x05},
+	{0x4003, 0x40},
+	{0x5048, 0x40}
 };
 
 static const struct ov5670_reg mode_1280x720_regs[] = {
@@ -1441,7 +1443,10 @@ static const struct ov5670_reg mode_1280x720_regs[] = {
 	{0x5792, 0x00},
 	{0x5793, 0x52},
 	{0x5794, 0xa3},
-	{0x3503, 0x00}
+	{0x3503, 0x00},
+	{0x5045, 0x05},
+	{0x4003, 0x40},
+	{0x5048, 0x40}
 };
 
 static const struct ov5670_reg mode_640x360_regs[] = {
@@ -1704,7 +1709,10 @@ static const struct ov5670_reg mode_640x360_regs[] = {
 	{0x5792, 0x00},
 	{0x5793, 0x52},
 	{0x5794, 0xa3},
-	{0x3503, 0x00}
+	{0x3503, 0x00},
+	{0x5045, 0x05},
+	{0x4003, 0x40},
+	{0x5048, 0x40}
 };
 
 static const char * const ov5670_test_pattern_menu[] = {
@@ -1835,8 +1843,8 @@ static int ov5670_read_reg(struct ov5670 *ov5670, u16 reg, unsigned int len,
 	struct i2c_client *client = v4l2_get_subdevdata(&ov5670->sd);
 	struct i2c_msg msgs[2];
 	u8 *data_be_p;
-	u32 data_be = 0;
-	u16 reg_addr_be = cpu_to_be16(reg);
+	__be32 data_be = 0;
+	__be16 reg_addr_be = cpu_to_be16(reg);
 	int ret;
 
 	if (len > 4)
@@ -1873,6 +1881,7 @@ static int ov5670_write_reg(struct ov5670 *ov5670, u16 reg, unsigned int len,
 	int val_i;
 	u8 buf[6];
 	u8 *val_p;
+	__be32 tmp;
 
 	if (len > 4)
 		return -EINVAL;
@@ -1880,8 +1889,8 @@ static int ov5670_write_reg(struct ov5670 *ov5670, u16 reg, unsigned int len,
 	buf[0] = reg >> 8;
 	buf[1] = reg & 0xff;
 
-	val = cpu_to_be32(val);
-	val_p = (u8 *)&val;
+	tmp = cpu_to_be32(val);
+	val_p = (u8 *)&tmp;
 	buf_i = 2;
 	val_i = 4 - len;
 
@@ -1928,7 +1937,7 @@ static int ov5670_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
 	struct ov5670 *ov5670 = to_ov5670(sd);
 	struct v4l2_mbus_framefmt *try_fmt =
-				v4l2_subdev_get_try_format(sd, fh->pad, 0);
+				v4l2_subdev_get_try_format(sd, fh->state, 0);
 
 	mutex_lock(&ov5670->mutex);
 
@@ -2008,7 +2017,7 @@ static int ov5670_set_ctrl(struct v4l2_ctrl *ctrl)
 	}
 
 	/* V4L2 controls values will be applied only when power is already up */
-	if (pm_runtime_get_if_in_use(&client->dev) <= 0)
+	if (!pm_runtime_get_if_in_use(&client->dev))
 		return 0;
 
 	switch (ctrl->id) {
@@ -2051,6 +2060,8 @@ static const struct v4l2_ctrl_ops ov5670_ctrl_ops = {
 /* Initialize control handlers */
 static int ov5670_init_controls(struct ov5670 *ov5670)
 {
+	struct i2c_client *client = v4l2_get_subdevdata(&ov5670->sd);
+	struct v4l2_fwnode_device_properties props;
 	struct v4l2_ctrl_handler *ctrl_hdlr;
 	s64 vblank_max;
 	s64 vblank_def;
@@ -2059,7 +2070,7 @@ static int ov5670_init_controls(struct ov5670 *ov5670)
 	int ret;
 
 	ctrl_hdlr = &ov5670->ctrl_handler;
-	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 8);
+	ret = v4l2_ctrl_handler_init(ctrl_hdlr, 10);
 	if (ret)
 		return ret;
 
@@ -2122,6 +2133,15 @@ static int ov5670_init_controls(struct ov5670 *ov5670)
 		goto error;
 	}
 
+	ret = v4l2_fwnode_device_parse(&client->dev, &props);
+	if (ret)
+		goto error;
+
+	ret = v4l2_ctrl_new_fwnode_properties(ctrl_hdlr, &ov5670_ctrl_ops,
+					      &props);
+	if (ret)
+		goto error;
+
 	ov5670->sd.ctrl_handler = ctrl_hdlr;
 
 	return 0;
@@ -2133,7 +2153,7 @@ error:
 }
 
 static int ov5670_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	/* Only one bayer order GRBG is supported */
@@ -2146,7 +2166,7 @@ static int ov5670_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int ov5670_enum_frame_size(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_frame_size_enum *fse)
 {
 	if (fse->index >= ARRAY_SIZE(supported_modes))
@@ -2163,36 +2183,6 @@ static int ov5670_enum_frame_size(struct v4l2_subdev *sd,
 	return 0;
 }
 
-/* Calculate resolution distance */
-static int ov5670_get_reso_dist(const struct ov5670_mode *mode,
-				struct v4l2_mbus_framefmt *framefmt)
-{
-	return abs(mode->width - framefmt->width) +
-	       abs(mode->height - framefmt->height);
-}
-
-/* Find the closest supported resolution to the requested resolution */
-static const struct ov5670_mode *ov5670_find_best_fit(
-						struct ov5670 *ov5670,
-						struct v4l2_subdev_format *fmt)
-{
-	struct v4l2_mbus_framefmt *framefmt = &fmt->format;
-	int dist;
-	int cur_best_fit = 0;
-	int cur_best_fit_dist = -1;
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(supported_modes); i++) {
-		dist = ov5670_get_reso_dist(&supported_modes[i], framefmt);
-		if (cur_best_fit_dist == -1 || dist < cur_best_fit_dist) {
-			cur_best_fit_dist = dist;
-			cur_best_fit = i;
-		}
-	}
-
-	return &supported_modes[cur_best_fit];
-}
-
 static void ov5670_update_pad_format(const struct ov5670_mode *mode,
 				     struct v4l2_subdev_format *fmt)
 {
@@ -2203,11 +2193,12 @@ static void ov5670_update_pad_format(const struct ov5670_mode *mode,
 }
 
 static int ov5670_do_get_pad_format(struct ov5670 *ov5670,
-				    struct v4l2_subdev_pad_config *cfg,
+				    struct v4l2_subdev_state *sd_state,
 				    struct v4l2_subdev_format *fmt)
 {
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
-		fmt->format = *v4l2_subdev_get_try_format(&ov5670->sd, cfg,
+		fmt->format = *v4l2_subdev_get_try_format(&ov5670->sd,
+							  sd_state,
 							  fmt->pad);
 	else
 		ov5670_update_pad_format(ov5670->cur_mode, fmt);
@@ -2216,21 +2207,21 @@ static int ov5670_do_get_pad_format(struct ov5670 *ov5670,
 }
 
 static int ov5670_get_pad_format(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_format *fmt)
 {
 	struct ov5670 *ov5670 = to_ov5670(sd);
 	int ret;
 
 	mutex_lock(&ov5670->mutex);
-	ret = ov5670_do_get_pad_format(ov5670, cfg, fmt);
+	ret = ov5670_do_get_pad_format(ov5670, sd_state, fmt);
 	mutex_unlock(&ov5670->mutex);
 
 	return ret;
 }
 
 static int ov5670_set_pad_format(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_format *fmt)
 {
 	struct ov5670 *ov5670 = to_ov5670(sd);
@@ -2242,10 +2233,13 @@ static int ov5670_set_pad_format(struct v4l2_subdev *sd,
 
 	fmt->format.code = MEDIA_BUS_FMT_SGRBG10_1X10;
 
-	mode = ov5670_find_best_fit(ov5670, fmt);
+	mode = v4l2_find_nearest_size(supported_modes,
+				      ARRAY_SIZE(supported_modes),
+				      width, height,
+				      fmt->format.width, fmt->format.height);
 	ov5670_update_pad_format(mode, fmt);
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		*v4l2_subdev_get_try_format(sd, cfg, fmt->pad) = fmt->format;
+		*v4l2_subdev_get_try_format(sd, sd_state, fmt->pad) = fmt->format;
 	} else {
 		ov5670->cur_mode = mode;
 		__v4l2_ctrl_s_ctrl(ov5670->link_freq, mode->link_freq_index);
@@ -2324,8 +2318,6 @@ static int ov5670_start_streaming(struct ov5670 *ov5670)
 		return ret;
 	}
 
-	ov5670->streaming = true;
-
 	return 0;
 }
 
@@ -2338,8 +2330,6 @@ static int ov5670_stop_streaming(struct ov5670 *ov5670)
 			       OV5670_REG_VALUE_08BIT, OV5670_MODE_STANDBY);
 	if (ret)
 		dev_err(&client->dev, "%s failed to set stream\n", __func__);
-
-	ov5670->streaming = false;
 
 	/* Return success even if it was an error, as there is nothing the
 	 * caller can do about it.
@@ -2358,11 +2348,9 @@ static int ov5670_set_stream(struct v4l2_subdev *sd, int enable)
 		goto unlock_and_return;
 
 	if (enable) {
-		ret = pm_runtime_get_sync(&client->dev);
-		if (ret < 0) {
-			pm_runtime_put_noidle(&client->dev);
+		ret = pm_runtime_resume_and_get(&client->dev);
+		if (ret < 0)
 			goto unlock_and_return;
-		}
 
 		ret = ov5670_start_streaming(ov5670);
 		if (ret)
@@ -2371,6 +2359,7 @@ static int ov5670_set_stream(struct v4l2_subdev *sd, int enable)
 		ret = ov5670_stop_streaming(ov5670);
 		pm_runtime_put(&client->dev);
 	}
+	ov5670->streaming = enable;
 	goto unlock_and_return;
 
 error:
@@ -2384,8 +2373,7 @@ unlock_and_return:
 
 static int __maybe_unused ov5670_suspend(struct device *dev)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct ov5670 *ov5670 = to_ov5670(sd);
 
 	if (ov5670->streaming)
@@ -2396,8 +2384,7 @@ static int __maybe_unused ov5670_suspend(struct device *dev)
 
 static int __maybe_unused ov5670_resume(struct device *dev)
 {
-	struct i2c_client *client = to_i2c_client(dev);
-	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct v4l2_subdev *sd = dev_get_drvdata(dev);
 	struct ov5670 *ov5670 = to_ov5670(sd);
 	int ret;
 
@@ -2515,7 +2502,7 @@ static int ov5670_probe(struct i2c_client *client)
 	}
 
 	/* Async register for subdev */
-	ret = v4l2_async_register_subdev(&ov5670->sd);
+	ret = v4l2_async_register_subdev_sensor(&ov5670->sd);
 	if (ret < 0) {
 		err_msg = "v4l2_async_register_subdev() error";
 		goto error_entity_cleanup;
@@ -2527,10 +2514,9 @@ static int ov5670_probe(struct i2c_client *client)
 	 * Device is already turned on by i2c-core with ACPI domain PM.
 	 * Enable runtime PM and turn off the device.
 	 */
-	pm_runtime_get_noresume(&client->dev);
 	pm_runtime_set_active(&client->dev);
 	pm_runtime_enable(&client->dev);
-	pm_runtime_put(&client->dev);
+	pm_runtime_idle(&client->dev);
 
 	return 0;
 
@@ -2559,14 +2545,7 @@ static int ov5670_remove(struct i2c_client *client)
 	v4l2_ctrl_handler_free(sd->ctrl_handler);
 	mutex_destroy(&ov5670->mutex);
 
-	/*
-	 * Disable runtime PM but keep the device turned on.
-	 * i2c-core with ACPI domain PM will turn off the device.
-	 */
-	pm_runtime_get_sync(&client->dev);
 	pm_runtime_disable(&client->dev);
-	pm_runtime_set_suspended(&client->dev);
-	pm_runtime_put_noidle(&client->dev);
 
 	return 0;
 }

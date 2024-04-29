@@ -1,22 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This file is part of STM32 ADC driver
  *
  * Copyright (C) 2016, STMicroelectronics - All Rights Reserved
  * Author: Fabrice Gasnier <fabrice.gasnier@st.com>.
  *
- * License type: GPLv2
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE.
- * See the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef __STM32_ADC_H
@@ -63,10 +51,12 @@
 #define STM32F4_ADC_CCR			(STM32_ADCX_COMN_OFFSET + 0x04)
 
 /* STM32F4_ADC_SR - bit fields */
+#define STM32F4_OVR			BIT(5)
 #define STM32F4_STRT			BIT(4)
 #define STM32F4_EOC			BIT(1)
 
 /* STM32F4_ADC_CR1 - bit fields */
+#define STM32F4_OVRIE			BIT(26)
 #define STM32F4_RES_SHIFT		24
 #define STM32F4_RES_MASK		GENMASK(25, 24)
 #define STM32F4_SCAN			BIT(8)
@@ -84,8 +74,11 @@
 #define STM32F4_ADON			BIT(0)
 
 /* STM32F4_ADC_CSR - bit fields */
+#define STM32F4_OVR3			BIT(21)
 #define STM32F4_EOC3			BIT(17)
+#define STM32F4_OVR2			BIT(13)
 #define STM32F4_EOC2			BIT(9)
+#define STM32F4_OVR1			BIT(5)
 #define STM32F4_EOC1			BIT(1)
 
 /* STM32F4_ADC_CCR - bit fields */
@@ -105,6 +98,7 @@
 #define STM32H7_ADC_SQR3		0x38
 #define STM32H7_ADC_SQR4		0x3C
 #define STM32H7_ADC_DR			0x40
+#define STM32H7_ADC_DIFSEL		0xC0
 #define STM32H7_ADC_CALFACT		0xC4
 #define STM32H7_ADC_CALFACT2		0xC8
 
@@ -113,10 +107,13 @@
 #define STM32H7_ADC_CCR			(STM32_ADCX_COMN_OFFSET + 0x08)
 
 /* STM32H7_ADC_ISR - bit fields */
+#define STM32MP1_VREGREADY		BIT(12)
+#define STM32H7_OVR			BIT(4)
 #define STM32H7_EOC			BIT(2)
 #define STM32H7_ADRDY			BIT(0)
 
 /* STM32H7_ADC_IER - bit fields */
+#define STM32H7_OVRIE			STM32H7_OVR
 #define STM32H7_EOCIE			STM32H7_EOC
 
 /* STM32H7_ADC_CR - bit fields */
@@ -165,7 +162,9 @@ enum stm32h7_adc_dmngt {
 #define STM32H7_LINCALFACT_MASK		GENMASK(29, 0)
 
 /* STM32H7_ADC_CSR - bit fields */
+#define STM32H7_OVR_SLV			BIT(20)
 #define STM32H7_EOC_SLV			BIT(18)
+#define STM32H7_OVR_MST			BIT(4)
 #define STM32H7_EOC_MST			BIT(2)
 
 /* STM32H7_ADC_CCR - bit fields */

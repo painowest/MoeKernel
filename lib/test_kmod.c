@@ -204,7 +204,7 @@ static void test_kmod_put_module(struct kmod_test_device_info *info)
 	case TEST_KMOD_DRIVER:
 		break;
 	case TEST_KMOD_FS_TYPE:
-		if (info && info->fs_sync && info->fs_sync->owner)
+		if (info->fs_sync && info->fs_sync->owner)
 			module_put(info->fs_sync->owner);
 		break;
 	default:
@@ -286,7 +286,7 @@ static int tally_work_test(struct kmod_test_device_info *info)
  * If this ran it means *all* tasks were created fine and we
  * are now just collecting results.
  *
- * Only propagate errors, do not override with a subsequent sucess case.
+ * Only propagate errors, do not override with a subsequent success case.
  */
 static void tally_up_work(struct kmod_test_device *test_dev)
 {
@@ -543,7 +543,7 @@ static int trigger_config_run(struct kmod_test_device *test_dev)
 	 * wrong with the setup of the test. If the test setup went fine
 	 * then userspace must just check the result of config->test_result.
 	 * One issue with relying on the return from a call in the kernel
-	 * is if the kernel returns a possitive value using this trigger
+	 * is if the kernel returns a positive value using this trigger
 	 * will not return the value to userspace, it would be lost.
 	 *
 	 * By not relying on capturing the return value of tests we are using
@@ -585,7 +585,7 @@ trigger_config_store(struct device *dev,
 	 * Note: any return > 0 will be treated as success
 	 * and the error value will not be available to userspace.
 	 * Do not rely on trying to send to userspace a test value
-	 * return value as possitive return errors will be lost.
+	 * return value as positive return errors will be lost.
 	 */
 	if (WARN_ON(ret > 0))
 		return -EINVAL;
@@ -694,8 +694,7 @@ static ssize_t config_test_driver_show(struct device *dev,
 	return config_test_show_str(&test_dev->config_mutex, buf,
 				    config->test_driver);
 }
-static DEVICE_ATTR(config_test_driver, 0644, config_test_driver_show,
-		   config_test_driver_store);
+static DEVICE_ATTR_RW(config_test_driver);
 
 static ssize_t config_test_fs_store(struct device *dev,
 				    struct device_attribute *attr,
@@ -726,8 +725,7 @@ static ssize_t config_test_fs_show(struct device *dev,
 	return config_test_show_str(&test_dev->config_mutex, buf,
 				    config->test_fs);
 }
-static DEVICE_ATTR(config_test_fs, 0644, config_test_fs_show,
-		   config_test_fs_store);
+static DEVICE_ATTR_RW(config_test_fs);
 
 static int trigger_config_run_type(struct kmod_test_device *test_dev,
 				   enum kmod_test_case test_case,
@@ -781,12 +779,11 @@ static int kmod_config_sync_info(struct kmod_test_device *test_dev)
 	struct test_config *config = &test_dev->config;
 
 	free_test_dev_info(test_dev);
-	test_dev->info = vzalloc(config->num_threads *
-				 sizeof(struct kmod_test_device_info));
-	if (!test_dev->info) {
-		dev_err(test_dev->dev, "Cannot alloc test_dev info\n");
+	test_dev->info =
+		vzalloc(array_size(sizeof(struct kmod_test_device_info),
+				   config->num_threads));
+	if (!test_dev->info)
 		return -ENOMEM;
-	}
 
 	return 0;
 }
@@ -880,20 +877,17 @@ static int test_dev_config_update_uint_sync(struct kmod_test_device *test_dev,
 					    int (*test_sync)(struct kmod_test_device *test_dev))
 {
 	int ret;
-	unsigned long new;
+	unsigned int val;
 	unsigned int old_val;
 
-	ret = kstrtoul(buf, 10, &new);
+	ret = kstrtouint(buf, 10, &val);
 	if (ret)
 		return ret;
-
-	if (new > UINT_MAX)
-		return -EINVAL;
 
 	mutex_lock(&test_dev->config_mutex);
 
 	old_val = *config;
-	*(unsigned int *)config = new;
+	*(unsigned int *)config = val;
 
 	ret = test_sync(test_dev);
 	if (ret) {
@@ -917,18 +911,18 @@ static int test_dev_config_update_uint_range(struct kmod_test_device *test_dev,
 					     unsigned int min,
 					     unsigned int max)
 {
+	unsigned int val;
 	int ret;
-	unsigned long new;
 
-	ret = kstrtoul(buf, 10, &new);
+	ret = kstrtouint(buf, 10, &val);
 	if (ret)
 		return ret;
 
-	if (new < min || new > max)
+	if (val < min || val > max)
 		return -EINVAL;
 
 	mutex_lock(&test_dev->config_mutex);
-	*config = new;
+	*config = val;
 	mutex_unlock(&test_dev->config_mutex);
 
 	/* Always return full write size even if we didn't consume all */
@@ -939,18 +933,15 @@ static int test_dev_config_update_int(struct kmod_test_device *test_dev,
 				      const char *buf, size_t size,
 				      int *config)
 {
+	int val;
 	int ret;
-	long new;
 
-	ret = kstrtol(buf, 10, &new);
+	ret = kstrtoint(buf, 10, &val);
 	if (ret)
 		return ret;
 
-	if (new < INT_MIN || new > INT_MAX)
-		return -EINVAL;
-
 	mutex_lock(&test_dev->config_mutex);
-	*config = new;
+	*config = val;
 	mutex_unlock(&test_dev->config_mutex);
 	/* Always return full write size even if we didn't consume all */
 	return size;
@@ -1014,8 +1005,7 @@ static ssize_t config_num_threads_show(struct device *dev,
 
 	return test_dev_config_show_int(test_dev, buf, config->num_threads);
 }
-static DEVICE_ATTR(config_num_threads, 0644, config_num_threads_show,
-		   config_num_threads_store);
+static DEVICE_ATTR_RW(config_num_threads);
 
 static ssize_t config_test_case_store(struct device *dev,
 				      struct device_attribute *attr,
@@ -1039,8 +1029,7 @@ static ssize_t config_test_case_show(struct device *dev,
 
 	return test_dev_config_show_uint(test_dev, buf, config->test_case);
 }
-static DEVICE_ATTR(config_test_case, 0644, config_test_case_show,
-		   config_test_case_store);
+static DEVICE_ATTR_RW(config_test_case);
 
 static ssize_t test_result_show(struct device *dev,
 				struct device_attribute *attr,
@@ -1051,7 +1040,7 @@ static ssize_t test_result_show(struct device *dev,
 
 	return test_dev_config_show_int(test_dev, buf, config->test_result);
 }
-static DEVICE_ATTR(test_result, 0644, test_result_show, test_result_store);
+static DEVICE_ATTR_RW(test_result);
 
 #define TEST_KMOD_DEV_ATTR(name)		&dev_attr_##name.attr
 
@@ -1089,10 +1078,8 @@ static struct kmod_test_device *alloc_test_dev_kmod(int idx)
 	struct miscdevice *misc_dev;
 
 	test_dev = vzalloc(sizeof(struct kmod_test_device));
-	if (!test_dev) {
-		pr_err("Cannot alloc test_dev\n");
+	if (!test_dev)
 		goto err_out;
-	}
 
 	mutex_init(&test_dev->config_mutex);
 	mutex_init(&test_dev->trigger_mutex);

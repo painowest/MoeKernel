@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2012-2014, 2017, 2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2012-2014, 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/init.h>
@@ -19,7 +12,7 @@
 #include <linux/platform_device.h>
 #include <linux/of_device.h>
 #include <linux/sysfs.h>
-#include <soc/qcom/subsystem_restart.h>
+#include <linux/remoteproc.h>
 
 #define BOOT_CMD 1
 #define IMAGE_UNLOAD_CMD 0
@@ -52,19 +45,18 @@ static void cdsp_loader_unload(struct platform_device *pdev);
 static int cdsp_loader_do(struct platform_device *pdev)
 {
 	struct cdsp_loader_private *priv = NULL;
-
-	int rc = 0;
+	phandle rproc_phandle;
+	int rc = 0, sz = 0;
 	const char *img_name;
 
 	if (!pdev) {
-		dev_err(&pdev->dev, "%s: Platform device null\n", __func__);
+		pr_err("%s: Platform device null\n", __func__);
 		goto fail;
 	}
 
 	if (!pdev->dev.of_node) {
 		dev_err(&pdev->dev,
 			"%s: Device tree information missing\n", __func__);
-
 		goto fail;
 	}
 
@@ -80,14 +72,31 @@ static int cdsp_loader_do(struct platform_device *pdev)
 			priv = platform_get_drvdata(pdev);
 			if (!priv) {
 				dev_err(&pdev->dev,
-				" %s: Private data get failed\n", __func__);
+					"%s: Private data get failed\n", __func__);
 				goto fail;
 			}
 
-			priv->pil_h = subsystem_get("cdsp");
-			if (IS_ERR(priv->pil_h)) {
-				dev_err(&pdev->dev, "%s: pil get failed,\n",
-					__func__);
+			sz = of_property_read_u32(pdev->dev.of_node, "qcom,rproc-handle",
+					&rproc_phandle);
+			if (sz) {
+				pr_err("%s: of_property_read failed, returned value %d\n",
+						__func__, sz);
+				dev_err(&pdev->dev, "error reading rproc phandle\n");
+				goto fail;
+			}
+
+			priv->pil_h = rproc_get_by_phandle(rproc_phandle);
+			if (!priv->pil_h) {
+				dev_err(&pdev->dev, "rproc not found\n");
+				goto fail;
+			}
+
+			dev_dbg(&pdev->dev, "%s: calling rproc_boot on %s\n",
+					__func__, img_name);
+			rc = rproc_boot(priv->pil_h);
+			if (rc) {
+				dev_err(&pdev->dev, "%s: rproc_boot failed with error %d\n",
+					__func__, rc);
 				goto fail;
 			}
 
@@ -95,7 +104,7 @@ static int cdsp_loader_do(struct platform_device *pdev)
 			cdsp_state = CDSP_SUBSYS_LOADED;
 		} else if (cdsp_state == CDSP_SUBSYS_LOADED) {
 			dev_dbg(&pdev->dev,
-			"%s: CDSP state = %x\n", __func__, cdsp_state);
+			"%s: CDSP state = 0x%x\n", __func__, cdsp_state);
 		}
 
 		dev_dbg(&pdev->dev, "%s: CDSP image is loaded\n", __func__);
@@ -103,7 +112,9 @@ static int cdsp_loader_do(struct platform_device *pdev)
 	}
 
 fail:
-	dev_err(&pdev->dev, "%s: CDSP image loading failed\n", __func__);
+	if (pdev)
+		dev_err(&pdev->dev,
+			"%s: CDSP image loading failed\n", __func__);
 	return rc;
 }
 
@@ -113,18 +124,20 @@ static ssize_t cdsp_boot_store(struct kobject *kobj,
 	const char *buf,
 	size_t count)
 {
-	int boot = 0, ret = 0;
+	int ret = 0;
+	uint32_t boot = 0;
 
-	ret = sscanf(buf, "%du", &boot);
-
-	if (ret != 1)
+	ret = kstrtou32(buf, 0, &boot);
+	if (ret) {
 		pr_debug("%s: invalid arguments for cdsp_loader.\n", __func__);
+		return ret;
+	}
 
 	if (boot == BOOT_CMD) {
 		pr_debug("%s: going to call cdsp_loader_do\n", __func__);
 		cdsp_loader_do(cdsp_private);
 	} else if (boot == IMAGE_UNLOAD_CMD) {
-		pr_debug("%s: going to call adsp_unloader\n", __func__);
+		pr_debug("%s: going to call cdsp_unloader\n", __func__);
 		cdsp_loader_unload(cdsp_private);
 	}
 	return count;
@@ -140,8 +153,8 @@ static void cdsp_loader_unload(struct platform_device *pdev)
 		return;
 
 	if (priv->pil_h) {
-		dev_dbg(&pdev->dev, "%s: calling subsystem put\n", __func__);
-		subsystem_put(priv->pil_h);
+		dev_dbg(&pdev->dev, "%s: calling subsystem_put\n", __func__);
+		rproc_shutdown(priv->pil_h);
 		priv->pil_h = NULL;
 		cdsp_state = CDSP_SUBSYS_DOWN;
 	}
@@ -168,8 +181,6 @@ static int cdsp_loader_init_sysfs(struct platform_device *pdev)
 				sizeof(*(priv->attr_group)),
 				GFP_KERNEL);
 	if (!priv->attr_group) {
-		dev_err(&pdev->dev, "%s: malloc attr_group failed\n",
-						__func__);
 		ret = -ENOMEM;
 		goto error_return;
 	}
@@ -201,7 +212,9 @@ error_return:
 		kobject_del(priv->boot_cdsp_obj);
 		priv->boot_cdsp_obj = NULL;
 	}
-
+	if (ret)
+		dev_err(&pdev->dev, "%s failed with ret %d\n",
+						__func__, ret);
 	return ret;
 }
 
@@ -215,8 +228,9 @@ static int cdsp_loader_remove(struct platform_device *pdev)
 		return 0;
 
 	if (priv->pil_h) {
-		subsystem_put(priv->pil_h);
+		rproc_shutdown(priv->pil_h);
 		priv->pil_h = NULL;
+		cdsp_state = CDSP_SUBSYS_DOWN;
 	}
 
 	if (priv->boot_cdsp_obj) {
@@ -230,7 +244,26 @@ static int cdsp_loader_remove(struct platform_device *pdev)
 
 static int cdsp_loader_probe(struct platform_device *pdev)
 {
-	int ret = cdsp_loader_init_sysfs(pdev);
+	phandle rproc_phandle;
+	struct property *prop = NULL;
+	int size = 0;
+	struct rproc *cdsp = NULL;
+	int ret = 0;
+
+	prop = of_find_property(pdev->dev.of_node, "qcom,rproc-handle", &size);
+	if (!prop) {
+		dev_err(&pdev->dev, "%s: error reading rproc phandle\n", __func__);
+		return -ENOPARAM;
+	}
+
+	rproc_phandle = be32_to_cpup(prop->value);
+	cdsp = rproc_get_by_phandle(rproc_phandle);
+	if (!cdsp) {
+		dev_err(&pdev->dev, "%s: rproc not found\n", __func__);
+		return -EPROBE_DEFER;
+	}
+
+	ret = cdsp_loader_init_sysfs(pdev);
 
 	if (ret != 0) {
 		dev_err(&pdev->dev, "%s: Error in initing sysfs\n", __func__);
@@ -249,7 +282,6 @@ MODULE_DEVICE_TABLE(of, cdsp_loader_dt_match);
 static struct platform_driver cdsp_loader_driver = {
 	.driver = {
 		.name = "cdsp-loader",
-		.owner = THIS_MODULE,
 		.of_match_table = cdsp_loader_dt_match,
 	},
 	.probe = cdsp_loader_probe,

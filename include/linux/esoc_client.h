@@ -1,31 +1,15 @@
-/* Copyright (c) 2014, 2017-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2014, 2017-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
+
 #ifndef __ESOC_CLIENT_H_
 #define __ESOC_CLIENT_H_
 
 #include <linux/device.h>
 #include <linux/esoc_ctrl.h>
 #include <linux/notifier.h>
-
-enum esoc_client_hook_prio {
-	ESOC_MHI_HOOK,
-	ESOC_CNSS_HOOK,
-	ESOC_MAX_HOOKS
-};
-
-struct esoc_link_data {
-	enum esoc_client_hook_prio prio;
-	__u64 link_id;
-};
 
 /* Flag values used with the power_on and power_off hooks */
 #define ESOC_HOOK_MDM_CRASH	0x0001 /* In crash handling path */
@@ -53,7 +37,7 @@ struct esoc_desc {
 	void *priv;
 };
 
-#ifdef CONFIG_ESOC_CLIENT
+#if IS_ENABLED(CONFIG_QCOM_ESOC_CLIENT)
 /* Can return probe deferral */
 struct esoc_desc *devm_register_esoc_client(struct device *dev,
 							const char *name);
@@ -64,29 +48,34 @@ int esoc_register_client_hook(struct esoc_desc *desc,
 				struct esoc_client_hook *client_hook);
 int esoc_unregister_client_hook(struct esoc_desc *desc,
 				struct esoc_client_hook *client_hook);
+
 #else
-static inline struct esoc_desc *devm_register_esoc_client(struct device *dev,
+struct esoc_desc *devm_register_esoc_client(struct device *dev,
 							const char *name)
 {
 	return NULL;
 }
-static inline void devm_unregister_esoc_client(struct device *dev,
+
+void devm_unregister_esoc_client(struct device *dev,
 						struct esoc_desc *esoc_desc)
 {
 }
-static inline int esoc_register_client_notifier(struct notifier_block *nb)
+
+int esoc_register_client_notifier(struct notifier_block *nb)
 {
-	return -EIO;
+	return -EPERM;
 }
-static inline int esoc_register_client_hook(struct esoc_desc *desc,
+
+int esoc_register_client_hook(struct esoc_desc *desc,
 				struct esoc_client_hook *client_hook)
 {
-	return -EIO;
+	return -EPERM;
 }
-static inline int esoc_unregister_client_hook(struct esoc_desc *desc,
+
+int esoc_unregister_client_hook(struct esoc_desc *desc,
 				struct esoc_client_hook *client_hook)
 {
-	return -EIO;
+	return -EPERM;
 }
 #endif
 #endif

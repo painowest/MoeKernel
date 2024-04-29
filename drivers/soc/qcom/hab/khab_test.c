@@ -1,20 +1,13 @@
-/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include "hab.h"
-#if !defined CONFIG_GHS_VMM && defined(CONFIG_QTI_GVM_QUIN)
+#include <linux/rtc.h>
+#if !defined CONFIG_GHS_VMM && defined(CONFIG_QTI_QUIN_GVM)
 #include <asm/cacheflush.h>
 #include <linux/list.h>
-#include <linux/rtc.h>
 #include "hab_pipe.h"
 #include "hab_qvm.h"
 #include "khab_test.h"
@@ -35,7 +28,7 @@ static int hab_shmm_throughput_test(void)
 	struct qvm_channel *dev;
 	struct hab_shared_buf *sh_buf;
 	struct physical_channel *pchan;
-	struct timeval tv1, tv2;
+	ktime_t start_time = 0, end_time = 0;
 	int i, counter;
 	void *test_data;
 	unsigned char *source_data, *shmm_adr;
@@ -60,7 +53,7 @@ static int hab_shmm_throughput_test(void)
 		return ret;
 	}
 
-	sh_buf = dev->pipe_ep->tx_info.sh_buf;
+	sh_buf = dev->tx_buf;
 
 	/* pChannel is of 128k, we use 64k to test */
 	size = 0x10000;
@@ -81,25 +74,24 @@ static int hab_shmm_throughput_test(void)
 	source_data = kzalloc(size, GFP_ATOMIC);
 	if (!source_data) {
 		ret = -ENOMEM;
+		kfree(test_data);
 		return ret;
 	}
 
 	for (i = 0; i < PERF_TEST_ITERATION; i++) {
 		/* Normal memory copy latency */
 		flush_cache_all();
-		do_gettimeofday(&tv1);
+		start_time = ktime_get();
 		memcpy(test_data, source_data, size);
-		do_gettimeofday(&tv2);
-		latency[0][i] = (tv2.tv_sec - tv1.tv_sec)*1000000
-			+ (tv2.tv_usec - tv1.tv_usec);
+		end_time = ktime_get();
+		latency[0][i] = ktime_us_delta(end_time, start_time);
 
 		/* Share memory copy latency */
 		flush_cache_all();
-		do_gettimeofday(&tv1);
+		start_time = ktime_get();
 		memcpy(shmm_adr, source_data, size);
-		do_gettimeofday(&tv2);
-		latency[1][i] = (tv2.tv_sec - tv1.tv_sec)*1000000
-			+ (tv2.tv_usec - tv1.tv_usec);
+		end_time = ktime_get();
+		latency[1][i] = ktime_us_delta(end_time, start_time);
 
 		/* Normal memory read latency */
 		counter = MEM_READ_ITERATION;
@@ -109,7 +101,7 @@ static int hab_shmm_throughput_test(void)
 		while (counter-- > 0) {
 			pp = test_data;
 			lastone = (int *)((char *)test_data + size - 512);
-			do_gettimeofday(&tv1);
+			start_time = ktime_get();
 			while (pp <= lastone) {
 				sum +=
 				pp[0] + pp[4] + pp[8] + pp[12]
@@ -124,9 +116,8 @@ static int hab_shmm_throughput_test(void)
 				+ pp[124];
 				pp +=  128;
 			}
-			do_gettimeofday(&tv2);
-			latency[2][i] += (tv2.tv_sec - tv1.tv_sec)*1000000
-				+ (tv2.tv_usec - tv1.tv_usec);
+			end_time = ktime_get();
+			latency[2][i] += ktime_us_delta(end_time, start_time);
 			flush_cache_all();
 		}
 
@@ -137,7 +128,7 @@ static int hab_shmm_throughput_test(void)
 		while (counter-- > 0) {
 			pp = (int *)shmm_adr;
 			lastone = (int *)(shmm_adr + size - 512);
-			do_gettimeofday(&tv1);
+			start_time = ktime_get();
 			while (pp <= lastone) {
 				sum +=
 				pp[0] + pp[4] + pp[8] + pp[12]
@@ -152,27 +143,24 @@ static int hab_shmm_throughput_test(void)
 				+ pp[124];
 				pp +=  128;
 			}
-			do_gettimeofday(&tv2);
-			latency[3][i] += (tv2.tv_sec - tv1.tv_sec)*1000000
-				+ (tv2.tv_usec - tv1.tv_usec);
+			end_time = ktime_get();
+			latency[3][i] += ktime_us_delta(end_time, start_time);
 			flush_cache_all();
 		}
 
 		/* Normal memory write latency */
 		flush_cache_all();
-		do_gettimeofday(&tv1);
+		start_time = ktime_get();
 		memset(test_data, 'c', size);
-		do_gettimeofday(&tv2);
-		latency[4][i] = (tv2.tv_sec - tv1.tv_sec)*1000000
-			+ (tv2.tv_usec - tv1.tv_usec);
+		end_time = ktime_get();
+		latency[4][i] = ktime_us_delta(end_time, start_time);
 
 		/* Share memory write latency */
 		flush_cache_all();
-		do_gettimeofday(&tv1);
+		start_time = ktime_get();
 		memset(shmm_adr, 'c', size);
-		do_gettimeofday(&tv2);
-		latency[5][i] = (tv2.tv_sec - tv1.tv_sec)*1000000
-			+ (tv2.tv_usec - tv1.tv_usec);
+		end_time = ktime_get();
+		latency[5][i] = ktime_us_delta(end_time, start_time);
 	}
 
 	/* Calculate normal memory copy throughput by average */
@@ -261,7 +249,7 @@ static int kick_hab_perf_test(const char *val, const struct kernel_param *kp)
 
 static int get_hab_perf_result(char *buffer, const struct kernel_param *kp)
 {
-	return strlcpy(buffer, g_perf_test_result,
+	return strscpy(buffer, g_perf_test_result,
 		strlen(g_perf_test_result)+1);
 }
 #endif
@@ -285,10 +273,10 @@ static ssize_t vchan_store(struct kobject *kobj, struct kobj_attribute *attr,
 
 	ret = sscanf(buf, "%du", &vchan_stat);
 	if (ret < 1) {
-		pr_err("failed to read anything from input %d", ret);
+		pr_err("failed to read anything from input %d\n", ret);
 		return 0;
 	} else
-		return vchan_stat;
+		return count;
 }
 
 static ssize_t ctx_show(struct kobject *kobj, struct kobj_attribute *attr,
@@ -304,10 +292,10 @@ static ssize_t ctx_store(struct kobject *kobj, struct kobj_attribute *attr,
 
 	ret = sscanf(buf, "%du", &context_stat);
 	if (ret < 1) {
-		pr_err("failed to read anything from input %d", ret);
+		pr_err("failed to read anything from input %d\n", ret);
 		return 0;
 	} else
-		return context_stat;
+		return count;
 }
 
 static ssize_t expimp_show(struct kobject *kobj, struct kobj_attribute *attr,
@@ -319,26 +307,54 @@ static ssize_t expimp_show(struct kobject *kobj, struct kobj_attribute *attr,
 static ssize_t expimp_store(struct kobject *kobj, struct kobj_attribute *attr,
 						const char *buf, size_t count)
 {
-	int ret;
+	int ret = -1;
 	char str[36] = {0};
+	struct uhab_context *ctx = NULL;
+	struct virtual_channel *vchan = NULL;
 
-	ret = sscanf(buf, "%35s", str);
-	if (ret < 1)
-		pr_err("failed to read anything from input %d", ret);
+	if (buf) {
+		ret = sscanf(buf, "%35s", str);
+		if (ret < 1) {
+			pr_err("failed to read anything from input %d\n", ret);
+			return -EINVAL;
+		}
+	} else
+		return -EINVAL;
 
 	if (strnlen(str, strlen("dump_pipe")) == strlen("dump_pipe") &&
 		strcmp(str, "dump_pipe") == 0) {
 		/* string terminator is ignored */
-		dump_hab();
-		return strlen("dump_pipe");
+		list_for_each_entry(ctx, &hab_driver.uctx_list, node) {
+			if (ctx->owner == pid_stat) {
+				vchan = list_first_entry(&ctx->vchannels,
+					struct virtual_channel, node);
+				if (vchan) {
+					dump_hab_wq(vchan->pchan); /* user context */
+					break;
+				}
+			}
+		}
+		return count;
 	}
 
 	ret = sscanf(buf, "%du", &pid_stat);
 	if (ret < 1)
-		pr_err("failed to read anything from input %d", ret);
+		pr_err("failed to read anything from input %d\n", ret);
 	else
-		return pid_stat; /* good result stored */
+		return count; /* good result stored */
 	return -EEXIST;
+}
+
+static ssize_t reclaim_show(struct kobject *kobj, struct kobj_attribute *attr,
+						char *buf)
+{
+	return hab_stat_show_reclaim(&hab_driver, buf, PAGE_SIZE);
+}
+
+static ssize_t reclaim_store(struct kobject *kobj, struct kobj_attribute *attr,
+						const char *buf, size_t count)
+{
+	return 0;
 }
 
 static struct kobj_attribute vchan_attribute = __ATTR(vchan_stat, 0660,
@@ -352,6 +368,10 @@ static struct kobj_attribute ctx_attribute = __ATTR(context_stat, 0660,
 static struct kobj_attribute expimp_attribute = __ATTR(pid_stat, 0660,
 								expimp_show,
 								expimp_store);
+
+static struct kobj_attribute reclaim_attribute = __ATTR(reclaim_stat, 0660,
+								reclaim_show,
+								reclaim_store);
 
 int hab_stat_init_sub(struct hab_driver *driver)
 {
@@ -373,6 +393,10 @@ int hab_stat_init_sub(struct hab_driver *driver)
 	if (result)
 		pr_debug("cannot add expimp in /sys/kernel/hab %d\n", result);
 
+	result = sysfs_create_file(hab_kobject, &reclaim_attribute.attr);
+	if (result)
+		pr_debug("cannot add reclaim in /sys/kernel/hab %d\n", result);
+
 	return result;
 }
 
@@ -388,13 +412,13 @@ int hab_stat_deinit_sub(struct hab_driver *driver)
 
 int dump_hab_get_file_name(char *file_time, int ft_size)
 {
-	struct timeval time;
+	struct timespec64 time = {0};
 	unsigned long local_time;
 	struct rtc_time tm;
 
-	do_gettimeofday(&time);
-	local_time = (unsigned int)(time.tv_sec - (sys_tz.tz_minuteswest * 60));
-	rtc_time_to_tm(local_time, &tm);
+	ktime_get_real_ts64(&time);
+	local_time = (unsigned long)(time.tv_sec - sys_tz.tz_minuteswest * 60);
+	rtc_time64_to_tm(local_time, &tm);
 
 	snprintf(file_time, ft_size, "%04d_%02d_%02d-%02d_%02d_%02d",
 		tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,

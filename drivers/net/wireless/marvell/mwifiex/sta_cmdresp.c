@@ -1,10 +1,10 @@
 /*
- * Marvell Wireless LAN device driver: station command response handling
+ * NXP Wireless LAN device driver: station command response handling
  *
- * Copyright (C) 2011-2014, Marvell International Ltd.
+ * Copyright 2011-2020 NXP
  *
- * This software file (the "File") is distributed by Marvell International
- * Ltd. under the terms of the GNU General Public License Version 2, June 1991
+ * This software file (the "File") is distributed by NXP
+ * under the terms of the GNU General Public License Version 2, June 1991
  * (the "License").  You may use, redistribute and/or modify this File in
  * accordance with the terms and conditions of the License, a copy of which
  * is available by writing to the Free Software Foundation, Inc.,
@@ -46,7 +46,6 @@ mwifiex_process_cmdresp_error(struct mwifiex_private *priv,
 {
 	struct mwifiex_adapter *adapter = priv->adapter;
 	struct host_cmd_ds_802_11_ps_mode_enh *pm;
-	unsigned long flags;
 
 	mwifiex_dbg(adapter, ERROR,
 		    "CMD_RESP: cmd %#x error, result=%#x\n",
@@ -70,11 +69,7 @@ mwifiex_process_cmdresp_error(struct mwifiex_private *priv,
 		break;
 	case HostCmd_CMD_802_11_SCAN:
 	case HostCmd_CMD_802_11_SCAN_EXT:
-		mwifiex_cancel_pending_scan_cmd(adapter);
-
-		spin_lock_irqsave(&adapter->mwifiex_cmd_lock, flags);
-		adapter->scan_processing = false;
-		spin_unlock_irqrestore(&adapter->mwifiex_cmd_lock, flags);
+		mwifiex_cancel_scan(adapter);
 		break;
 
 	case HostCmd_CMD_MAC_CONTROL:
@@ -91,9 +86,9 @@ mwifiex_process_cmdresp_error(struct mwifiex_private *priv,
 	/* Handling errors here */
 	mwifiex_recycle_cmd_node(adapter, adapter->curr_cmd);
 
-	spin_lock_irqsave(&adapter->mwifiex_cmd_lock, flags);
+	spin_lock_bh(&adapter->mwifiex_cmd_lock);
 	adapter->curr_cmd = NULL;
-	spin_unlock_irqrestore(&adapter->mwifiex_cmd_lock, flags);
+	spin_unlock_bh(&adapter->mwifiex_cmd_lock);
 }
 
 /*
@@ -206,6 +201,7 @@ static int mwifiex_ret_802_11_snmp_mib(struct mwifiex_private *priv,
 			mwifiex_dbg(priv->adapter, INFO,
 				    "info: SNMP_RESP: DTIM period=%u\n",
 				    ul_temp);
+			break;
 		default:
 			break;
 		}
@@ -1037,17 +1033,14 @@ mwifiex_create_custom_regdomain(struct mwifiex_private *priv,
 	struct ieee80211_regdomain *regd;
 	struct ieee80211_reg_rule *rule;
 	bool new_rule;
-	int regd_size, idx, freq, prev_freq = 0;
+	int idx, freq, prev_freq = 0;
 	u32 bw, prev_bw = 0;
 	u8 chflags, prev_chflags = 0, valid_rules = 0;
 
 	if (WARN_ON_ONCE(num_chan > NL80211_MAX_SUPP_REG_RULES))
 		return ERR_PTR(-EINVAL);
 
-	regd_size = sizeof(struct ieee80211_regdomain) +
-		    num_chan * sizeof(struct ieee80211_reg_rule);
-
-	regd = kzalloc(regd_size, GFP_KERNEL);
+	regd = kzalloc(struct_size(regd, reg_rules, num_chan), GFP_KERNEL);
 	if (!regd)
 		return ERR_PTR(-ENOMEM);
 
@@ -1178,6 +1171,22 @@ static int mwifiex_ret_pkt_aggr_ctrl(struct mwifiex_private *priv,
 				le16_to_cpu(pkt_aggr_ctrl->tx_aggr_max_num);
 	adapter->bus_aggr.tx_aggr_align =
 				le16_to_cpu(pkt_aggr_ctrl->tx_aggr_align);
+
+	return 0;
+}
+
+static int mwifiex_ret_get_chan_info(struct mwifiex_private *priv,
+				     struct host_cmd_ds_command *resp,
+				     struct mwifiex_channel_band *channel_band)
+{
+	struct host_cmd_ds_sta_configure *sta_cfg_cmd = &resp->params.sta_cfg;
+	struct host_cmd_tlv_channel_band *tlv_band_channel;
+
+	tlv_band_channel =
+	(struct host_cmd_tlv_channel_band *)sta_cfg_cmd->tlv_buffer;
+	memcpy(&channel_band->band_config, &tlv_band_channel->band_config,
+	       sizeof(struct mwifiex_band_config));
+	channel_band->channel = tlv_band_channel->channel;
 
 	return 0;
 }
@@ -1385,6 +1394,7 @@ int mwifiex_process_sta_cmdresp(struct mwifiex_private *priv, u16 cmdresp_no,
 		break;
 	case HostCmd_CMD_TDLS_OPER:
 		ret = mwifiex_ret_tdls_oper(priv, resp);
+		break;
 	case HostCmd_CMD_MC_POLICY:
 		break;
 	case HostCmd_CMD_CHAN_REPORT_REQUEST:
@@ -1404,6 +1414,9 @@ int mwifiex_process_sta_cmdresp(struct mwifiex_private *priv, u16 cmdresp_no,
 		break;
 	case HostCmd_CMD_CHAN_REGION_CFG:
 		ret = mwifiex_ret_chan_region_cfg(priv, resp);
+		break;
+	case HostCmd_CMD_STA_CONFIGURE:
+		ret = mwifiex_ret_get_chan_info(priv, resp, data_buf);
 		break;
 	default:
 		mwifiex_dbg(adapter, ERROR,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
 /*
  * f_mass_storage.c -- Mass Storage USB Composite Function
  *
@@ -5,36 +6,6 @@
  * Copyright (C) 2009 Samsung Electronics
  *                    Author: Michal Nazarewicz <mina86@mina86.com>
  * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions
- * are met:
- * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions, and the following disclaimer,
- *    without modification.
- * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in the
- *    documentation and/or other materials provided with the distribution.
- * 3. The names of the above-listed copyright holders may not be used
- *    to endorse or promote products derived from this software without
- *    specific prior written permission.
- *
- * ALTERNATIVELY, this software may be distributed under the terms of the
- * GNU General Public License ("GPL") as published by the Free Software
- * Foundation, either version 2 of that License or (at your option) any
- * later version.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS
- * IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO,
- * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
- * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR
- * CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
- * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO,
- * PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR
- * PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
- * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
- * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
- * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
 /*
@@ -46,7 +17,7 @@
  *
  * For more information about MSF and in particular its module
  * parameters and sysfs interface read the
- * <Documentation/usb/mass-storage.txt> file.
+ * <Documentation/usb/mass-storage.rst> file.
  */
 
 /*
@@ -205,7 +176,6 @@
 #include <linux/fcntl.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/kref.h>
 #include <linux/kthread.h>
 #include <linux/sched/signal.h>
 #include <linux/limits.h>
@@ -216,6 +186,7 @@
 #include <linux/freezer.h>
 #include <linux/module.h>
 #include <linux/uaccess.h>
+#include <asm/unaligned.h>
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
@@ -314,8 +285,6 @@ struct fsg_common {
 	void			*private_data;
 
 	char inquiry_string[INQUIRY_STRING_LEN];
-
-	struct kref		ref;
 };
 
 struct fsg_dev {
@@ -351,8 +320,6 @@ static inline struct fsg_dev *fsg_from_func(struct usb_function *f)
 {
 	return container_of(f, struct fsg_dev, function);
 }
-
-typedef void (*fsg_routine_t)(struct fsg_dev *);
 
 static int exception_in_progress(struct fsg_common *common)
 {
@@ -410,7 +377,7 @@ static void __raise_exception(struct fsg_common *common, enum fsg_state new_stat
 		common->state = new_state;
 		common->exception_arg = arg;
 		if (common->thread_task)
-			send_sig_info(SIGUSR1, SEND_SIG_FORCED,
+			send_sig_info(SIGUSR1, SEND_SIG_PRIV,
 				      common->thread_task);
 	}
 	spin_unlock_irqrestore(&common->lock, flags);
@@ -1189,25 +1156,72 @@ static int do_read_toc(struct fsg_common *common, struct fsg_buffhd *bh)
 	int		msf = common->cmnd[1] & 0x02;
 	int		start_track = common->cmnd[6];
 	u8		*buf = (u8 *)bh->buf;
+	u8		format;
+	int		i, len;
+
+	format = common->cmnd[2] & 0xf;
 
 	if ((common->cmnd[1] & ~0x02) != 0 ||	/* Mask away MSF */
-			start_track > 1) {
+			(start_track > 1 && format != 0x1)) {
 		curlun->sense_data = SS_INVALID_FIELD_IN_CDB;
 		return -EINVAL;
 	}
 
-	memset(buf, 0, 20);
-	buf[1] = (20-2);		/* TOC data length */
-	buf[2] = 1;			/* First track number */
-	buf[3] = 1;			/* Last track number */
-	buf[5] = 0x16;			/* Data track, copying allowed */
-	buf[6] = 0x01;			/* Only track is number 1 */
-	store_cdrom_address(&buf[8], msf, 0);
+	/*
+	 * Check if CDB is old style SFF-8020i
+	 * i.e. format is in 2 MSBs of byte 9
+	 * Mac OS-X host sends us this.
+	 */
+	if (format == 0)
+		format = (common->cmnd[9] >> 6) & 0x3;
 
-	buf[13] = 0x16;			/* Lead-out track is data */
-	buf[14] = 0xAA;			/* Lead-out track number */
-	store_cdrom_address(&buf[16], msf, curlun->num_sectors);
-	return 20;
+	switch (format) {
+	case 0:	/* Formatted TOC */
+	case 1:	/* Multi-session info */
+		len = 4 + 2*8;		/* 4 byte header + 2 descriptors */
+		memset(buf, 0, len);
+		buf[1] = len - 2;	/* TOC Length excludes length field */
+		buf[2] = 1;		/* First track number */
+		buf[3] = 1;		/* Last track number */
+		buf[5] = 0x16;		/* Data track, copying allowed */
+		buf[6] = 0x01;		/* Only track is number 1 */
+		store_cdrom_address(&buf[8], msf, 0);
+
+		buf[13] = 0x16;		/* Lead-out track is data */
+		buf[14] = 0xAA;		/* Lead-out track number */
+		store_cdrom_address(&buf[16], msf, curlun->num_sectors);
+		return len;
+
+	case 2:
+		/* Raw TOC */
+		len = 4 + 3*11;		/* 4 byte header + 3 descriptors */
+		memset(buf, 0, len);	/* Header + A0, A1 & A2 descriptors */
+		buf[1] = len - 2;	/* TOC Length excludes length field */
+		buf[2] = 1;		/* First complete session */
+		buf[3] = 1;		/* Last complete session */
+
+		buf += 4;
+		/* fill in A0, A1 and A2 points */
+		for (i = 0; i < 3; i++) {
+			buf[0] = 1;	/* Session number */
+			buf[1] = 0x16;	/* Data track, copying allowed */
+			/* 2 - Track number 0 ->  TOC */
+			buf[3] = 0xA0 + i; /* A0, A1, A2 point */
+			/* 4, 5, 6 - Min, sec, frame is zero */
+			buf[8] = 1;	/* Pmin: last track number */
+			buf += 11;	/* go to next track descriptor */
+		}
+		buf -= 11;		/* go back to A2 descriptor */
+
+		/* For A2, 7, 8, 9, 10 - zero, Pmin, Psec, Pframe of Lead out */
+		store_cdrom_address(&buf[7], msf, curlun->num_sectors);
+		return len;
+
+	default:
+		/* PMA, ATIP, CD-TEXT not supported/required */
+		curlun->sense_data = SS_INVALID_FIELD_IN_CDB;
+		return -EINVAL;
+	}
 }
 
 static int do_mode_sense(struct fsg_common *common, struct fsg_buffhd *bh)
@@ -1934,7 +1948,7 @@ static int do_scsi_command(struct fsg_common *common)
 		common->data_size_from_cmnd =
 			get_unaligned_be16(&common->cmnd[7]);
 		reply = check_command(common, 10, DATA_DIR_TO_HOST,
-				      (7<<6) | (1<<1), 1,
+				      (0xf<<6) | (3<<1), 1,
 				      "READ TOC");
 		if (reply == 0)
 			reply = do_read_toc(common, bh);
@@ -2040,7 +2054,6 @@ static int do_scsi_command(struct fsg_common *common)
 	case RELEASE:
 	case RESERVE:
 	case SEND_DIAGNOSTIC:
-		/* Fall through */
 
 	default:
 unknown_cmnd:
@@ -2297,9 +2310,6 @@ static int fsg_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 {
 	struct fsg_dev *fsg = fsg_from_func(f);
 
-	/* prevents usb LPM until thread runs to completion */
-	usb_gadget_autopm_get_async(fsg->common->gadget);
-
 	__raise_exception(fsg->common, FSG_STATE_CONFIG_CHANGE, fsg);
 	return USB_GADGET_DELAYED_STATUS;
 }
@@ -2307,6 +2317,16 @@ static int fsg_set_alt(struct usb_function *f, unsigned intf, unsigned alt)
 static void fsg_disable(struct usb_function *f)
 {
 	struct fsg_dev *fsg = fsg_from_func(f);
+
+	/* Disable the endpoints */
+	if (fsg->bulk_in_enabled) {
+		usb_ep_disable(fsg->bulk_in);
+		fsg->bulk_in_enabled = 0;
+	}
+	if (fsg->bulk_out_enabled) {
+		usb_ep_disable(fsg->bulk_out);
+		fsg->bulk_out_enabled = 0;
+	}
 
 	__raise_exception(fsg->common, FSG_STATE_CONFIG_CHANGE, NULL);
 }
@@ -2328,7 +2348,7 @@ static void handle_exception(struct fsg_common *common)
 	 * into a high-priority EXIT exception.
 	 */
 	for (;;) {
-		int sig = kernel_dequeue_signal(NULL);
+		int sig = kernel_dequeue_signal();
 		if (!sig)
 			break;
 		if (sig != SIGUSR1) {
@@ -2566,24 +2586,10 @@ static DEVICE_ATTR(file, 0, file_show, file_store);
 
 /****************************** FSG COMMON ******************************/
 
-static void fsg_common_release(struct kref *ref);
-
 static void fsg_lun_release(struct device *dev)
 {
 	/* Nothing needs to be done */
 }
-
-void fsg_common_get(struct fsg_common *common)
-{
-	kref_get(&common->ref);
-}
-EXPORT_SYMBOL_GPL(fsg_common_get);
-
-void fsg_common_put(struct fsg_common *common)
-{
-	kref_put(&common->ref, fsg_common_release);
-}
-EXPORT_SYMBOL_GPL(fsg_common_put);
 
 static struct fsg_common *fsg_common_setup(struct fsg_common *common)
 {
@@ -2597,7 +2603,6 @@ static struct fsg_common *fsg_common_setup(struct fsg_common *common)
 	}
 	init_rwsem(&common->filesem);
 	spin_lock_init(&common->lock);
-	kref_init(&common->ref);
 	init_completion(&common->thread_notifier);
 	init_waitqueue_head(&common->io_wait);
 	init_waitqueue_head(&common->fsg_wait);
@@ -2885,9 +2890,8 @@ void fsg_common_set_inquiry_string(struct fsg_common *common, const char *vn,
 }
 EXPORT_SYMBOL_GPL(fsg_common_set_inquiry_string);
 
-static void fsg_common_release(struct kref *ref)
+static void fsg_common_release(struct fsg_common *common)
 {
-	struct fsg_common *common = container_of(ref, struct fsg_common, ref);
 	int i;
 
 	/* If the thread isn't already dead, tell it to exit now */
@@ -3155,7 +3159,7 @@ static struct configfs_attribute *fsg_lun_attrs[] = {
 	NULL,
 };
 
-static struct config_item_type fsg_lun_type = {
+static const struct config_item_type fsg_lun_type = {
 	.ct_item_ops	= &fsg_lun_item_ops,
 	.ct_attrs	= fsg_lun_attrs,
 	.ct_owner	= THIS_MODULE,
@@ -3323,7 +3327,9 @@ static ssize_t fsg_opts_num_buffers_store(struct config_item *item,
 	if (ret)
 		goto end;
 
-	fsg_common_set_num_buffers(opts->common, num);
+	ret = fsg_common_set_num_buffers(opts->common, num);
+	if (ret)
+		goto end;
 	ret = len;
 
 end:
@@ -3347,7 +3353,7 @@ static struct configfs_group_operations fsg_group_ops = {
 	.drop_item	= fsg_lun_drop,
 };
 
-static struct config_item_type fsg_func_type = {
+static const struct config_item_type fsg_func_type = {
 	.ct_item_ops	= &fsg_item_ops,
 	.ct_group_ops	= &fsg_group_ops,
 	.ct_attrs	= fsg_attrs,
@@ -3359,7 +3365,7 @@ static void fsg_free_inst(struct usb_function_instance *fi)
 	struct fsg_opts *opts;
 
 	opts = fsg_opts_from_func_inst(fi);
-	fsg_common_put(opts->common);
+	fsg_common_release(opts->common);
 	kfree(opts);
 }
 
@@ -3383,7 +3389,7 @@ static struct usb_function_instance *fsg_alloc_inst(void)
 	rc = fsg_common_set_num_buffers(opts->common,
 					CONFIG_USB_GADGET_STORAGE_NUM_BUFFERS);
 	if (rc)
-		goto release_opts;
+		goto release_common;
 
 	pr_info(FSG_DRIVER_DESC ", version: " FSG_DRIVER_VERSION "\n");
 
@@ -3406,6 +3412,8 @@ static struct usb_function_instance *fsg_alloc_inst(void)
 
 release_buffers:
 	fsg_common_free_buffers(opts->common);
+release_common:
+	kfree(opts->common);
 release_opts:
 	kfree(opts);
 	return ERR_PTR(rc);
@@ -3455,6 +3463,7 @@ static struct usb_function *fsg_alloc(struct usb_function_instance *fi)
 
 DECLARE_USB_FUNCTION_INIT(mass_storage, fsg_alloc_inst, fsg_alloc);
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 MODULE_AUTHOR("Michal Nazarewicz");
 
 /************************* Module parameters *************************/

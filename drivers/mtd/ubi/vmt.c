@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) International Business Machines Corp., 2006
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation;  either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See
- * the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  *
  * Author: Artem Bityutskiy (Битюцкий Артём)
  */
@@ -81,7 +68,7 @@ static ssize_t vol_attribute_show(struct device *dev,
 	spin_unlock(&ubi->volumes_lock);
 
 	if (attr == &attr_vol_reserved_ebs)
-		ret = sprintf(buf, "%d\n", vol->reserved_pebs);
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n", vol->reserved_pebs);
 	else if (attr == &attr_vol_type) {
 		const char *tp;
 
@@ -89,19 +76,25 @@ static ssize_t vol_attribute_show(struct device *dev,
 			tp = "dynamic";
 		else
 			tp = "static";
-		ret = sprintf(buf, "%s\n", tp);
+		ret = scnprintf(buf, PAGE_SIZE, "%s\n", tp);
 	} else if (attr == &attr_vol_name)
-		ret = sprintf(buf, "%s\n", vol->name);
+		ret = scnprintf(buf, PAGE_SIZE, "%s\n",
+				vol->name);
 	else if (attr == &attr_vol_corrupted)
-		ret = sprintf(buf, "%d\n", vol->corrupted);
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
+				vol->corrupted);
 	else if (attr == &attr_vol_alignment)
-		ret = sprintf(buf, "%d\n", vol->alignment);
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
+				vol->alignment);
 	else if (attr == &attr_vol_usable_eb_size)
-		ret = sprintf(buf, "%d\n", vol->usable_leb_size);
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
+				vol->usable_leb_size);
 	else if (attr == &attr_vol_data_bytes)
-		ret = sprintf(buf, "%lld\n", vol->used_bytes);
+		ret = scnprintf(buf, PAGE_SIZE, "%lld\n",
+				vol->used_bytes);
 	else if (attr == &attr_vol_upd_marker)
-		ret = sprintf(buf, "%d\n", vol->upd_marker);
+		ret = scnprintf(buf, PAGE_SIZE, "%d\n",
+				vol->upd_marker);
 	else
 		/* This must be a bug */
 		ret = -EINVAL;
@@ -167,6 +160,9 @@ int ubi_create_volume(struct ubi_device *ubi, struct ubi_mkvol_req *req)
 	vol->dev.parent = &ubi->dev;
 	vol->dev.class = &ubi_class;
 	vol->dev.groups = volume_dev_groups;
+
+	if (req->flags & UBI_VOL_SKIP_CRC_CHECK_FLG)
+		vol->skip_check = 1;
 
 	spin_lock(&ubi->volumes_lock);
 	if (vol_id == UBI_VOL_NUM_AUTO) {
@@ -293,6 +289,10 @@ int ubi_create_volume(struct ubi_device *ubi, struct ubi_mkvol_req *req)
 		vtbl_rec.vol_type = UBI_VID_DYNAMIC;
 	else
 		vtbl_rec.vol_type = UBI_VID_STATIC;
+
+	if (vol->skip_check)
+		vtbl_rec.flags |= UBI_VTBL_SKIP_CRC_CHECK_FLG;
+
 	memcpy(vtbl_rec.name, vol->name, vol->name_len);
 
 	err = ubi_change_vtbl_record(ubi, vol_id, &vtbl_rec);
@@ -726,6 +726,11 @@ static int self_check_volume(struct ubi_device *ubi, int vol_id)
 		}
 		if (vol->used_bytes != n) {
 			ubi_err(ubi, "bad used_bytes");
+			goto fail;
+		}
+
+		if (vol->skip_check) {
+			ubi_err(ubi, "bad skip_check");
 			goto fail;
 		}
 	} else {

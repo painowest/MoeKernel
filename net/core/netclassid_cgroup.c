@@ -1,10 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * net/core/netclassid_cgroup.c	Classid Cgroupfs Handling
- *
- *		This program is free software; you can redistribute it and/or
- *		modify it under the terms of the GNU General Public License
- *		as published by the Free Software Foundation; either version
- *		2 of the License, or (at your option) any later version.
  *
  * Authors:	Thomas Graf <tgraf@suug.ch>
  */
@@ -72,14 +68,14 @@ struct update_classid_context {
 
 static int update_classid_sock(const void *v, struct file *file, unsigned n)
 {
-	int err;
 	struct update_classid_context *ctx = (void *)v;
-	struct socket *sock = sock_from_file(file, &err);
+	struct socket *sock = sock_from_file(file);
 
-	if (sock) {
-		spin_lock(&cgroup_sk_update_lock);
+	if (sock)
 		sock_cgroup_set_classid(&sock->sk->sk_cgrp_data, ctx->classid);
-		spin_unlock(&cgroup_sk_update_lock);
+	if (--ctx->batch == 0) {
+		ctx->batch = UPDATE_CLASSID_BATCH;
+		return n + 1;
 	}
 	if (--ctx->batch == 0) {
 		ctx->batch = UPDATE_CLASSID_BATCH;
@@ -125,8 +121,6 @@ static int write_classid(struct cgroup_subsys_state *css, struct cftype *cft,
 	struct cgroup_cls_state *cs = css_cls_state(css);
 	struct css_task_iter it;
 	struct task_struct *p;
-
-	cgroup_sk_alloc_disable();
 
 	cs->classid = (u32)value;
 

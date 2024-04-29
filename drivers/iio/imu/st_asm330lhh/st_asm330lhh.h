@@ -291,7 +291,11 @@ enum {
  * @id: Sensor identifier.
  * @hw: Pointer to instance of struct st_asm330lhh_hw.
  * @gain: Configured sensor sensitivity.
+ * @offset: Sensor data offset.
+ * @old_data: Store sensor data.
  * @odr: Output data rate of the sensor [Hz].
+ * @uodr: Output data rate of the sensor [uHz].
+ * @max_watermark: Max supported watermark level.
  * @watermark: Sensor watermark level.
  * @last_fifo_timestamp: Store last sample timestamp in FIFO, used by flush
  */
@@ -322,6 +326,7 @@ struct st_asm330lhh_sensor {
 	struct input_dev *buf_dev;
 	int report_evt_cnt;
 	struct mutex sensor_buff;
+	bool enable;
 #endif
 };
 
@@ -329,6 +334,7 @@ struct st_asm330lhh_sensor {
  * struct st_asm330lhh_hw - ST IMU MEMS hw instance
  * @dev: Pointer to instance of struct device (I2C or SPI).
  * @irq: Device interrupt line (I2C or SPI).
+ * @int_pin: Save interrupt pin used by sensor.
  * @lock: Mutex to protect read and write operations.
  * @fifo_lock: Mutex to prevent concurrent access to the hw FIFO.
  * @page_lock: Mutex to prevent concurrent memory page configuration.
@@ -336,9 +342,6 @@ struct st_asm330lhh_sensor {
  * @state: hw operational state.
  * @enable_mask: Enabled sensor bitmask.
  * @ts_offset: Hw timestamp offset.
- * @hw_ts: Latest hw timestamp from the sensor.
- * @ts: Latest timestamp from irq handler.
- * @delta_ts: Delta time between two consecutive interrupts.
  * @ts_delta_ns: Calibrate delta time tick.
  * @hw_ts: Latest hw timestamp from the sensor.
  * @val_ts_old: Hold hw timestamp for timer rollover.
@@ -460,6 +463,8 @@ int st_asm330lhh_reset_hwts(struct st_asm330lhh_hw *hw);
 int st_asm330lhh_update_fifo(struct iio_dev *iio_dev, bool enable);
 int asm330_check_acc_gyro_early_buff_enable_flag(
 		struct st_asm330lhh_sensor *sensor);
+int asm330_check_sensor_enable_flag(
+		struct st_asm330lhh_sensor *sensor, bool enable);
 void st_asm330lhh_set_cpu_idle_state(bool value);
 void st_asm330lhh_hrtimer_reset(struct st_asm330lhh_hw *hw, s64 irq_delta_ts);
 #endif /* ST_ASM330LHH_H */

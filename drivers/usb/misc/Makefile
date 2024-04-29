@@ -11,6 +11,7 @@ obj-$(CONFIG_USB_EMI26)			+= emi26.o
 obj-$(CONFIG_USB_EMI62)			+= emi62.o
 obj-$(CONFIG_USB_EZUSB_FX2)		+= ezusb.o
 obj-$(CONFIG_USB_FTDI_ELAN)		+= ftdi-elan.o
+obj-$(CONFIG_APPLE_MFI_FASTCHARGE)	+= apple-mfi-fastcharge.o
 obj-$(CONFIG_USB_IDMOUSE)		+= idmouse.o
 obj-$(CONFIG_USB_IOWARRIOR)		+= iowarrior.o
 obj-$(CONFIG_USB_ISIGHTFW)		+= isight_firmware.o
@@ -31,7 +32,4 @@ obj-$(CONFIG_USB_TYPEC_MUX_NXP5150A)	+= nxp_typec.o
 
 obj-$(CONFIG_USB_SISUSBVGA)		+= sisusbvga/
 obj-$(CONFIG_USB_LINK_LAYER_TEST)	+= lvstest.o
-obj-$(CONFIG_USB_REDRIVER_NB7VPQ904M)	+= ssusb-redriver-nb7vpq904m.o
-obj-$(CONFIG_USB_QTI_DIAG_BRIDGE)	+= diag_bridge.o
-obj-$(CONFIG_USB_QTI_MDM_DATA_BRIDGE)	+= mdm_data_bridge.o
-obj-$(CONFIG_USB_QTI_KS_BRIDGE)		+= ks_bridge.o
+obj-$(CONFIG_BRCM_USB_PINMAP)		+= brcmstb-usb-pinmap.o

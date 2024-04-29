@@ -1,18 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (C) 2016 Red Hat
  * Author: Rob Clark <robdclark@gmail.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include "msm_drv.h"
@@ -60,6 +49,8 @@ static void smmu_aspace_destroy(struct msm_gem_address_space *aspace)
 {
 	if (aspace->mmu)
 		aspace->mmu->funcs->destroy(aspace->mmu);
+	put_pid(aspace->pid);
+	kfree(aspace);
 }
 
 static void smmu_aspace_add_to_active(
@@ -71,140 +62,84 @@ static void smmu_aspace_add_to_active(
 	msm_obj->in_active_list = true;
 }
 
-static void smmu_aspace_remove_from_active(
-		struct msm_gem_address_space *aspace,
-		struct msm_gem_object *obj)
-{
-	struct msm_gem_object *msm_obj, *next;
-
-	WARN_ON(!mutex_is_locked(&aspace->list_lock));
-
-	list_for_each_entry_safe(msm_obj, next, &aspace->active_list,
-			iova_list) {
-		if (msm_obj == obj) {
-			msm_obj->in_active_list = false;
-			list_del(&msm_obj->iova_list);
-			break;
-		}
-	}
-}
-
-static int smmu_aspace_register_cb(
-		struct msm_gem_address_space *aspace,
-		void (*cb)(void *, bool),
-		void *cb_data)
-{
-	struct aspace_client *aclient = NULL;
-	struct aspace_client *temp;
-
-	if (!aspace)
-		return -EINVAL;
-
-	if (!aspace->domain_attached)
-		return -EACCES;
-
-	aclient = kzalloc(sizeof(*aclient), GFP_KERNEL);
-	if (!aclient)
-		return -ENOMEM;
-
-	aclient->cb = cb;
-	aclient->cb_data = cb_data;
-	INIT_LIST_HEAD(&aclient->list);
-
-	/* check if callback is already registered */
-	mutex_lock(&aspace->list_lock);
-	list_for_each_entry(temp, &aspace->clients, list) {
-		if ((temp->cb == aclient->cb) &&
-			(temp->cb_data == aclient->cb_data)) {
-			kfree(aclient);
-			mutex_unlock(&aspace->list_lock);
-			return -EEXIST;
-		}
-	}
-
-	list_move_tail(&aclient->list, &aspace->clients);
-	mutex_unlock(&aspace->list_lock);
-
-	return 0;
-}
-
-static int smmu_aspace_unregister_cb(
-		struct msm_gem_address_space *aspace,
-		void (*cb)(void *, bool),
-		void *cb_data)
-{
-	struct aspace_client *aclient = NULL;
-	int rc = -ENOENT;
-
-	if (!aspace || !cb)
-		return -EINVAL;
-
-	mutex_lock(&aspace->list_lock);
-	list_for_each_entry(aclient, &aspace->clients, list) {
-		if ((aclient->cb == cb) &&
-			(aclient->cb_data == cb_data)) {
-			list_del(&aclient->list);
-			kfree(aclient);
-			rc = 0;
-			break;
-		}
-	}
-	mutex_unlock(&aspace->list_lock);
-
-	return rc;
-}
-
-static const struct msm_gem_aspace_ops smmu_aspace_ops = {
-	.map = smmu_aspace_map_vma,
-	.unmap = smmu_aspace_unmap_vma,
-	.destroy = smmu_aspace_destroy,
-	.add_to_active = smmu_aspace_add_to_active,
-	.remove_from_active = smmu_aspace_remove_from_active,
-	.register_cb = smmu_aspace_register_cb,
-	.unregister_cb = smmu_aspace_unregister_cb,
-};
-
 struct msm_gem_address_space *
-msm_gem_smmu_address_space_create(struct drm_device *dev, struct msm_mmu *mmu,
-		const char *name)
+msm_gem_address_space_get(struct msm_gem_address_space *aspace)
 {
-	struct msm_gem_address_space *aspace;
-
-	if (!mmu)
-		return ERR_PTR(-EINVAL);
-
-	aspace = kzalloc(sizeof(*aspace), GFP_KERNEL);
-	if (!aspace)
-		return ERR_PTR(-ENOMEM);
-
-	spin_lock_init(&aspace->lock);
-	aspace->dev = dev;
-	aspace->name = name;
-	aspace->mmu = mmu;
-	aspace->ops = &smmu_aspace_ops;
-	INIT_LIST_HEAD(&aspace->active_list);
-	INIT_LIST_HEAD(&aspace->clients);
-	kref_init(&aspace->kref);
-	mutex_init(&aspace->list_lock);
+	if (!IS_ERR_OR_NULL(aspace))
+		kref_get(&aspace->kref);
 
 	return aspace;
 }
 
-/* GPU address space operations */
-static void iommu_aspace_unmap_vma(struct msm_gem_address_space *aspace,
-		struct msm_gem_vma *vma, struct sg_table *sgt,
-		unsigned int flags)
+/* Actually unmap memory for the vma */
+void msm_gem_purge_vma(struct msm_gem_address_space *aspace,
+		struct msm_gem_vma *vma)
 {
-	if (!aspace || !vma->iova)
+	unsigned size = vma->node.size << PAGE_SHIFT;
+
+	/* Print a message if we try to purge a vma in use */
+	if (WARN_ON(vma->inuse > 0))
 		return;
 
-	if (aspace->mmu) {
-		unsigned size = vma->node.size << PAGE_SHIFT;
-		aspace->mmu->funcs->unmap(aspace->mmu, vma->iova, sgt, size);
+	/* Don't do anything if the memory isn't mapped */
+	if (!vma->mapped)
+		return;
+
+	if (aspace->mmu)
+		aspace->mmu->funcs->unmap(aspace->mmu, vma->iova, size);
+
+	vma->mapped = false;
+}
+
+/* Remove reference counts for the mapping */
+void msm_gem_unmap_vma(struct msm_gem_address_space *aspace,
+		struct msm_gem_vma *vma)
+{
+	if (!WARN_ON(!vma->iova))
+		vma->inuse--;
+}
+
+int
+msm_gem_map_vma(struct msm_gem_address_space *aspace,
+		struct msm_gem_vma *vma, int prot,
+		struct sg_table *sgt, int npages)
+{
+	unsigned size = npages << PAGE_SHIFT;
+	int ret = 0;
+
+	if (WARN_ON(!vma->iova))
+		return -EINVAL;
+
+	/* Increase the usage counter */
+	vma->inuse++;
+
+	if (vma->mapped)
+		return 0;
+
+	vma->mapped = true;
+
+	if (aspace && aspace->mmu)
+		ret = aspace->mmu->funcs->map(aspace->mmu, vma->iova, sgt,
+				size, prot);
+
+	if (ret) {
+		vma->mapped = false;
+		vma->inuse--;
 	}
 
+	return ret;
+}
+
+/* Close an iova.  Warn if it is still in use */
+void msm_gem_close_vma(struct msm_gem_address_space *aspace,
+		struct msm_gem_vma *vma)
+{
+	if (WARN_ON(vma->inuse > 0 || vma->mapped))
+		return;
+
 	spin_lock(&aspace->lock);
-	drm_mm_remove_node(&vma->node);
+	if (vma->iova)
+		drm_mm_remove_node(&vma->node);
 	spin_unlock(&aspace->lock);
 
 	vma->iova = 0;
@@ -212,36 +147,30 @@ static void iommu_aspace_unmap_vma(struct msm_gem_address_space *aspace,
 	msm_gem_address_space_put(aspace);
 }
 
-static int iommu_aspace_map_vma(struct msm_gem_address_space *aspace,
-		struct msm_gem_vma *vma, struct sg_table *sgt,
-		int npages, unsigned int flags)
+/* Initialize a new vma and allocate an iova for it */
+int msm_gem_init_vma(struct msm_gem_address_space *aspace,
+		struct msm_gem_vma *vma, int npages,
+		u64 range_start, u64 range_end)
 {
 	int ret;
 
-	spin_lock(&aspace->lock);
-	if (WARN_ON(drm_mm_node_allocated(&vma->node))) {
-		spin_unlock(&aspace->lock);
-		return 0;
-	}
+	if (WARN_ON(vma->iova))
+		return -EBUSY;
 
-	ret = drm_mm_insert_node(&aspace->mm, &vma->node, npages);
+	spin_lock(&aspace->lock);
+	ret = drm_mm_insert_node_in_range(&aspace->mm, &vma->node, npages, 0,
+		0, range_start, range_end, 0);
 	spin_unlock(&aspace->lock);
 
 	if (ret)
 		return ret;
 
 	vma->iova = vma->node.start << PAGE_SHIFT;
+	vma->mapped = false;
 
-	if (aspace->mmu) {
-		unsigned size = npages << PAGE_SHIFT;
-		ret = aspace->mmu->funcs->map(aspace->mmu, vma->iova, sgt,
-				size, IOMMU_READ | IOMMU_WRITE);
-	}
-
-	/* Get a reference to the aspace to keep it around */
 	kref_get(&aspace->kref);
 
-	return ret;
+	return 0;
 }
 
 static void iommu_aspace_destroy(struct msm_gem_address_space *aspace)
@@ -258,10 +187,13 @@ static const struct msm_gem_aspace_ops msm_iommu_aspace_ops = {
 };
 
 struct msm_gem_address_space *
-msm_gem_address_space_create(struct device *dev, struct iommu_domain *domain,
-		const char *name)
+msm_gem_address_space_create(struct msm_mmu *mmu, const char *name,
+		u64 va_start, u64 size)
 {
 	struct msm_gem_address_space *aspace;
+
+	if (IS_ERR(mmu))
+		return ERR_CAST(mmu);
 
 	aspace = kzalloc(sizeof(*aspace), GFP_KERNEL);
 	if (!aspace)
@@ -269,11 +201,9 @@ msm_gem_address_space_create(struct device *dev, struct iommu_domain *domain,
 
 	spin_lock_init(&aspace->lock);
 	aspace->name = name;
-	aspace->mmu = msm_iommu_new(dev, domain);
-	aspace->ops = &msm_iommu_aspace_ops;
+	aspace->mmu = mmu;
 
-	drm_mm_init(&aspace->mm, (domain->geometry.aperture_start >> PAGE_SHIFT),
-			(domain->geometry.aperture_end >> PAGE_SHIFT) - 1);
+	drm_mm_init(&aspace->mm, va_start >> PAGE_SHIFT, size >> PAGE_SHIFT);
 
 	kref_init(&aspace->kref);
 

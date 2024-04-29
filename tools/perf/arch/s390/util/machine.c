@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0
+#include <inttypes.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <string.h>
-#include "util.h"
+#include <internal/lib.h> // page_size
 #include "machine.h"
 #include "api/fs/fs.h"
 #include "debug.h"

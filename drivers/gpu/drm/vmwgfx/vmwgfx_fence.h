@@ -1,7 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0 OR MIT */
 /**************************************************************************
  *
- * Copyright © 2011-2012 VMware, Inc., Palo Alto, CA., USA
- * All Rights Reserved.
+ * Copyright 2011-2012 VMware, Inc., Palo Alto, CA., USA
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
@@ -32,8 +32,11 @@
 
 #define VMW_FENCE_WAIT_TIMEOUT (5*HZ)
 
-struct vmw_private;
+struct drm_device;
+struct drm_file;
+struct drm_pending_event;
 
+struct vmw_private;
 struct vmw_fence_manager;
 
 /**
@@ -90,8 +93,6 @@ extern bool vmw_fence_obj_signaled(struct vmw_fence_obj *fence);
 extern int vmw_fence_obj_wait(struct vmw_fence_obj *fence,
 			      bool lazy,
 			      bool interruptible, unsigned long timeout);
-
-extern void vmw_fence_obj_flush(struct vmw_fence_obj *fence);
 
 extern int vmw_fence_create(struct vmw_fence_manager *fman,
 			    uint32_t seqno,

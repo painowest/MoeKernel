@@ -1,13 +1,6 @@
-/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -24,7 +17,7 @@
 #include <linux/of.h>
 #include <linux/regulator/consumer.h>
 
-#include "coresight-priv.h"
+#include "coresight-common.h"
 
 struct hwevent_mux {
 	phys_addr_t				start;
@@ -45,6 +38,8 @@ struct hwevent_drvdata {
 	struct coresight_csr			*csr;
 	const char				*csr_name;
 };
+
+DEFINE_CORESIGHT_DEVLIST(hwevent_devs, "hwevent");
 
 static int hwevent_enable(struct hwevent_drvdata *drvdata)
 {
@@ -88,7 +83,7 @@ static void hwevent_disable(struct hwevent_drvdata *drvdata)
 		regulator_disable(drvdata->hreg[i]);
 }
 
-static ssize_t hwevent_store_setreg(struct device *dev,
+static ssize_t setreg_store(struct device *dev,
 				    struct device_attribute *attr,
 				    const char *buf, size_t size)
 {
@@ -111,10 +106,9 @@ static ssize_t hwevent_store_setreg(struct device *dev,
 	for (i = 0; i < drvdata->nr_hmux; i++) {
 		if ((addr >= drvdata->hmux[i].start) &&
 		    (addr < drvdata->hmux[i].end)) {
-			hwereg = devm_ioremap(dev,
-					      drvdata->hmux[i].start,
-					      drvdata->hmux[i].end -
-					      drvdata->hmux[i].start);
+			hwereg = ioremap(drvdata->hmux[i].start,
+					 drvdata->hmux[i].end -
+					 drvdata->hmux[i].start);
 			if (!hwereg) {
 				dev_err(dev, "unable to map address 0x%llx\n",
 					addr);
@@ -128,7 +122,7 @@ static ssize_t hwevent_store_setreg(struct device *dev,
 			 * are completed before unmapping the address
 			 */
 			mb();
-			devm_iounmap(dev, hwereg);
+			iounmap(hwereg);
 			break;
 		}
 	}
@@ -150,7 +144,7 @@ err:
 	mutex_unlock(&drvdata->mutex);
 	return ret;
 }
-static DEVICE_ATTR(setreg, 0200, NULL, hwevent_store_setreg);
+static DEVICE_ATTR_WO(setreg);
 
 static struct attribute *hwevent_attrs[] = {
 	&dev_attr_setreg.attr,
@@ -166,51 +160,28 @@ static const struct attribute_group *hwevent_attr_grps[] = {
 	NULL,
 };
 
-static int hwevent_probe(struct platform_device *pdev)
+static int hwevent_init_hmux(struct hwevent_drvdata *drvdata,
+				struct platform_device *pdev)
 {
-	struct device *dev = &pdev->dev;
-	struct hwevent_drvdata *drvdata;
-	struct coresight_desc *desc;
-	struct coresight_platform_data *pdata;
-	struct resource *res;
 	int ret, i;
-	const char *hmux_name, *hclk_name, *hreg_name;
+	struct resource *res;
+	const char *hmux_name;
+	struct device_node *node = drvdata->dev->of_node;
 
-	pdata = of_get_coresight_platform_data(dev, pdev->dev.of_node);
-	if (IS_ERR(pdata))
-		return PTR_ERR(pdata);
-	pdev->dev.platform_data = pdata;
-
-	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
-	if (!drvdata)
-		return -ENOMEM;
-	drvdata->dev = &pdev->dev;
-	platform_set_drvdata(pdev, drvdata);
-
-	ret = of_get_coresight_csr_name(dev->of_node, &drvdata->csr_name);
-	if (ret) {
-		dev_err(dev, "No csr data\n");
-	} else{
-		drvdata->csr = coresight_csr_get(drvdata->csr_name);
-		if (IS_ERR(drvdata->csr)) {
-			dev_dbg(dev, "failed to get csr, defer probe\n");
-			return -EPROBE_DEFER;
-		}
-	}
-
-	drvdata->nr_hmux = of_property_count_strings(pdev->dev.of_node,
+	drvdata->nr_hmux = of_property_count_strings(node,
 						     "reg-names");
+
 	if (drvdata->nr_hmux < 0)
 		drvdata->nr_hmux = 0;
 
 	if (drvdata->nr_hmux > 0) {
-		drvdata->hmux = devm_kzalloc(dev, drvdata->nr_hmux *
+		drvdata->hmux = devm_kzalloc(drvdata->dev, drvdata->nr_hmux *
 					     sizeof(*drvdata->hmux),
 					     GFP_KERNEL);
 		if (!drvdata->hmux)
 			return -ENOMEM;
 		for (i = 0; i < drvdata->nr_hmux; i++) {
-			ret = of_property_read_string_index(pdev->dev.of_node,
+			ret = of_property_read_string_index(node,
 							    "reg-names", i,
 							    &hmux_name);
 			if (ret)
@@ -221,71 +192,123 @@ static int hwevent_probe(struct platform_device *pdev)
 				return -ENODEV;
 			drvdata->hmux[i].start = res->start;
 			drvdata->hmux[i].end = res->end;
+
 		}
 	}
 
-	mutex_init(&drvdata->mutex);
+	return 0;
+}
 
-	drvdata->clk = devm_clk_get(dev, "apb_pclk");
-	if (IS_ERR(drvdata->clk))
-		return PTR_ERR(drvdata->clk);
+static int hwevent_init_clk(struct hwevent_drvdata *drvdata)
+{
+	int ret, i;
+	const char *hclk_name, *hreg_name;
+	struct device_node *node = drvdata->dev->of_node;
 
-	drvdata->nr_hclk = of_property_count_strings(pdev->dev.of_node,
+	drvdata->nr_hclk = of_property_count_strings(node,
 						     "qcom,hwevent-clks");
-	drvdata->nr_hreg = of_property_count_strings(pdev->dev.of_node,
+	drvdata->nr_hreg = of_property_count_strings(node,
 						     "qcom,hwevent-regs");
 
 	if (drvdata->nr_hclk > 0) {
-		drvdata->hclk = devm_kzalloc(dev, drvdata->nr_hclk *
+		drvdata->hclk = devm_kzalloc(drvdata->dev, drvdata->nr_hclk *
 					     sizeof(*drvdata->hclk),
 					     GFP_KERNEL);
 		if (!drvdata->hclk)
 			return -ENOMEM;
 
 		for (i = 0; i < drvdata->nr_hclk; i++) {
-			ret = of_property_read_string_index(pdev->dev.of_node,
+			ret = of_property_read_string_index(node,
 							    "qcom,hwevent-clks",
 							    i, &hclk_name);
 			if (ret)
 				return ret;
 
-			drvdata->hclk[i] = devm_clk_get(dev, hclk_name);
+			drvdata->hclk[i] = devm_clk_get(drvdata->dev,
+							hclk_name);
 			if (IS_ERR(drvdata->hclk[i]))
 				return PTR_ERR(drvdata->hclk[i]);
 		}
 	}
 	if (drvdata->nr_hreg > 0) {
-		drvdata->hreg = devm_kzalloc(dev, drvdata->nr_hreg *
+		drvdata->hreg = devm_kzalloc(drvdata->dev, drvdata->nr_hreg *
 					     sizeof(*drvdata->hreg),
 					     GFP_KERNEL);
 		if (!drvdata->hreg)
 			return -ENOMEM;
 
 		for (i = 0; i < drvdata->nr_hreg; i++) {
-			ret = of_property_read_string_index(pdev->dev.of_node,
+			ret = of_property_read_string_index(node,
 							    "qcom,hwevent-regs",
 							    i, &hreg_name);
 			if (ret)
 				return ret;
 
-			drvdata->hreg[i] = devm_regulator_get(dev, hreg_name);
+			drvdata->hreg[i] = devm_regulator_get(drvdata->dev,
+								hreg_name);
 			if (IS_ERR(drvdata->hreg[i]))
 				return PTR_ERR(drvdata->hreg[i]);
 		}
 	}
-	desc = devm_kzalloc(dev, sizeof(*desc), GFP_KERNEL);
-	if (!desc)
-		return -ENOMEM;
 
-	desc->type = CORESIGHT_DEV_TYPE_NONE;
-	desc->pdata = pdev->dev.platform_data;
-	desc->dev = &pdev->dev;
-	desc->groups = hwevent_attr_grps;
-	drvdata->csdev = coresight_register(desc);
+	return 0;
+}
+
+static int hwevent_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct hwevent_drvdata *drvdata;
+	struct coresight_desc desc = { 0 };
+	struct coresight_platform_data *pdata;
+	int ret;
+
+	desc.name = coresight_alloc_device_name(&hwevent_devs, dev);
+	if (!desc.name)
+		return -ENOMEM;
+	pdata = coresight_get_platform_data(dev);
+	if (IS_ERR(pdata))
+		return PTR_ERR(pdata);
+	pdev->dev.platform_data = pdata;
+
+	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
+	if (!drvdata)
+		return -ENOMEM;
+	drvdata->dev = &pdev->dev;
+	platform_set_drvdata(pdev, drvdata);
+	mutex_init(&drvdata->mutex);
+
+	ret = of_get_coresight_csr_name(dev->of_node, &drvdata->csr_name);
+	if (ret)
+		dev_err(dev, "No csr data\n");
+	else {
+		drvdata->csr = coresight_csr_get(drvdata->csr_name);
+		if (IS_ERR(drvdata->csr)) {
+			dev_dbg(dev, "failed to get csr, defer probe\n");
+			return -EPROBE_DEFER;
+		}
+	}
+
+	drvdata->clk = devm_clk_get(dev, "apb_pclk");
+	if (IS_ERR(drvdata->clk))
+		return PTR_ERR(drvdata->clk);
+
+	ret = hwevent_init_hmux(drvdata, pdev);
+	if (ret)
+		return ret;
+
+	ret = hwevent_init_clk(drvdata);
+	if (ret)
+		return ret;
+
+	desc.type = CORESIGHT_DEV_TYPE_NONE;
+	desc.pdata = pdev->dev.platform_data;
+	desc.dev = &pdev->dev;
+	desc.groups = hwevent_attr_grps;
+	drvdata->csdev = coresight_register(&desc);
 	if (IS_ERR(drvdata->csdev))
 		return PTR_ERR(drvdata->csdev);
 
-	dev_info(dev, "Hardware Event driver initialized\n");
+	dev_dbg(dev, "Hardware Event driver initialized\n");
 	return 0;
 }
 
@@ -299,7 +322,7 @@ static int hwevent_remove(struct platform_device *pdev)
 
 static const struct of_device_id hwevent_match[] = {
 	{.compatible = "qcom,coresight-hwevent"},
-	{}
+	{},
 };
 
 static struct platform_driver hwevent_driver = {
@@ -307,7 +330,6 @@ static struct platform_driver hwevent_driver = {
 	.remove		= hwevent_remove,
 	.driver		= {
 		.name	= "coresight-hwevent",
-		.owner	= THIS_MODULE,
 		.of_match_table	= hwevent_match,
 	},
 };

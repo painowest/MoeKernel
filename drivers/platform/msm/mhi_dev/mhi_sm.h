@@ -1,13 +1,7 @@
-/* Copyright (c) 2015,2017-2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2015,2017-2018,2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef MHI_SM_H
@@ -42,11 +36,11 @@ enum mhi_dev_event {
 
 int mhi_dev_sm_init(struct mhi_dev *dev);
 int mhi_dev_sm_exit(struct mhi_dev *dev);
-int mhi_dev_sm_set_ready(void);
-int mhi_dev_notify_sm_event(enum mhi_dev_event event);
-int mhi_dev_sm_get_mhi_state(enum mhi_dev_state *state);
+int mhi_dev_sm_set_ready(struct mhi_dev *mhi);
+int mhi_dev_notify_sm_event(struct mhi_dev *mhi, enum mhi_dev_event event);
+int mhi_dev_sm_get_mhi_state(struct mhi_dev *mhi, enum mhi_dev_state *state);
 int mhi_dev_sm_syserr(void);
 void mhi_dev_sm_pcie_handler(struct ep_pcie_notify *notify);
-
+void mhi_dev_virt_linkup_event(struct mhi_dev_ctx *mhictx, int vf_id);
 #endif /* MHI_SM_H */
 

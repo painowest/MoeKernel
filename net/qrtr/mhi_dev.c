@@ -1,4 +1,5 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+// SPDX-License-Identifier: GPL-2.0-only
+/* Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -159,7 +160,6 @@ static int qrtr_mhi_dev_open_channels(struct qrtr_mhi_dev_ep *qep)
 
 static void qrtr_mhi_dev_close_channels(struct qrtr_mhi_dev_ep *qep)
 {
-
 	mhi_dev_close_channel(qep->in);
 	mhi_dev_close_channel(qep->out);
 }
@@ -177,17 +177,21 @@ static void qrtr_mhi_dev_state_cb(struct mhi_dev_client_cb_data *cb_data)
 	case MHI_STATE_CONNECTED:
 		rc = qrtr_mhi_dev_open_channels(qep);
 		if (rc) {
-			dev_err(qep->dev, "open failed %d", rc);
+			dev_err(qep->dev, "open failed %d\n", rc);
 			return;
 		}
 
-		rc = qrtr_endpoint_register(&qep->ep, qep->net_id, qep->rt);
+		rc = qrtr_endpoint_register(&qep->ep, qep->net_id, qep->rt, NULL);
 		if (rc) {
-			dev_err(qep->dev, "register failed %d", rc);
+			dev_err(qep->dev, "register failed %d\n", rc);
 			qrtr_mhi_dev_close_channels(qep);
 		}
 		break;
 	case MHI_STATE_DISCONNECTED:
+		mutex_lock(&qep->out_lock);
+		complete_all(&qep->out_tre);
+		mutex_unlock(&qep->out_lock);
+
 		qrtr_endpoint_unregister(&qep->ep);
 		qrtr_mhi_dev_close_channels(qep);
 		break;
@@ -263,3 +267,4 @@ module_platform_driver(qrtr_mhi_dev_driver);
 
 MODULE_DESCRIPTION("QTI IPC-Router MHI device interface driver");
 MODULE_LICENSE("GPL v2");
+

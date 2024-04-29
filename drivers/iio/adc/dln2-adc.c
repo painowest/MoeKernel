@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for the Diolan DLN-2 USB-ADC adapter
  *
  * Copyright (c) 2017 Jack Andersen
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2.
  */
 
 #include <linux/kernel.h>
@@ -478,7 +475,6 @@ static const struct iio_info dln2_adc_info = {
 	.read_raw = dln2_adc_read_raw,
 	.write_raw = dln2_adc_write_raw,
 	.update_scan_mode = dln2_update_scan_mode,
-	.driver_module = THIS_MODULE,
 };
 
 static irqreturn_t dln2_adc_trigger_h(int irq, void *p)
@@ -589,10 +585,6 @@ static int dln2_adc_triggered_buffer_predisable(struct iio_dev *indio_dev)
 	if (ret < 0)
 		dev_dbg(&dln2->pdev->dev, "Problem in %s\n", __func__);
 
-	ret2 = iio_triggered_buffer_predisable(indio_dev);
-	if (ret == 0)
-		ret = ret2;
-
 	return ret;
 }
 
@@ -610,10 +602,6 @@ static void dln2_adc_event(struct platform_device *pdev, u16 echo,
 	/* Called via URB completion handler */
 	iio_trigger_poll(dln2->trig);
 }
-
-static const struct iio_trigger_ops dln2_adc_trigger_ops = {
-	.owner = THIS_MODULE,
-};
 
 static int dln2_adc_probe(struct platform_device *pdev)
 {
@@ -659,7 +647,6 @@ static int dln2_adc_probe(struct platform_device *pdev)
 	IIO_CHAN_SOFT_TIMESTAMP_ASSIGN(dln2->iio_channels[i], i);
 
 	indio_dev->name = DLN2_ADC_MOD_NAME;
-	indio_dev->dev.parent = dev;
 	indio_dev->info = &dln2_adc_info;
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = dln2->iio_channels;
@@ -667,12 +654,12 @@ static int dln2_adc_probe(struct platform_device *pdev)
 	indio_dev->setup_ops = &dln2_adc_buffer_setup_ops;
 
 	dln2->trig = devm_iio_trigger_alloc(dev, "%s-dev%d",
-					    indio_dev->name, indio_dev->id);
+					    indio_dev->name,
+					    iio_device_id(indio_dev));
 	if (!dln2->trig) {
 		dev_err(dev, "failed to allocate trigger\n");
 		return -ENOMEM;
 	}
-	dln2->trig->ops = &dln2_adc_trigger_ops;
 	iio_trigger_set_drvdata(dln2->trig, dln2);
 	ret = devm_iio_trigger_register(dev, dln2->trig);
 	if (ret) {

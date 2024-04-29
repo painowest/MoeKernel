@@ -1,56 +1,57 @@
-/* Copyright (c) 2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _CRYPTO_QTI_PLATFORM_H
 #define _CRYPTO_QTI_PLATFORM_H
 
-#include <linux/bio-crypt-ctx.h>
+#include <linux/blk-crypto.h>
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/device.h>
 
-#if IS_ENABLED(CONFIG_QTI_CRYPTO_TZ)
-int crypto_qti_program_key(struct crypto_vops_qti_entry *ice_entry,
-			   const struct blk_crypto_key *key, unsigned int slot,
-			   unsigned int data_unit_mask, int capid);
-int crypto_qti_invalidate_key(struct crypto_vops_qti_entry *ice_entry,
-			      unsigned int slot);
-int crypto_qti_tz_raw_secret(const u8 *wrapped_key,
-			     unsigned int wrapped_key_size, u8 *secret,
-			     unsigned int secret_size);
+#if IS_ENABLED(CONFIG_QTI_CRYPTO_COMMON)
+int crypto_qti_program_key(const struct ice_mmio_data *mmio_data,
+			   const struct blk_crypto_key *key,
+			   unsigned int slot,
+			   unsigned int data_unit_mask, int capid, int storage_type);
+int crypto_qti_invalidate_key(const struct ice_mmio_data *mmio_data,
+			      unsigned int slot, int storage_type);
+int crypto_qti_derive_raw_secret_platform(
+				const u8 *wrapped_key,
+				unsigned int wrapped_key_size, u8 *secret,
+				unsigned int secret_size);
+
+#if (IS_ENABLED(CONFIG_QTI_HW_KEY_MANAGER) || IS_ENABLED(CONFIG_QTI_HW_KEY_MANAGER_V1))
+void crypto_qti_disable_platform(void);
+#else
+static inline void crypto_qti_disable_platform(void)
+{}
+#endif /* CONFIG_QTI_HW_KEY_MANAGER || CONFIG_QTI_HW_KEY_MANAGER_V1*/
 #else
 static inline int crypto_qti_program_key(
-				struct crypto_vops_qti_entry *ice_entry,
+				const struct ice_mmio_data *mmio_data,
 				const struct blk_crypto_key *key,
-				unsigned int slot, unsigned int data_unit_mask,
-				int capid)
+				unsigned int slot,
+				unsigned int data_unit_mask, int capid, int storage_type)
 {
-	return 0;
+	return -EOPNOTSUPP;
 }
 static inline int crypto_qti_invalidate_key(
-		struct crypto_vops_qti_entry *ice_entry, unsigned int slot)
+		const struct ice_mmio_data *mmio_data, unsigned int slot, int storage_type)
 {
-	return 0;
+	return -EOPNOTSUPP;
 }
-static int crypto_qti_tz_raw_secret(u8 *wrapped_key,
-				    unsigned int wrapped_key_size, u8 *secret,
-				    unsigned int secret_size)
+static inline int crypto_qti_derive_raw_secret_platform(
+				const u8 *wrapped_key,
+				unsigned int wrapped_key_size, u8 *secret,
+				unsigned int secret_size)
 {
-	return 0;
+	return -EOPNOTSUPP;
 }
-#endif /* CONFIG_QTI_CRYPTO_TZ */
 
-static inline void crypto_qti_disable_platform(
-				struct crypto_vops_qti_entry *ice_entry)
+static inline void crypto_qti_disable_platform(void)
 {}
-
+#endif /* CONFIG_QTI_CRYPTO_TZ || CONFIG_QTI_HW_KEY_MANAGER */
 #endif /* _CRYPTO_QTI_PLATFORM_H */

@@ -6,6 +6,7 @@
  */
 
 #include <linux/memcontrol.h>
+#include <linux/mm_inline.h>
 #include <linux/writeback.h>
 #include <linux/shmem_fs.h>
 #include <linux/pagemap.h>
@@ -156,24 +157,26 @@
  *
  *		Implementation
  *
- * For each node's file LRU lists, a counter for inactive evictions
- * and activations is maintained (node->inactive_age).
+ * For each node's LRU lists, a counter for inactive evictions and
+ * activations is maintained (node->nonresident_age).
  *
  * On eviction, a snapshot of this counter (along with some bits to
- * identify the node) is stored in the now empty page cache radix tree
+ * identify the node) is stored in the now empty page cache
  * slot of the evicted page.  This is called a shadow entry.
  *
  * On cache misses for which there are shadow entries, an eligible
  * refault distance will immediately activate the refaulting page.
  */
 
-#define EVICTION_SHIFT	(RADIX_TREE_EXCEPTIONAL_ENTRY + \
-			 1 + NODES_SHIFT + MEM_CGROUP_ID_SHIFT)
+#define WORKINGSET_SHIFT 1
+#define EVICTION_SHIFT	((BITS_PER_LONG - BITS_PER_XA_VALUE) +	\
+			 WORKINGSET_SHIFT + NODES_SHIFT + \
+			 MEM_CGROUP_ID_SHIFT)
 #define EVICTION_MASK	(~0UL >> EVICTION_SHIFT)
 
 /*
  * Eviction timestamps need to be able to cover the full range of
- * actionable refaults. However, bits are tight in the radix tree
+ * actionable refaults. However, bits are tight in the xarray
  * entry, and after storing the identifier for the lruvec there might
  * not be enough left to represent every single actionable refault. In
  * that case, we have to sacrifice granularity for distance, and group
@@ -184,25 +187,23 @@ static unsigned int bucket_order __read_mostly;
 static void *pack_shadow(int memcgid, pg_data_t *pgdat, unsigned long eviction,
 			 bool workingset)
 {
-	eviction >>= bucket_order;
+	eviction &= EVICTION_MASK;
 	eviction = (eviction << MEM_CGROUP_ID_SHIFT) | memcgid;
 	eviction = (eviction << NODES_SHIFT) | pgdat->node_id;
-	eviction = (eviction << 1) | workingset;
-	eviction = (eviction << RADIX_TREE_EXCEPTIONAL_SHIFT);
+	eviction = (eviction << WORKINGSET_SHIFT) | workingset;
 
-	return (void *)(eviction | RADIX_TREE_EXCEPTIONAL_ENTRY);
+	return xa_mk_value(eviction);
 }
 
 static void unpack_shadow(void *shadow, int *memcgidp, pg_data_t **pgdat,
 			  unsigned long *evictionp, bool *workingsetp)
 {
-	unsigned long entry = (unsigned long)shadow;
+	unsigned long entry = xa_to_value(shadow);
 	int memcgid, nid;
 	bool workingset;
 
-	entry >>= RADIX_TREE_EXCEPTIONAL_SHIFT;
-	workingset = entry & 1;
-	entry >>= 1;
+	workingset = entry & ((1UL << WORKINGSET_SHIFT) - 1);
+	entry >>= WORKINGSET_SHIFT;
 	nid = entry & ((1UL << NODES_SHIFT) - 1);
 	entry >>= NODES_SHIFT;
 	memcgid = entry & ((1UL << MEM_CGROUP_ID_SHIFT) - 1);
@@ -210,33 +211,166 @@ static void unpack_shadow(void *shadow, int *memcgidp, pg_data_t **pgdat,
 
 	*memcgidp = memcgid;
 	*pgdat = NODE_DATA(nid);
-	*evictionp = entry << bucket_order;
+	*evictionp = entry;
 	*workingsetp = workingset;
+}
+
+#ifdef CONFIG_LRU_GEN
+
+static void *lru_gen_eviction(struct page *page)
+{
+	int hist;
+	unsigned long token;
+	unsigned long min_seq;
+	struct lruvec *lruvec;
+	struct lru_gen_struct *lrugen;
+	int type = page_is_file_lru(page);
+	int delta = thp_nr_pages(page);
+	int refs = page_lru_refs(page);
+	int tier = lru_tier_from_refs(refs);
+	struct mem_cgroup *memcg = page_memcg(page);
+	struct pglist_data *pgdat = page_pgdat(page);
+
+	BUILD_BUG_ON(LRU_GEN_WIDTH + LRU_REFS_WIDTH > BITS_PER_LONG - EVICTION_SHIFT);
+
+	lruvec = mem_cgroup_lruvec(memcg, pgdat);
+	lrugen = &lruvec->lrugen;
+	min_seq = READ_ONCE(lrugen->min_seq[type]);
+	token = (min_seq << LRU_REFS_WIDTH) | max(refs - 1, 0);
+
+	hist = lru_hist_from_seq(min_seq);
+	atomic_long_add(delta, &lrugen->evicted[hist][type][tier]);
+
+	return pack_shadow(mem_cgroup_id(memcg), pgdat, token, refs);
+}
+
+static void lru_gen_refault(struct page *page, void *shadow)
+{
+	int hist, tier, refs;
+	int memcg_id;
+	bool workingset;
+	unsigned long token;
+	unsigned long min_seq;
+	struct lruvec *lruvec;
+	struct lru_gen_struct *lrugen;
+	struct mem_cgroup *memcg;
+	struct pglist_data *pgdat;
+	int type = page_is_file_lru(page);
+	int delta = thp_nr_pages(page);
+
+	unpack_shadow(shadow, &memcg_id, &pgdat, &token, &workingset);
+
+	if (pgdat != page_pgdat(page))
+		return;
+
+	rcu_read_lock();
+
+	memcg = page_memcg_rcu(page);
+	if (memcg_id != mem_cgroup_id(memcg))
+		goto unlock;
+
+	lruvec = mem_cgroup_lruvec(memcg, pgdat);
+	lrugen = &lruvec->lrugen;
+
+	mod_lruvec_state(lruvec, WORKINGSET_REFAULT_BASE + type, delta);
+
+	min_seq = READ_ONCE(lrugen->min_seq[type]);
+	if ((token >> LRU_REFS_WIDTH) != (min_seq & (EVICTION_MASK >> LRU_REFS_WIDTH)))
+		goto unlock;
+
+	hist = lru_hist_from_seq(min_seq);
+	/* see the comment in page_lru_refs() */
+	refs = (token & (BIT(LRU_REFS_WIDTH) - 1)) + workingset;
+	tier = lru_tier_from_refs(refs);
+
+	atomic_long_add(delta, &lrugen->refaulted[hist][type][tier]);
+	mod_lruvec_state(lruvec, WORKINGSET_ACTIVATE_BASE + type, delta);
+
+	/*
+	 * Count the following two cases as stalls:
+	 * 1. For pages accessed through page tables, hotter pages pushed out
+	 *    hot pages which refaulted immediately.
+	 * 2. For pages accessed multiple times through file descriptors,
+	 *    numbers of accesses might have been out of the range.
+	 */
+	if (lru_gen_in_fault() || refs == BIT(LRU_REFS_WIDTH)) {
+		SetPageWorkingset(page);
+		mod_lruvec_state(lruvec, WORKINGSET_RESTORE_BASE + type, delta);
+	}
+unlock:
+	rcu_read_unlock();
+}
+
+#else /* !CONFIG_LRU_GEN */
+
+static void *lru_gen_eviction(struct page *page)
+{
+	return NULL;
+}
+
+static void lru_gen_refault(struct page *page, void *shadow)
+{
+}
+
+#endif /* CONFIG_LRU_GEN */
+
+/**
+ * workingset_age_nonresident - age non-resident entries as LRU ages
+ * @lruvec: the lruvec that was aged
+ * @nr_pages: the number of pages to count
+ *
+ * As in-memory pages are aged, non-resident pages need to be aged as
+ * well, in order for the refault distances later on to be comparable
+ * to the in-memory dimensions. This function allows reclaim and LRU
+ * operations to drive the non-resident aging along in parallel.
+ */
+void workingset_age_nonresident(struct lruvec *lruvec, unsigned long nr_pages)
+{
+	/*
+	 * Reclaiming a cgroup means reclaiming all its children in a
+	 * round-robin fashion. That means that each cgroup has an LRU
+	 * order that is composed of the LRU orders of its child
+	 * cgroups; and every page has an LRU position not just in the
+	 * cgroup that owns it, but in all of that group's ancestors.
+	 *
+	 * So when the physical inactive list of a leaf cgroup ages,
+	 * the virtual inactive lists of all its parents, including
+	 * the root cgroup's, age as well.
+	 */
+	do {
+		atomic_long_add(nr_pages, &lruvec->nonresident_age);
+	} while ((lruvec = parent_lruvec(lruvec)));
 }
 
 /**
  * workingset_eviction - note the eviction of a page from memory
- * @mapping: address space the page was backing
+ * @target_memcg: the cgroup that is causing the reclaim
  * @page: the page being evicted
  *
- * Returns a shadow entry to be stored in @mapping->page_tree in place
+ * Return: a shadow entry to be stored in @page->mapping->i_pages in place
  * of the evicted @page so that a later refault can be detected.
  */
-void *workingset_eviction(struct address_space *mapping, struct page *page)
+void *workingset_eviction(struct page *page, struct mem_cgroup *target_memcg)
 {
 	struct pglist_data *pgdat = page_pgdat(page);
-	struct mem_cgroup *memcg = page_memcg(page);
-	int memcgid = mem_cgroup_id(memcg);
 	unsigned long eviction;
 	struct lruvec *lruvec;
+	int memcgid;
 
-	/* Page is fully exclusive and pins page->mem_cgroup */
+	/* Page is fully exclusive and pins page's memory cgroup pointer */
 	VM_BUG_ON_PAGE(PageLRU(page), page);
 	VM_BUG_ON_PAGE(page_count(page), page);
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
 
-	lruvec = mem_cgroup_lruvec(pgdat, memcg);
-	eviction = atomic_long_inc_return(&lruvec->inactive_age);
+	if (lru_gen_enabled())
+		return lru_gen_eviction(page);
+
+	lruvec = mem_cgroup_lruvec(target_memcg, pgdat);
+	/* XXX: target_memcg can be NULL, go through lruvec */
+	memcgid = mem_cgroup_id(lruvec_memcg(lruvec));
+	eviction = atomic_long_read(&lruvec->nonresident_age);
+	eviction >>= bucket_order;
+	workingset_age_nonresident(lruvec, thp_nr_pages(page));
 	return pack_shadow(memcgid, pgdat, eviction, PageWorkingset(page));
 }
 
@@ -246,13 +380,17 @@ void *workingset_eviction(struct address_space *mapping, struct page *page)
  * @shadow: shadow entry of the evicted page
  *
  * Calculates and evaluates the refault distance of the previously
- * evicted page in the context of the node it was allocated in.
+ * evicted page in the context of the node and the memcg whose memory
+ * pressure caused the eviction.
  */
 void workingset_refault(struct page *page, void *shadow)
 {
+	bool file = page_is_file_lru(page);
+	struct mem_cgroup *eviction_memcg;
+	struct lruvec *eviction_lruvec;
 	unsigned long refault_distance;
+	unsigned long workingset_size;
 	struct pglist_data *pgdat;
-	unsigned long active_file;
 	struct mem_cgroup *memcg;
 	unsigned long eviction;
 	struct lruvec *lruvec;
@@ -260,7 +398,13 @@ void workingset_refault(struct page *page, void *shadow)
 	bool workingset;
 	int memcgid;
 
+	if (lru_gen_enabled()) {
+		lru_gen_refault(page, shadow);
+		return;
+	}
+
 	unpack_shadow(shadow, &memcgid, &pgdat, &eviction, &workingset);
+	eviction <<= bucket_order;
 
 	rcu_read_lock();
 	/*
@@ -279,49 +423,77 @@ void workingset_refault(struct page *page, void *shadow)
 	 * would be better if the root_mem_cgroup existed in all
 	 * configurations instead.
 	 */
-	memcg = mem_cgroup_from_id(memcgid);
-	if (!mem_cgroup_disabled() && !memcg)
+	eviction_memcg = mem_cgroup_from_id(memcgid);
+	if (!mem_cgroup_disabled() && !eviction_memcg)
 		goto out;
-	lruvec = mem_cgroup_lruvec(pgdat, memcg);
-	refault = atomic_long_read(&lruvec->inactive_age);
-	active_file = lruvec_lru_size(lruvec, LRU_ACTIVE_FILE, MAX_NR_ZONES);
+	eviction_lruvec = mem_cgroup_lruvec(eviction_memcg, pgdat);
+	refault = atomic_long_read(&eviction_lruvec->nonresident_age);
 
 	/*
 	 * Calculate the refault distance
 	 *
 	 * The unsigned subtraction here gives an accurate distance
-	 * across inactive_age overflows in most cases. There is a
+	 * across nonresident_age overflows in most cases. There is a
 	 * special case: usually, shadow entries have a short lifetime
 	 * and are either refaulted or reclaimed along with the inode
 	 * before they get too old.  But it is not impossible for the
-	 * inactive_age to lap a shadow entry in the field, which can
-	 * then result in a false small refault distance, leading to a
-	 * false activation should this old entry actually refault
-	 * again.  However, earlier kernels used to deactivate
+	 * nonresident_age to lap a shadow entry in the field, which
+	 * can then result in a false small refault distance, leading
+	 * to a false activation should this old entry actually
+	 * refault again.  However, earlier kernels used to deactivate
 	 * unconditionally with *every* reclaim invocation for the
 	 * longest time, so the occasional inappropriate activation
 	 * leading to pressure on the active list is not a problem.
 	 */
 	refault_distance = (refault - eviction) & EVICTION_MASK;
 
-	inc_lruvec_state(lruvec, WORKINGSET_REFAULT);
+	/*
+	 * The activation decision for this page is made at the level
+	 * where the eviction occurred, as that is where the LRU order
+	 * during page reclaim is being determined.
+	 *
+	 * However, the cgroup that will own the page is the one that
+	 * is actually experiencing the refault event.
+	 */
+	memcg = page_memcg(page);
+	lruvec = mem_cgroup_lruvec(memcg, pgdat);
 
+	inc_lruvec_state(lruvec, WORKINGSET_REFAULT_BASE + file);
+
+	mem_cgroup_flush_stats_delayed();
 	/*
 	 * Compare the distance to the existing workingset size. We
-	 * don't act on pages that couldn't stay resident even if all
-	 * the memory was available to the page cache.
+	 * don't activate pages that couldn't stay resident even if
+	 * all the memory was available to the workingset. Whether
+	 * workingset competition needs to consider anon or not depends
+	 * on having swap.
 	 */
-	if (refault_distance > active_file)
+	workingset_size = lruvec_page_state(eviction_lruvec, NR_ACTIVE_FILE);
+	if (!file) {
+		workingset_size += lruvec_page_state(eviction_lruvec,
+						     NR_INACTIVE_FILE);
+	}
+	if (mem_cgroup_get_nr_swap_pages(memcg) > 0) {
+		workingset_size += lruvec_page_state(eviction_lruvec,
+						     NR_ACTIVE_ANON);
+		if (file) {
+			workingset_size += lruvec_page_state(eviction_lruvec,
+						     NR_INACTIVE_ANON);
+		}
+	}
+	if (refault_distance > workingset_size)
 		goto out;
 
 	SetPageActive(page);
-	atomic_long_inc(&lruvec->inactive_age);
-	inc_lruvec_state(lruvec, WORKINGSET_ACTIVATE);
+	workingset_age_nonresident(lruvec, thp_nr_pages(page));
+	inc_lruvec_state(lruvec, WORKINGSET_ACTIVATE_BASE + file);
 
 	/* Page was active prior to eviction */
 	if (workingset) {
 		SetPageWorkingset(page);
-		inc_lruvec_state(lruvec, WORKINGSET_RESTORE);
+		/* XXX: Move to lru_cache_add() when it supports new vs putback */
+		lru_note_cost_page(page);
+		inc_lruvec_state(lruvec, WORKINGSET_RESTORE_BASE + file);
 	}
 out:
 	rcu_read_unlock();
@@ -347,8 +519,8 @@ void workingset_activation(struct page *page)
 	memcg = page_memcg_rcu(page);
 	if (!mem_cgroup_disabled() && !memcg)
 		goto out;
-	lruvec = mem_cgroup_lruvec(page_pgdat(page), memcg);
-	atomic_long_inc(&lruvec->inactive_age);
+	lruvec = mem_cgroup_page_lruvec(page);
+	workingset_age_nonresident(lruvec, thp_nr_pages(page));
 out:
 	rcu_read_unlock();
 }
@@ -367,28 +539,28 @@ out:
 
 static struct list_lru shadow_nodes;
 
-void workingset_update_node(struct radix_tree_node *node, void *private)
+void workingset_update_node(struct xa_node *node)
 {
-	struct address_space *mapping = private;
-
-	/* Only regular page cache has shadow entries */
-	if (dax_mapping(mapping) || shmem_mapping(mapping))
-		return;
-
 	/*
 	 * Track non-empty nodes that contain only shadow entries;
 	 * unlink those that contain pages or are being freed.
 	 *
 	 * Avoid acquiring the list_lru lock when the nodes are
 	 * already where they should be. The list_empty() test is safe
-	 * as node->private_list is protected by &mapping->tree_lock.
+	 * as node->private_list is protected by the i_pages lock.
 	 */
-	if (node->count && node->count == node->exceptional) {
-		if (list_empty(&node->private_list))
+	VM_WARN_ON_ONCE(!irqs_disabled());  /* For __inc_lruvec_page_state */
+
+	if (node->count && node->count == node->nr_values) {
+		if (list_empty(&node->private_list)) {
 			list_lru_add(&shadow_nodes, &node->private_list);
+			__inc_lruvec_kmem_state(node, WORKINGSET_NODES);
+		}
 	} else {
-		if (!list_empty(&node->private_list))
+		if (!list_empty(&node->private_list)) {
 			list_lru_del(&shadow_nodes, &node->private_list);
+			__dec_lruvec_kmem_state(node, WORKINGSET_NODES);
+		}
 	}
 }
 
@@ -397,15 +569,14 @@ static unsigned long count_shadow_nodes(struct shrinker *shrinker,
 {
 	unsigned long max_nodes;
 	unsigned long nodes;
-	unsigned long cache;
+	unsigned long pages;
 
-	/* list_lru lock nests inside IRQ-safe mapping->tree_lock */
-	local_irq_disable();
 	nodes = list_lru_shrink_count(&shadow_nodes, sc);
-	local_irq_enable();
+	if (!nodes)
+		return SHRINK_EMPTY;
 
 	/*
-	 * Approximate a reasonable limit for the radix tree nodes
+	 * Approximate a reasonable limit for the nodes
 	 * containing shadow entries. We don't need to keep more
 	 * shadow entries than possible pages on the active list,
 	 * since refault distances bigger than that are dismissed.
@@ -420,20 +591,30 @@ static unsigned long count_shadow_nodes(struct shrinker *shrinker,
 	 * worst-case density of 1/8th. Below that, not all eligible
 	 * refaults can be detected anymore.
 	 *
-	 * On 64-bit with 7 radix_tree_nodes per page and 64 slots
+	 * On 64-bit with 7 xa_nodes per page and 64 slots
 	 * each, this will reclaim shadow entries when they consume
 	 * ~1.8% of available memory:
 	 *
-	 * PAGE_SIZE / radix_tree_nodes / node_entries * 8 / PAGE_SIZE
+	 * PAGE_SIZE / xa_nodes / node_entries * 8 / PAGE_SIZE
 	 */
+#ifdef CONFIG_MEMCG
 	if (sc->memcg) {
-		cache = mem_cgroup_node_nr_lru_pages(sc->memcg, sc->nid,
-						     LRU_ALL_FILE);
-	} else {
-		cache = node_page_state(NODE_DATA(sc->nid), NR_ACTIVE_FILE) +
-			node_page_state(NODE_DATA(sc->nid), NR_INACTIVE_FILE);
-	}
-	max_nodes = cache >> (RADIX_TREE_MAP_SHIFT - 3);
+		struct lruvec *lruvec;
+		int i;
+
+		lruvec = mem_cgroup_lruvec(sc->memcg, NODE_DATA(sc->nid));
+		for (pages = 0, i = 0; i < NR_LRU_LISTS; i++)
+			pages += lruvec_page_state_local(lruvec,
+							 NR_LRU_BASE + i);
+		pages += lruvec_page_state_local(
+			lruvec, NR_SLAB_RECLAIMABLE_B) >> PAGE_SHIFT;
+		pages += lruvec_page_state_local(
+			lruvec, NR_SLAB_UNRECLAIMABLE_B) >> PAGE_SHIFT;
+	} else
+#endif
+		pages = node_present_pages(sc->nid);
+
+	max_nodes = pages >> (XA_CHUNK_SHIFT - 3);
 
 	if (nodes <= max_nodes)
 		return 0;
@@ -443,36 +624,36 @@ static unsigned long count_shadow_nodes(struct shrinker *shrinker,
 static enum lru_status shadow_lru_isolate(struct list_head *item,
 					  struct list_lru_one *lru,
 					  spinlock_t *lru_lock,
-					  void *arg)
+					  void *arg) __must_hold(lru_lock)
 {
+	struct xa_node *node = container_of(item, struct xa_node, private_list);
 	struct address_space *mapping;
-	struct radix_tree_node *node;
-	unsigned int i;
 	int ret;
 
 	/*
-	 * Page cache insertions and deletions synchroneously maintain
-	 * the shadow node LRU under the mapping->tree_lock and the
+	 * Page cache insertions and deletions synchronously maintain
+	 * the shadow node LRU under the i_pages lock and the
 	 * lru_lock.  Because the page cache tree is emptied before
 	 * the inode can be destroyed, holding the lru_lock pins any
-	 * address_space that has radix tree nodes on the LRU.
+	 * address_space that has nodes on the LRU.
 	 *
-	 * We can then safely transition to the mapping->tree_lock to
+	 * We can then safely transition to the i_pages lock to
 	 * pin only the address_space of the particular node we want
 	 * to reclaim, take the node off-LRU, and drop the lru_lock.
 	 */
 
-	node = container_of(item, struct radix_tree_node, private_list);
-	mapping = container_of(node->root, struct address_space, page_tree);
+	mapping = container_of(node->array, struct address_space, i_pages);
 
 	/* Coming from the list, invert the lock order */
-	if (!spin_trylock(&mapping->tree_lock)) {
-		spin_unlock(lru_lock);
+	if (!xa_trylock(&mapping->i_pages)) {
+		spin_unlock_irq(lru_lock);
 		ret = LRU_RETRY;
 		goto out;
 	}
 
 	list_lru_isolate(lru, item);
+	__dec_lruvec_kmem_state(node, WORKINGSET_NODES);
+
 	spin_unlock(lru_lock);
 
 	/*
@@ -480,51 +661,28 @@ static enum lru_status shadow_lru_isolate(struct list_head *item,
 	 * no pages, so we expect to be able to remove them all and
 	 * delete and free the empty node afterwards.
 	 */
-	if (WARN_ON_ONCE(!node->exceptional))
+	if (WARN_ON_ONCE(!node->nr_values))
 		goto out_invalid;
-	if (WARN_ON_ONCE(node->count != node->exceptional))
+	if (WARN_ON_ONCE(node->count != node->nr_values))
 		goto out_invalid;
-	for (i = 0; i < RADIX_TREE_MAP_SIZE; i++) {
-		if (node->slots[i]) {
-			if (WARN_ON_ONCE(!radix_tree_exceptional_entry(node->slots[i])))
-				goto out_invalid;
-			if (WARN_ON_ONCE(!node->exceptional))
-				goto out_invalid;
-			if (WARN_ON_ONCE(!mapping->nrexceptional))
-				goto out_invalid;
-			node->slots[i] = NULL;
-			node->exceptional--;
-			node->count--;
-			mapping->nrexceptional--;
-		}
-	}
-	if (WARN_ON_ONCE(node->exceptional))
-		goto out_invalid;
-	inc_lruvec_page_state(virt_to_page(node), WORKINGSET_NODERECLAIM);
-	__radix_tree_delete_node(&mapping->page_tree, node,
-				 workingset_update_node, mapping);
+	xa_delete_node(node, workingset_update_node);
+	__inc_lruvec_kmem_state(node, WORKINGSET_NODERECLAIM);
 
 out_invalid:
-	spin_unlock(&mapping->tree_lock);
+	xa_unlock_irq(&mapping->i_pages);
 	ret = LRU_REMOVED_RETRY;
 out:
-	local_irq_enable();
 	cond_resched();
-	local_irq_disable();
-	spin_lock(lru_lock);
+	spin_lock_irq(lru_lock);
 	return ret;
 }
 
 static unsigned long scan_shadow_nodes(struct shrinker *shrinker,
 				       struct shrink_control *sc)
 {
-	unsigned long ret;
-
-	/* list_lru lock nests inside IRQ-safe mapping->tree_lock */
-	local_irq_disable();
-	ret = list_lru_shrink_walk(&shadow_nodes, sc, shadow_lru_isolate, NULL);
-	local_irq_enable();
-	return ret;
+	/* list_lru lock nests inside the IRQ-safe i_pages lock */
+	return list_lru_shrink_walk_irq(&shadow_nodes, sc, shadow_lru_isolate,
+					NULL);
 }
 
 static struct shrinker workingset_shadow_shrinker = {
@@ -536,7 +694,7 @@ static struct shrinker workingset_shadow_shrinker = {
 
 /*
  * Our list_lru->lock is IRQ-safe as it nests inside the IRQ-safe
- * mapping->tree_lock.
+ * i_pages lock.
  */
 static struct lock_class_key shadow_nodes_key;
 
@@ -561,15 +719,17 @@ static int __init workingset_init(void)
 	pr_info("workingset: timestamp_bits=%d max_order=%d bucket_order=%u\n",
 	       timestamp_bits, max_order, bucket_order);
 
-	ret = __list_lru_init(&shadow_nodes, true, &shadow_nodes_key);
+	ret = prealloc_shrinker(&workingset_shadow_shrinker);
 	if (ret)
 		goto err;
-	ret = register_shrinker(&workingset_shadow_shrinker);
+	ret = __list_lru_init(&shadow_nodes, true, &shadow_nodes_key,
+			      &workingset_shadow_shrinker);
 	if (ret)
 		goto err_list_lru;
+	register_shrinker_prepared(&workingset_shadow_shrinker);
 	return 0;
 err_list_lru:
-	list_lru_destroy(&shadow_nodes);
+	free_prealloced_shrinker(&workingset_shadow_shrinker);
 err:
 	return ret;
 }

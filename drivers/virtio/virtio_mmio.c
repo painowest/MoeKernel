@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Virtio memory mapped device driver
  *
@@ -48,12 +49,7 @@
  *		virtio_mmio.device=0x100@0x100b0000:48 \
  *				virtio_mmio.device=1K@0x1001e000:74
  *
- *
- *
  * Based on Virtio PCI driver by Anthony Liguori, copyright IBM Corp. 2007
- *
- * This work is licensed under the terms of the GNU GPL, version 2 or later.
- * See the COPYING file in the top-level directory.
  */
 
 #define pr_fmt(fmt) "virtio-mmio: " fmt
@@ -63,6 +59,7 @@
 #include <linux/highmem.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/of_address.h>
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -74,9 +71,16 @@
 #include <uapi/linux/virtio_mmio.h>
 #include <linux/virtio_ring.h>
 
-#ifdef CONFIG_QTI_GVM_QUIN
-#include <linux/virtio_ids.h>
-#include <linux/of.h>
+#ifdef CONFIG_GH_VIRTIO_DEBUG
+#define CREATE_TRACE_POINTS
+#include <trace/events/gh_virtio_frontend.h>
+#undef CREATE_TRACE_POINTS
+#endif
+
+#ifdef CONFIG_VIRTIO_MMIO_SWIOTLB
+#include <linux/swiotlb.h>
+#include <linux/dma-direct.h>
+#endif
 
 struct virtio_wakeup_device {
 	const char *name;
@@ -96,6 +100,16 @@ static DEFINE_MUTEX(wakeup_devs_lock);
 #define to_virtio_mmio_device(_plat_dev) \
 	container_of(_plat_dev, struct virtio_mmio_device, vdev)
 
+#ifdef CONFIG_VIRTIO_MMIO_SWIOTLB
+struct virtio_mem_pool {
+	void *virt_base;
+	dma_addr_t dma_base;
+	size_t size;
+	unsigned long *bitmap;
+	spinlock_t lock;
+};
+#endif
+
 struct virtio_mmio_device {
 	struct virtio_device vdev;
 	struct platform_device *pdev;
@@ -106,6 +120,9 @@ struct virtio_mmio_device {
 	/* a list of queues so we can dispatch IRQs */
 	spinlock_t lock;
 	struct list_head virtqueues;
+#ifdef CONFIG_VIRTIO_MMIO_SWIOTLB
+	struct virtio_mem_pool *mem_pool;
+#endif
 };
 
 struct virtio_mmio_vq_info {
@@ -142,7 +159,7 @@ static int vm_finalize_features(struct virtio_device *vdev)
 	/* Give virtio_ring a chance to accept features. */
 	vring_transport_features(vdev);
 
-	/* Make sure there is are no mixed devices */
+	/* Make sure there are no mixed devices */
 	if (vm_dev->version == 2 &&
 			!__virtio_test_bit(vdev, VIRTIO_F_VERSION_1)) {
 		dev_err(&vdev->dev, "New virtio-mmio devices (version 2) must provide VIRTIO_F_VERSION_1 feature!\n");
@@ -289,6 +306,9 @@ static bool vm_notify(struct virtqueue *vq)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vq->vdev);
 
+#ifdef CONFIG_GH_VIRTIO_DEBUG
+	trace_virtio_mmio_vm_notify(vq->vdev->index, vq->index);
+#endif
 	/* We write the queue's selector into the notification register to
 	 * signal the other end */
 	writel(vq->index, vm_dev->base + VIRTIO_MMIO_QUEUE_NOTIFY);
@@ -306,6 +326,10 @@ static irqreturn_t vm_interrupt(int irq, void *opaque)
 
 	/* Read and acknowledge interrupts */
 	status = readl(vm_dev->base + VIRTIO_MMIO_INTERRUPT_STATUS);
+#ifdef CONFIG_GH_VIRTIO_DEBUG
+	trace_virtio_mmio_vm_interrupt(vm_dev->vdev.index, status);
+#endif
+
 	writel(status, vm_dev->base + VIRTIO_MMIO_INTERRUPT_ACK);
 
 	if (unlikely(status & VIRTIO_MMIO_INT_CONFIG)) {
@@ -409,9 +433,23 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned index,
 	/* Activate the queue */
 	writel(virtqueue_get_vring_size(vq), vm_dev->base + VIRTIO_MMIO_QUEUE_NUM);
 	if (vm_dev->version == 1) {
+		u64 q_pfn = virtqueue_get_desc_addr(vq) >> PAGE_SHIFT;
+
+		/*
+		 * virtio-mmio v1 uses a 32bit QUEUE PFN. If we have something
+		 * that doesn't fit in 32bit, fail the setup rather than
+		 * pretending to be successful.
+		 */
+		if (q_pfn >> 32) {
+			dev_err(&vdev->dev,
+				"platform bug: legacy virtio-mmio must not be used with RAM above 0x%llxGB\n",
+				0x1ULL << (32 + PAGE_SHIFT - 30));
+			err = -E2BIG;
+			goto error_bad_pfn;
+		}
+
 		writel(PAGE_SIZE, vm_dev->base + VIRTIO_MMIO_QUEUE_ALIGN);
-		writel(virtqueue_get_desc_addr(vq) >> PAGE_SHIFT,
-				vm_dev->base + VIRTIO_MMIO_QUEUE_PFN);
+		writel(q_pfn, vm_dev->base + VIRTIO_MMIO_QUEUE_PFN);
 	} else {
 		u64 addr;
 
@@ -442,6 +480,8 @@ static struct virtqueue *vm_setup_vq(struct virtio_device *vdev, unsigned index,
 
 	return vq;
 
+error_bad_pfn:
+	vring_del_virtqueue(vq);
 error_new_virtqueue:
 	if (vm_dev->version == 1) {
 		writel(0, vm_dev->base + VIRTIO_MMIO_QUEUE_PFN);
@@ -463,37 +503,27 @@ static int vm_find_vqs(struct virtio_device *vdev, unsigned nvqs,
 		       struct irq_affinity *desc)
 {
 	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
-	unsigned int irq = platform_get_irq(vm_dev->pdev, 0);
-	int i, err;
+	int irq = platform_get_irq(vm_dev->pdev, 0);
+	int i, err, queue_idx = 0;
+
+	if (irq < 0)
+		return irq;
 
 	err = request_irq(irq, vm_interrupt, IRQF_SHARED,
 			dev_name(&vdev->dev), vm_dev);
 	if (err)
 		return err;
 
-#ifdef CONFIG_QTI_GVM_QUIN
-	if ((vdev->id.device == VIRTIO_ID_INPUT) &&
-			!list_empty(&wakeup_devs)) {
-		struct virtio_wakeup_device *wk_dev;
-		const char *devname = dev_name(&vm_dev->pdev->dev);
-
-		list_for_each_entry(wk_dev, &wakeup_devs, node) {
-			if (strnstr(devname, wk_dev->name, strlen(devname))) {
-				pr_info("Setting %s, IRQ %d as wakeup source.\n",
-						devname, irq);
-				enable_irq_wake(irq);
-
-				mutex_lock(&wakeup_devs_lock);
-				list_del(&wk_dev->node);
-				mutex_unlock(&wakeup_devs_lock);
-				break;
-			}
-		}
-	}
-#endif
+	if (of_property_read_bool(vm_dev->pdev->dev.of_node, "wakeup-source"))
+		enable_irq_wake(irq);
 
 	for (i = 0; i < nvqs; ++i) {
-		vqs[i] = vm_setup_vq(vdev, i, callbacks[i], names[i],
+		if (!names[i]) {
+			vqs[i] = NULL;
+			continue;
+		}
+
+		vqs[i] = vm_setup_vq(vdev, queue_idx++, callbacks[i], names[i],
 				     ctx ? ctx[i] : false);
 		if (IS_ERR(vqs[i])) {
 			vm_del_vqs(vdev);
@@ -511,6 +541,36 @@ static const char *vm_bus_name(struct virtio_device *vdev)
 	return vm_dev->pdev->name;
 }
 
+static bool vm_get_shm_region(struct virtio_device *vdev,
+			      struct virtio_shm_region *region, u8 id)
+{
+	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
+	u64 len, addr;
+
+	/* Select the region we're interested in */
+	writel(id, vm_dev->base + VIRTIO_MMIO_SHM_SEL);
+
+	/* Read the region size */
+	len = (u64) readl(vm_dev->base + VIRTIO_MMIO_SHM_LEN_LOW);
+	len |= (u64) readl(vm_dev->base + VIRTIO_MMIO_SHM_LEN_HIGH) << 32;
+
+	region->len = len;
+
+	/* Check if region length is -1. If that's the case, the shared memory
+	 * region does not exist and there is no need to proceed further.
+	 */
+	if (len == ~(u64)0)
+		return false;
+
+	/* Read the region base address */
+	addr = (u64) readl(vm_dev->base + VIRTIO_MMIO_SHM_BASE_LOW);
+	addr |= (u64) readl(vm_dev->base + VIRTIO_MMIO_SHM_BASE_HIGH) << 32;
+
+	region->addr = addr;
+
+	return true;
+}
+
 static const struct virtio_config_ops virtio_mmio_config_ops = {
 	.get		= vm_get,
 	.set		= vm_set,
@@ -523,6 +583,7 @@ static const struct virtio_config_ops virtio_mmio_config_ops = {
 	.get_features	= vm_get_features,
 	.finalize_features = vm_finalize_features,
 	.bus_name	= vm_bus_name,
+	.get_shm_region = vm_get_shm_region,
 };
 
 #ifdef CONFIG_PM_SLEEP
@@ -544,67 +605,296 @@ static int virtio_mmio_restore(struct device *dev)
 }
 
 static const struct dev_pm_ops virtio_mmio_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(virtio_mmio_freeze, virtio_mmio_restore)
+	.freeze		= virtio_mmio_freeze,
+	.restore	= virtio_mmio_restore,
 };
 #endif
 
-static void virtio_mmio_release_dev_empty(struct device *_d) {}
+static void virtio_mmio_release_dev(struct device *_d)
+{
+	struct virtio_device *vdev =
+			container_of(_d, struct virtio_device, dev);
+	struct virtio_mmio_device *vm_dev = to_virtio_mmio_device(vdev);
+
+	kfree(vm_dev);
+}
+
+#ifdef CONFIG_VIRTIO_MMIO_SWIOTLB
+static phys_addr_t virtio_swiotlb_base;
+static phys_addr_t virtio_swiotlb_dma_base;
+static size_t virtio_swiotlb_size;
+
+static int virtio_get_shm(struct device_node *np, phys_addr_t *base,
+		phys_addr_t *dma_base, size_t *size)
+{
+	const __be64 *val;
+	int len;
+	struct device_node *shm_np;
+	struct resource res_mem;
+	int ret;
+
+	shm_np = of_parse_phandle(np, "memory-region", 0);
+	if (!shm_np) {
+		pr_err("%s: Invalid memory-region\n", __func__);
+		return -EINVAL;
+	}
+
+	ret = of_address_to_resource(shm_np, 0, &res_mem);
+	if (ret) {
+		pr_err("%s: of_address_to_resource failed ret %d\n", __func__, ret);
+		return -EINVAL;
+	}
+
+	*base = res_mem.start;
+	*size = resource_size(&res_mem);
+	of_node_put(shm_np);
+
+	if (!*base || !*size) {
+		pr_err("%s: Invalid memory-region base %llx size %d\n", __func__, *base, *size);
+		return -EINVAL;
+	}
+
+	val = of_get_property(np, "dma_base", &len);
+	if (!val || len != 8) {
+		pr_err("%s: Invalid dma_base prop val %llx size %d\n", __func__, val, len);
+		return -EINVAL;
+	}
+	*dma_base = __be64_to_cpup(val);
+
+	pr_debug("%s: shm base %llx size %llx dma_base %llx\n", __func__, *base, *size, *dma_base);
+
+	return 0;
+}
+
+static int __init virtio_swiotlb_init(void)
+{
+	void __iomem *vbase;
+	int ret;
+	unsigned long nslabs;
+	phys_addr_t base;
+	phys_addr_t dma_base;
+	size_t size;
+	struct device_node *np;
+
+	np = of_find_node_by_path("/swiotlb");
+	if (!np)
+		return 0;
+
+	ret = virtio_get_shm(np, &base, &dma_base, &size);
+	of_node_put(np);
+
+	if (ret)
+		return ret;
+
+	nslabs = (size >> IO_TLB_SHIFT);
+	nslabs = ALIGN_DOWN(nslabs, IO_TLB_SEGSIZE);
+
+	if (!nslabs)
+		return -EINVAL;
+
+	vbase = __ioremap(base, size, __pgprot(PROT_NORMAL));
+	if (!vbase)
+		return -EINVAL;
+
+	ret = swiotlb_late_init_with_tblpaddr(vbase, dma_base, nslabs);
+	if (ret) {
+		iounmap(vbase);
+		return ret;
+	}
+
+	virtio_swiotlb_base = base;
+	virtio_swiotlb_dma_base = dma_base;
+	virtio_swiotlb_size = size;
+
+	return 0;
+}
+
+static void *virtio_alloc_coherent(struct device *dev, size_t size,
+		dma_addr_t *dma_handle, gfp_t flags, unsigned long attrs)
+{
+	struct platform_device *pdev =
+				container_of(dev, struct platform_device, dev);
+	struct virtio_mmio_device *vm_dev = platform_get_drvdata(pdev);
+	int pageno;
+	unsigned long irq_flags;
+	int order = get_order(size);
+	void *ret = NULL;
+	struct virtio_mem_pool *mem = vm_dev->mem_pool;
+
+	if (!mem || (size > (mem->size << PAGE_SHIFT)))
+		return NULL;
+
+	spin_lock_irqsave(&mem->lock, irq_flags);
+
+	pageno = bitmap_find_free_region(mem->bitmap, mem->size, order);
+	if (pageno >= 0) {
+		*dma_handle = mem->dma_base + (pageno << PAGE_SHIFT);
+		ret = mem->virt_base + (pageno << PAGE_SHIFT);
+	}
+
+	spin_unlock_irqrestore(&mem->lock, irq_flags);
+
+	return ret;
+}
+
+
+static void virtio_free_coherent(struct device *dev, size_t size, void *vaddr,
+				dma_addr_t dma_handle, unsigned long attrs)
+{
+	struct platform_device *pdev =
+			container_of(dev, struct platform_device, dev);
+	struct virtio_mmio_device *vm_dev = platform_get_drvdata(pdev);
+	int pageno;
+	unsigned long flags;
+	struct virtio_mem_pool *mem = vm_dev->mem_pool;
+
+	if (!mem)
+		return;
+
+	spin_lock_irqsave(&mem->lock, flags);
+	if (vaddr >= mem->virt_base &&
+			vaddr < (mem->virt_base + (mem->size << PAGE_SHIFT))) {
+		pageno = (vaddr - mem->virt_base) >> PAGE_SHIFT;
+		bitmap_release_region(mem->bitmap, pageno, get_order(size));
+	}
+
+	spin_unlock_irqrestore(&mem->lock, flags);
+}
+
+static dma_addr_t virtio_map_page(struct device *dev, struct page *page,
+				unsigned long offset, size_t size,
+				enum dma_data_direction dir,
+				unsigned long attrs)
+{
+	phys_addr_t phys = page_to_phys(page) + offset;
+
+	return swiotlb_map(dev, phys, size, dir, attrs);
+}
+
+static void virtio_unmap_page(struct device *dev, dma_addr_t dev_addr,
+			size_t size, enum dma_data_direction dir,
+			unsigned long attrs)
+{
+	BUG_ON(!is_swiotlb_buffer(dev, dev_addr));
+
+	swiotlb_tbl_unmap_single(dev, dev_addr, size, dir, attrs);
+}
+
+size_t virtio_max_mapping_size(struct device *dev)
+{
+	return SZ_2K;
+}
+
+static const struct dma_map_ops virtio_dma_ops = {
+	.alloc                  = virtio_alloc_coherent,
+	.free                   = virtio_free_coherent,
+	.map_page               = virtio_map_page,
+	.unmap_page             = virtio_unmap_page,
+	.max_mapping_size	= virtio_max_mapping_size,
+};
+
+static inline int
+get_ring_base(struct platform_device *pdev, phys_addr_t *ring_base,
+				phys_addr_t *ring_dma_base, size_t *ring_size)
+{
+	int ret;
+
+	if (!virtio_swiotlb_base)
+		return 0;
+
+	ret = virtio_get_shm(pdev->dev.of_node, ring_base, ring_dma_base, ring_size);
+
+	return ret ? 0 : 1;
+}
+
+static int setup_virtio_dma_ops(struct platform_device *pdev)
+{
+	struct virtio_mmio_device *vm_dev = platform_get_drvdata(pdev);
+	phys_addr_t ring_base, ring_dma_base;
+	size_t ring_size, pages;
+	struct virtio_mem_pool *vmem_pool;
+	unsigned long bitmap_size;
+
+	if (!vm_dev || !get_ring_base(pdev, &ring_base,
+					&ring_dma_base, &ring_size))
+		return 0;
+
+	vmem_pool = devm_kzalloc(&pdev->dev, sizeof(struct virtio_mem_pool),
+				GFP_KERNEL);
+	if (!vmem_pool)
+		return -ENOMEM;
+
+	pages = ring_size >> PAGE_SHIFT;
+	if (!pages) {
+		pr_err("%s: Ring size too small\n", __func__);
+		return -EINVAL;
+	}
+
+	if (ULONG_MAX / sizeof(unsigned long) < BITS_TO_LONGS(pages)) {
+		pr_err("%s: Ring size too large %lu\n", __func__, ring_size);
+		return -EINVAL;
+	}
+
+	bitmap_size = BITS_TO_LONGS(pages) * sizeof(long);
+	vmem_pool->bitmap = devm_kzalloc(&pdev->dev, bitmap_size, GFP_KERNEL);
+	if (!vmem_pool->bitmap)
+		return -ENOMEM;
+
+	/* Note: Mapped as 'normal/cacheable' memory */
+	vmem_pool->virt_base = __ioremap(ring_base, ring_size,
+						__pgprot(PROT_NORMAL));
+	if (!vmem_pool->virt_base) {
+		pr_err("Unable to ioremap %pK size %lx\n",
+					(void *)ring_base, ring_size);
+		return -ENOMEM;
+	}
+	memset(vmem_pool->virt_base, 0, ring_size);
+
+	vmem_pool->dma_base = ring_dma_base;
+	vmem_pool->size = pages;
+	spin_lock_init(&vmem_pool->lock);
+	vm_dev->mem_pool = vmem_pool;
+	set_dma_ops(&pdev->dev, &virtio_dma_ops);
+
+	dev_dbg(&pdev->dev, "virtio_mem_pool: virt_base %llx pages %lx\n",
+					vmem_pool->virt_base, pages);
+	return 0;
+}
+#else	/* CONFIG_VIRTIO_MMIO_SWIOTLB */
+
+static inline int setup_virtio_dma_ops(struct platform_device *pdev)
+{
+	return 0;
+}
+
+static inline int virtio_swiotlb_init(void)
+{
+	return 0;
+}
+
+#endif	/* CONFIG_VIRTIO_MMIO_SWIOTLB */
 
 /* Platform device */
-
 static int virtio_mmio_probe(struct platform_device *pdev)
 {
 	struct virtio_mmio_device *vm_dev;
-	struct resource *mem;
 	unsigned long magic;
 	int rc;
 
-#ifdef CONFIG_QTI_GVM_QUIN
-	/*
-	 * Assuming only virito-input supports virtual machine wakeup, there
-	 * will be a duplicate virtio mmio device under soc{} in device tree.
-	 * It marks the capability as wakeup source and exits here. The real
-	 * virito_mmio_probe depends on similar node under vdevs{} in device
-	 * tree inserted by host machine.
-	 */
-	if (of_property_read_bool(pdev->dev.of_node, "virtio,wakeup")) {
-		struct virtio_wakeup_device *wk_dev;
-
-		wk_dev = devm_kzalloc(&pdev->dev, sizeof(*wk_dev), GFP_KERNEL);
-		if (!wk_dev)
-			return  -ENOMEM;
-		wk_dev->name = pdev->dev.of_node->name;
-
-		mutex_lock(&wakeup_devs_lock);
-		list_add(&wk_dev->node, &wakeup_devs);
-		mutex_unlock(&wakeup_devs_lock);
-
-		return 0;
-	}
-#endif
-
-	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!mem)
-		return -EINVAL;
-
-	if (!devm_request_mem_region(&pdev->dev, mem->start,
-			resource_size(mem), pdev->name))
-		return -EBUSY;
-
-	vm_dev = devm_kzalloc(&pdev->dev, sizeof(*vm_dev), GFP_KERNEL);
+	vm_dev = kzalloc(sizeof(*vm_dev), GFP_KERNEL);
 	if (!vm_dev)
-		return  -ENOMEM;
+		return -ENOMEM;
 
 	vm_dev->vdev.dev.parent = &pdev->dev;
-	vm_dev->vdev.dev.release = virtio_mmio_release_dev_empty;
+	vm_dev->vdev.dev.release = virtio_mmio_release_dev;
 	vm_dev->vdev.config = &virtio_mmio_config_ops;
 	vm_dev->pdev = pdev;
 	INIT_LIST_HEAD(&vm_dev->virtqueues);
 	spin_lock_init(&vm_dev->lock);
 
-	vm_dev->base = devm_ioremap(&pdev->dev, mem->start, resource_size(mem));
-	if (vm_dev->base == NULL)
-		return -EFAULT;
+	vm_dev->base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(vm_dev->base))
+		return PTR_ERR(vm_dev->base);
 
 	/* Check magic value */
 	magic = readl(vm_dev->base + VIRTIO_MMIO_MAGIC_VALUE);
@@ -652,13 +942,22 @@ static int virtio_mmio_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, vm_dev);
 
-	return register_virtio_device(&vm_dev->vdev);
+	rc = setup_virtio_dma_ops(pdev);
+	if (rc) {
+		put_device(&vm_dev->vdev.dev);
+		return rc;
+	}
+
+	rc = register_virtio_device(&vm_dev->vdev);
+	if (rc)
+		put_device(&vm_dev->vdev.dev);
+
+	return rc;
 }
 
 static int virtio_mmio_remove(struct platform_device *pdev)
 {
 	struct virtio_mmio_device *vm_dev = platform_get_drvdata(pdev);
-
 	unregister_virtio_device(&vm_dev->vdev);
 
 	return 0;
@@ -697,11 +996,11 @@ static int vm_cmdline_set(const char *device,
 			&vm_cmdline_id, &consumed);
 
 	/*
-	 * sscanf() must processes at least 2 chunks; also there
+	 * sscanf() must process at least 2 chunks; also there
 	 * must be no extra characters after the last chunk, so
 	 * str[consumed] must be '\0'
 	 */
-	if (processed < 2 || str[consumed])
+	if (processed < 2 || str[consumed] || irq == 0)
 		return -EINVAL;
 
 	resources[0].flags = IORESOURCE_MEM;
@@ -730,10 +1029,8 @@ static int vm_cmdline_set(const char *device,
 	pdev = platform_device_register_resndata(&vm_cmdline_parent,
 			"virtio-mmio", vm_cmdline_id++,
 			resources, ARRAY_SIZE(resources), NULL, 0);
-	if (IS_ERR(pdev))
-		return PTR_ERR(pdev);
 
-	return 0;
+	return PTR_ERR_OR_ZERO(pdev);
 }
 
 static int vm_cmdline_get_device(struct device *dev, void *data)
@@ -793,7 +1090,7 @@ static void vm_unregister_cmdline_devices(void)
 
 /* Platform driver */
 
-static struct of_device_id virtio_mmio_match[] = {
+static const struct of_device_id virtio_mmio_match[] = {
 	{ .compatible = "virtio,mmio", },
 	{},
 };
@@ -815,13 +1112,21 @@ static struct platform_driver virtio_mmio_driver = {
 		.of_match_table	= virtio_mmio_match,
 		.acpi_match_table = ACPI_PTR(virtio_mmio_acpi_match),
 #ifdef CONFIG_PM_SLEEP
-		.pm	= &virtio_mmio_pm_ops,
+#ifndef CONFIG_VIRTIO_MMIO_SWIOTLB
+		.pm     = &virtio_mmio_pm_ops,
+#endif
 #endif
 	},
 };
 
 static int __init virtio_mmio_init(void)
 {
+	int ret;
+
+	ret = virtio_swiotlb_init();
+	if (ret)
+		return ret;
+
 	return platform_driver_register(&virtio_mmio_driver);
 }
 

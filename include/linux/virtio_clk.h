@@ -1,13 +1,6 @@
-/* Copyright (c) 2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _LINUX_VIRTIO_CLK_H
@@ -17,6 +10,14 @@
 #include <linux/virtio_ids.h>
 #include <linux/virtio_config.h>
 #include <linux/virtio_types.h>
+
+/* Virtio ID of clock */
+#ifdef VIRTIO_ID_CLOCK
+#undef VIRTIO_ID_CLOCK
+#endif
+
+/* Virtio ID of clock : 0xC000 */
+#define VIRTIO_ID_CLOCK		49152
 
 /* Feature bits */
 #define VIRTIO_CLK_F_RESET	1	/* Support reset */
@@ -46,5 +47,6 @@ struct virtio_clk_msg {
 #define VIRTIO_CLK_T_ROUND_RATE	4
 #define VIRTIO_CLK_T_RESET	5
 #define VIRTIO_CLK_T_SET_FLAGS	6
+#define VIRTIO_CLK_T_SET_PARENT	8
 
 #endif /* _LINUX_VIRTIO_CLK_H */

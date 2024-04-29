@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * f_uac1_legacy.c -- USB Audio class function driver
  *
  * Copyright (c) 2012-2015,2020, The Linux Foundation. All rights reserved.
  * Copyright (C) 2008 Bryan Wu <cooloney@kernel.org>
  * Copyright (C) 2008 Analog Devices, Inc
- *
- * Enter bugs at http://blackfin.uclinux.org/
- *
- * Licensed under the GPL-2 or later.
  */
 
 #ifdef pr_fmt
@@ -229,119 +226,6 @@ static struct uac_iso_endpoint_descriptor speaker_as_iso_out_desc = {
 	.bmAttributes = 	1,
 	.bLockDelayUnits =	1,
 	.wLockDelay =		cpu_to_le16(1),
-};
-
-static struct usb_audio_control speaker_sample_freq_control = {
-	.list = LIST_HEAD_INIT(speaker_sample_freq_control.list),
-	.name = "Speaker Sampling Frequency Control",
-	.type = UAC_EP_CS_ATTR_SAMPLE_RATE,
-	.set  = generic_set_cmd,
-	.get  = generic_get_cmd,
-};
-
-static struct usb_audio_control_selector speaker_as_iso_out = {
-	.list = LIST_HEAD_INIT(speaker_as_iso_out.list),
-	.name = "Speaker Iso-out Endpoint Control",
-	.type = UAC_EP_GENERAL,
-	.desc = (struct usb_descriptor_header *)&speaker_as_iso_out_desc,
-};
-
-/*---------------------------------*/
-
-/* B.4.1  Standard AS Interface Descriptor */
-static struct usb_interface_descriptor microphone_as_interface_alt_0_desc = {
-	.bLength		= USB_DT_INTERFACE_SIZE,
-	.bDescriptorType	= USB_DT_INTERFACE,
-	.bAlternateSetting	= 0,
-	.bNumEndpoints		= 0,
-	.bInterfaceClass	= USB_CLASS_AUDIO,
-	.bInterfaceSubClass	= USB_SUBCLASS_AUDIOSTREAMING,
-};
-
-static struct usb_interface_descriptor microphone_as_interface_alt_1_desc = {
-	.bLength		= USB_DT_INTERFACE_SIZE,
-	.bDescriptorType	= USB_DT_INTERFACE,
-	.bAlternateSetting	= 1,
-	.bNumEndpoints		= 1,
-	.bInterfaceClass	= USB_CLASS_AUDIO,
-	.bInterfaceSubClass	= USB_SUBCLASS_AUDIOSTREAMING,
-};
-
-/* B.4.2  Class-Specific AS Interface Descriptor */
-static struct uac1_as_header_descriptor microphone_as_header_desc = {
-	.bLength		= UAC_DT_AS_HEADER_SIZE,
-	.bDescriptorType	= USB_DT_CS_INTERFACE,
-	.bDescriptorSubtype	= UAC_AS_GENERAL,
-	.bTerminalLink		= MICROPHONE_OUTPUT_TERMINAL_ID,
-	.bDelay			= 1,
-	.wFormatTag		= UAC_FORMAT_TYPE_I_PCM,
-};
-
-static struct
-uac_format_type_i_discrete_descriptor_1 microphone_as_type_i_desc = {
-	.bLength		= UAC_FORMAT_TYPE_I_DISCRETE_DESC_SIZE(1),
-	.bDescriptorType	= USB_DT_CS_INTERFACE,
-	.bDescriptorSubtype	= UAC_FORMAT_TYPE,
-	.bFormatType		= UAC_FORMAT_TYPE_I,
-	.bNrChannels		= 1,
-	.bSubframeSize		= 2,
-	.bBitResolution		= 16,
-	.bSamFreqType		= 1,
-};
-
-/* Standard ISO IN Endpoint Descriptor */
-static struct usb_endpoint_descriptor microphone_as_ep_in_desc = {
-	.bLength		= USB_DT_ENDPOINT_AUDIO_SIZE,
-	.bDescriptorType	= USB_DT_ENDPOINT,
-	.bEndpointAddress	= USB_DIR_IN,
-	.bmAttributes		=
-		USB_ENDPOINT_XFER_ISOC | USB_ENDPOINT_SYNC_ASYNC,
-	.wMaxPacketSize		= cpu_to_le16(UAC1_IN_EP_MAX_PACKET_SIZE),
-	.bInterval		= 4,
-};
-
-static struct usb_ss_ep_comp_descriptor microphone_as_ep_in_comp_desc = {
-	 .bLength =		 sizeof(microphone_as_ep_in_comp_desc),
-	 .bDescriptorType =	 USB_DT_SS_ENDPOINT_COMP,
-
-	 .wBytesPerInterval =	cpu_to_le16(1024),
-};
-
- /* Class-specific AS ISO IN Endpoint Descriptor */
-static struct uac_iso_endpoint_descriptor microphone_as_iso_in_desc  = {
-	.bLength		= UAC_ISO_ENDPOINT_DESC_SIZE,
-	.bDescriptorType	= USB_DT_CS_ENDPOINT,
-	.bDescriptorSubtype	= UAC_EP_GENERAL,
-	.bmAttributes		= 1,
-	.bLockDelayUnits	= 1,
-	.wLockDelay		= cpu_to_le16(1),
-};
-
-static struct usb_audio_control microphone_sample_freq_control = {
-	.list = LIST_HEAD_INIT(microphone_sample_freq_control.list),
-	.name = "Microphone Sampling Frequency Control",
-	.type = UAC_EP_CS_ATTR_SAMPLE_RATE,
-	.set  = generic_set_cmd,
-	.get  = generic_get_cmd,
-};
-
-static struct usb_audio_control_selector microphone_as_iso_in = {
-	.list = LIST_HEAD_INIT(microphone_as_iso_in.list),
-	.name = "Microphone Iso-IN Endpoint Control",
-	.type = UAC_EP_GENERAL,
-	.desc = (struct usb_descriptor_header *)&microphone_as_iso_in_desc,
-};
-
-static struct usb_interface_assoc_descriptor
-audio_iad_descriptor = {
-	.bLength =		sizeof(audio_iad_descriptor),
-	.bDescriptorType =	USB_DT_INTERFACE_ASSOCIATION,
-
-	.bFirstInterface =	0, /* updated at bind */
-	.bInterfaceCount =	3,
-	.bFunctionClass =	USB_CLASS_AUDIO,
-	.bFunctionSubClass =	0,
-	.bFunctionProtocol =	UAC_VERSION_1,
 };
 
 static struct usb_descriptor_header *f_audio_desc[] = {
@@ -575,18 +459,10 @@ f_audio_playback_ep_complete(struct usb_ep *ep, struct usb_request *req)
 		return -EINVAL;
 
 	/* Copy buffer is full, add it to the play_queue */
-	if (audio_playback_buf_size - copy_buf->actual < req->actual) {
-		pr_debug("audio_playback_buf_size %d - copy_buf->actual %d, req->actual %d",
-			audio_playback_buf_size, copy_buf->actual, req->actual);
-		spin_lock_irqsave(&audio->playback_lock, flags);
-		if (!list_empty(&audio->play_queue) &&
-					opts->audio_playback_realtime) {
-			pr_debug("over-runs, audio write slow.. drop the packet\n");
-			f_audio_buffer_free(copy_buf);
-		} else {
-			list_add_tail(&copy_buf->list, &audio->play_queue);
-		}
-		spin_unlock_irqrestore(&audio->playback_lock, flags);
+	if (audio_buf_size - copy_buf->actual < req->actual) {
+		spin_lock_irq(&audio->lock);
+		list_add_tail(&copy_buf->list, &audio->play_queue);
+		spin_unlock_irq(&audio->lock);
 		schedule_work(&audio->playback_work);
 		copy_buf = f_audio_buffer_alloc(audio_playback_buf_size);
 		if (IS_ERR(copy_buf)) {
@@ -1300,24 +1176,6 @@ f_audio_bind(struct usb_configuration *c, struct usb_function *f)
 	ep->desc = &microphone_as_ep_in_desc;
 	ep->driver_data = cdev;
 
-	status = -ENODEV;
-
-	ep = usb_ep_autoconfig(cdev->gadget, &speaker_as_ep_out_desc);
-	if (!ep) {
-		pr_err("%s: failed to autoconfig out endpoint", __func__);
-		goto fail;
-	}
-	audio->out_ep = ep;
-	ep->desc = &speaker_as_ep_out_desc;
-	ep->driver_data = cdev;	/* claim */
-
-	/* associate bEndpointAddress with usb_function */
-	epaddr = microphone_as_ep_in_desc.bEndpointAddress & ~USB_DIR_IN;
-	microphone_as_iso_in.id = epaddr;
-
-	epaddr = speaker_as_ep_out_desc.bEndpointAddress & ~USB_DIR_IN;
-	speaker_as_iso_out.id = epaddr;
-
 	/* copy descriptors, and track endpoint copies */
 	status = usb_assign_descriptors(f, f_audio_desc, f_audio_desc,
 					f_audio_ss_desc, NULL);
@@ -1520,7 +1378,7 @@ static struct configfs_attribute *f_uac1_attrs[] = {
 	NULL,
 };
 
-static struct config_item_type f_uac1_func_type = {
+static const struct config_item_type f_uac1_func_type = {
 	.ct_item_ops	= &f_uac1_item_ops,
 	.ct_attrs	= f_uac1_attrs,
 	.ct_owner	= THIS_MODULE,
@@ -1634,4 +1492,5 @@ static struct usb_function *f_audio_alloc(struct usb_function_instance *fi)
 
 DECLARE_USB_FUNCTION_INIT(uac1_legacy, f_audio_alloc_inst, f_audio_alloc);
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver);
 MODULE_AUTHOR("Bryan Wu");

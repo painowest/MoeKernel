@@ -1,13 +1,7 @@
-/* Copyright (c) 2018-2020 The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2018-2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/alarmtimer.h>
@@ -23,6 +17,7 @@
 #include "qg-core.h"
 #include "qg-reg.h"
 #include "qg-defs.h"
+#include "qg-iio.h"
 #include "qg-util.h"
 
 static inline bool is_sticky_register(u32 addr)
@@ -225,7 +220,8 @@ int get_rtc_time(unsigned long *rtc_time)
 				CONFIG_RTC_HCTOSYS_DEVICE, rc);
 		goto close_time;
 	}
-	rtc_tm_to_time(&tm, rtc_time);
+
+	*rtc_time = rtc_tm_to_time64(&tm);
 
 close_time:
 	rtc_class_close(rtc);
@@ -314,13 +310,21 @@ bool is_input_present(struct qpnp_qg *chip)
 	return is_usb_present(chip) || is_dc_present(chip);
 }
 
-static bool is_parallel_available(struct qpnp_qg *chip)
+bool is_parallel_available(struct qpnp_qg *chip)
 {
-	if (chip->parallel_psy)
+	if (is_chan_valid(chip, PARALLEL_CHARGING_ENABLED))
 		return true;
 
-	chip->parallel_psy = power_supply_get_by_name("parallel");
-	if (!chip->parallel_psy)
+	return false;
+}
+
+bool is_cp_available(struct qpnp_qg *chip)
+{
+	if (chip->cp_psy)
+		return true;
+
+	chip->cp_psy = power_supply_get_by_name("charge_pump_master");
+	if (!chip->cp_psy)
 		return false;
 
 	return true;
@@ -328,14 +332,14 @@ static bool is_parallel_available(struct qpnp_qg *chip)
 
 bool is_parallel_enabled(struct qpnp_qg *chip)
 {
-	union power_supply_propval pval = {0, };
+	int val = 0;
 
-	if (is_parallel_available(chip)) {
-		power_supply_get_property(chip->parallel_psy,
-			POWER_SUPPLY_PROP_CHARGING_ENABLED, &pval);
-	}
+	if (is_parallel_available(chip))
+		qg_read_iio_chan(chip, PARALLEL_CHARGING_ENABLED, &val);
+	else if (is_cp_available(chip))
+		qg_read_iio_chan(chip, CP_CHARGING_ENABLED, &val);
 
-	return pval.intval ? true : false;
+	return val ? true : false;
 }
 
 int qg_write_monotonic_soc(struct qpnp_qg *chip, int msoc)
@@ -377,6 +381,11 @@ int qg_get_battery_current(struct qpnp_qg *chip, int *ibat_ua)
 
 	if (chip->battery_missing) {
 		*ibat_ua = 0;
+		return 0;
+	}
+
+	if (chip->qg_mode == QG_V_MODE) {
+		*ibat_ua = chip->qg_v_ibat;
 		return 0;
 	}
 
@@ -457,8 +466,154 @@ int qg_get_ibat_avg(struct qpnp_qg *chip, int *ibat_ua)
 		return rc;
 	}
 
+	if (last_ibat == FIFO_I_RESET_VAL) {
+		/* First FIFO is not complete, read instantaneous IBAT */
+		rc = qg_get_battery_current(chip, ibat_ua);
+		if (rc < 0)
+			pr_err("Failed to read inst. IBAT rc=%d\n", rc);
+
+		return rc;
+	}
+
 	last_ibat = sign_extend32(last_ibat, 15);
 	*ibat_ua = qg_iraw_to_ua(chip, last_ibat);
 
 	return 0;
+}
+
+bool is_chan_valid(struct qpnp_qg *chip,
+		enum qg_ext_iio_channels chan)
+{
+	int rc;
+
+	if (IS_ERR(chip->ext_iio_chans[chan]))
+		return false;
+
+	if (!chip->ext_iio_chans[chan]) {
+		chip->ext_iio_chans[chan] = iio_channel_get(chip->dev,
+					qg_ext_iio_chan_name[chan]);
+		if (IS_ERR(chip->ext_iio_chans[chan])) {
+			rc = PTR_ERR(chip->ext_iio_chans[chan]);
+			if (rc == -EPROBE_DEFER)
+				chip->ext_iio_chans[chan] = NULL;
+
+			pr_err("Failed to get IIO channel %s, rc=%d\n",
+				qg_ext_iio_chan_name[chan], rc);
+			return false;
+		}
+	}
+
+	return true;
+}
+
+int qg_read_iio_chan(struct qpnp_qg *chip,
+	enum qg_ext_iio_channels chan, int *val)
+{
+	int rc;
+
+	if (is_chan_valid(chip, chan)) {
+		rc = iio_read_channel_processed(
+				chip->ext_iio_chans[chan], val);
+		return (rc < 0) ? rc : 0;
+	}
+
+	return -EINVAL;
+}
+
+int qg_write_iio_chan(struct qpnp_qg *chip,
+	enum qg_ext_iio_channels chan, int val)
+{
+	if (is_chan_valid(chip, chan))
+		return iio_write_channel_raw(chip->ext_iio_chans[chan],
+						val);
+
+	return -EINVAL;
+}
+
+int qg_read_int_iio_chan(struct iio_channel *iio_chan_list, int chan_id,
+			int *val)
+{
+	int rc;
+
+	do {
+		if (iio_chan_list->channel->channel == chan_id) {
+			rc = iio_read_channel_processed(iio_chan_list,
+							val);
+			return (rc < 0) ? rc : 0;
+		}
+	} while (iio_chan_list++);
+
+	return -ENOENT;
+}
+
+int qg_read_range_data_from_node(struct device_node *node,
+		const char *prop_str, struct range_data *ranges,
+		int max_threshold, u32 max_value)
+{
+	int rc = 0, i, length, per_tuple_length, tuples;
+
+	if (!node || !prop_str || !ranges) {
+		pr_err("Invalid parameters passed\n");
+		return -EINVAL;
+	}
+
+	rc = of_property_count_elems_of_size(node, prop_str, sizeof(u32));
+	if (rc < 0) {
+		pr_err("Count %s failed, rc=%d\n", prop_str, rc);
+		return rc;
+	}
+
+	length = rc;
+	per_tuple_length = sizeof(struct range_data) / sizeof(u32);
+	if (length % per_tuple_length) {
+		pr_err("%s length (%d) should be multiple of %d\n",
+				prop_str, length, per_tuple_length);
+		return -EINVAL;
+	}
+	tuples = length / per_tuple_length;
+
+	if (tuples > MAX_STEP_CHG_ENTRIES) {
+		pr_err("too many entries(%d), only %d allowed\n",
+				tuples, MAX_STEP_CHG_ENTRIES);
+		return -EINVAL;
+	}
+
+	rc = of_property_read_u32_array(node, prop_str,
+			(u32 *)ranges, length);
+	if (rc) {
+		pr_err("Read %s failed, rc=%d\n", prop_str, rc);
+		return rc;
+	}
+
+	for (i = 0; i < tuples; i++) {
+		if (ranges[i].low_threshold >
+				ranges[i].high_threshold) {
+			pr_err("%s thresholds should be in ascendant ranges\n",
+						prop_str);
+			rc = -EINVAL;
+			goto clean;
+		}
+
+		if (i != 0) {
+			if (ranges[i - 1].high_threshold >
+					ranges[i].low_threshold) {
+				pr_err("%s thresholds should be in ascendant ranges\n",
+							prop_str);
+				rc = -EINVAL;
+				goto clean;
+			}
+		}
+
+		if (ranges[i].low_threshold > max_threshold)
+			ranges[i].low_threshold = max_threshold;
+		if (ranges[i].high_threshold > max_threshold)
+			ranges[i].high_threshold = max_threshold;
+		if (ranges[i].value > max_value)
+			ranges[i].value = max_value;
+	}
+
+	return rc;
+clean:
+	memset(ranges, 0, tuples * sizeof(struct range_data));
+	return rc;
 }

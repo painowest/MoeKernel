@@ -1,17 +1,12 @@
-/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
  */
 
 #ifndef __MSM_GPI_H_
 #define __MSM_GPI_H_
+
+#include <linux/types.h>
 
 struct __packed msm_gpi_tre {
 	u32 dword[4];
@@ -33,6 +28,22 @@ enum msm_gpi_tre_type {
 };
 
 #define MSM_GPI_TRE_TYPE(tre) ((tre->dword[3] >> 16) & 0xFF)
+
+/* Lock TRE */
+#define MSM_GPI_LOCK_TRE_DWORD0 (0)
+#define MSM_GPI_LOCK_TRE_DWORD1 (0)
+#define MSM_GPI_LOCK_TRE_DWORD2 (0)
+#define MSM_GPI_LOCK_TRE_DWORD3(link_rx, bei, ieot, ieob, ch) \
+	((0x3 << 20) | (0x0 << 16) | (link_rx << 11) | (bei << 10) | \
+	(ieot << 9) | (ieob << 8) | ch)
+
+/* Unlock TRE */
+#define MSM_GPI_UNLOCK_TRE_DWORD0 (0)
+#define MSM_GPI_UNLOCK_TRE_DWORD1 (0)
+#define MSM_GPI_UNLOCK_TRE_DWORD2 (0)
+#define MSM_GPI_UNLOCK_TRE_DWORD3(link_rx, bei, ieot, ieob, ch) \
+	((0x3 << 20) | (0x1 << 16) | (link_rx << 11) | (bei << 10) | \
+	(ieot << 9) | (ieob << 8) | ch)
 
 /* DMA w. Buffer TRE */
 #ifdef CONFIG_ARM64
@@ -168,12 +179,19 @@ enum msm_gpi_tre_type {
 #define MSM_GPI_RING_PHYS_ADDR_UPPER(ptr) 0
 #endif
 
+/* Static GPII here uses bit5 bit4 bit3 bit2 bit1(xxx1 111x) */
+#define STATIC_GPII_BMSK (0x1e)
+#define STATIC_GPII_SHFT (0x1)
+#define GPI_EV_PRIORITY_BMSK (0x1)
+
 /* cmds to perform by using dmaengine_slave_config() */
 enum msm_gpi_ctrl_cmd {
+	MSM_GPI_DEFAULT,
 	MSM_GPI_INIT,
 	MSM_GPI_CMD_UART_SW_STALE,
 	MSM_GPI_CMD_UART_RFR_READY,
 	MSM_GPI_CMD_UART_RFR_NOT_READY,
+	MSM_GPI_DEEP_SLEEP_INIT,
 };
 
 enum msm_gpi_cb_event {
@@ -202,6 +220,8 @@ struct msm_gpi_cb {
 	u64 count;
 	struct msm_gpi_error_log error_log;
 };
+
+struct dma_chan;
 
 struct gpi_client_info {
 	/*
@@ -245,4 +265,8 @@ struct msm_gpi_dma_async_tx_cb_param {
 	void *userdata;
 };
 
+/* Client drivers of the GPI can call this function to dump the GPI registers
+ * whenever client met some scenario like timeout, error in GPI transfer mode.
+ */
+void gpi_dump_for_geni(struct dma_chan *chan);
 #endif

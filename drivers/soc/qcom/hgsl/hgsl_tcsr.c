@@ -1,4 +1,6 @@
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+// SPDX-License-Identifier: GPL-2.0-only
+/* Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -42,7 +44,7 @@ struct hgsl_tcsr {
 	struct mutex dev_mutex;
 
 	unsigned int irq_num;
-	irqreturn_t (*isr)(struct device *, u32);
+	irqreturn_t (*isr)(struct device *dev, u32 status);
 };
 
 static irqreturn_t hgsl_tcsr_isr(int irq, void *ptr)
@@ -53,7 +55,10 @@ static irqreturn_t hgsl_tcsr_isr(int irq, void *ptr)
 	regmap_read(tcsr->regmap, TCSR_COMPUTE_SIGNAL_STATUS_REG, &status);
 	regmap_write(tcsr->regmap, TCSR_COMPUTE_SIGNAL_CLEAR_REG, status);
 
-	return tcsr->isr(tcsr->client_dev, status);
+	if (tcsr->isr)
+		return tcsr->isr(tcsr->client_dev, status);
+	else
+		return IRQ_HANDLED;
 }
 
 static int hgsl_tcsr_init_sender(struct hgsl_tcsr *tcsr)
@@ -101,8 +106,8 @@ static int hgsl_tcsr_init_receiver(struct hgsl_tcsr *tcsr)
 		return -ENODEV;
 	}
 
-	ret = devm_request_irq(dev, tcsr->irq_num, hgsl_tcsr_isr,
-				IRQF_TRIGGER_HIGH, "hgsl-tcsr", tcsr);
+	ret = request_irq(tcsr->irq_num, hgsl_tcsr_isr,
+			IRQF_TRIGGER_HIGH, "hgsl-tcsr", tcsr);
 	if (ret < 0) {
 		dev_err(dev, "failed to request IRQ%u: %d\n",
 				tcsr->irq_num, ret);
@@ -115,13 +120,14 @@ static int hgsl_tcsr_init_receiver(struct hgsl_tcsr *tcsr)
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_QCOM_HGSL_TCSR_SIGNAL)
 struct hgsl_tcsr *hgsl_tcsr_request(struct platform_device *pdev,
 				enum hgsl_tcsr_role role,
 				struct device *client,
 				irqreturn_t (*isr)(struct device *, u32))
 {
 	struct hgsl_tcsr *tcsr = platform_get_drvdata(pdev);
-	int ret;
+	int ret = -EINVAL;
 
 	if (!tcsr)
 		return ERR_PTR(-ENODEV);
@@ -136,17 +142,22 @@ struct hgsl_tcsr *hgsl_tcsr_request(struct platform_device *pdev,
 		else if (!isr)
 			return ERR_PTR(-EINVAL);
 
+		tcsr->client_dev = client;
+		tcsr->isr = isr;
+
 		ret = hgsl_tcsr_init_receiver(tcsr);
 	} else { /* HGSL_TCSR_ROLE_SENDER */
 		if (isr)
 			return ERR_PTR(-EINVAL);
 
+		tcsr->client_dev = client;
 		ret = hgsl_tcsr_init_sender(tcsr);
 	}
 
-	if (ret == 0) {
-		tcsr->client_dev = client;
-		tcsr->isr = isr;
+	if (ret) {
+		tcsr = ERR_PTR(ret);
+		tcsr->client_dev = NULL;
+		tcsr->isr = NULL;
 	}
 
 	return tcsr;
@@ -154,6 +165,10 @@ struct hgsl_tcsr *hgsl_tcsr_request(struct platform_device *pdev,
 
 void hgsl_tcsr_free(struct hgsl_tcsr *tcsr)
 {
+	if ((tcsr->role == HGSL_TCSR_ROLE_RECEIVER) &&
+		(tcsr->irq_num != 0) && (tcsr->isr != NULL))
+		free_irq(tcsr->irq_num, tcsr);
+
 	tcsr->client_dev = NULL;
 	tcsr->isr = NULL;
 }
@@ -213,6 +228,7 @@ void hgsl_tcsr_irq_enable(struct hgsl_tcsr *tcsr, u32 mask, bool enable)
 	reg = enable ? (reg | mask) : (reg & ~mask);
 	regmap_write(tcsr->regmap, TCSR_COMPUTE_SIGNAL_MASK_REG, reg);
 }
+#endif
 
 static const struct of_device_id hgsl_tcsr_match_table[] = {
 	{ .compatible = "qcom,hgsl-tcsr-sender" },
@@ -236,7 +252,6 @@ static int hgsl_tcsr_probe(struct platform_device *pdev)
 		tcsr->role = HGSL_TCSR_ROLE_SENDER;
 	} else {
 		dev_err(dev, "Not compatible device\n");
-		devm_kfree(dev, tcsr);
 		return -ENODEV;
 	}
 
@@ -252,30 +267,15 @@ static int hgsl_tcsr_remove(struct platform_device *pdev)
 	struct hgsl_tcsr *tcsr = platform_get_drvdata(pdev);
 
 	mutex_destroy(&tcsr->dev_mutex);
-	devm_kfree(&pdev->dev, tcsr);
 
 	return 0;
 }
 
-static struct platform_driver hgsl_tcsr_driver = {
+struct platform_driver hgsl_tcsr_driver = {
 	.probe = hgsl_tcsr_probe,
 	.remove = hgsl_tcsr_remove,
 	.driver = {
-		.owner = THIS_MODULE,
 		.name = "hgsl-tcsr",
 		.of_match_table = hgsl_tcsr_match_table,
 	}
 };
-
-static int __init hgsl_tcsr_init(void)
-{
-	return platform_driver_register(&hgsl_tcsr_driver);
-}
-
-static void __exit hgsl_tcsr_exit(void)
-{
-	platform_driver_unregister(&hgsl_tcsr_driver);
-}
-
-subsys_initcall(hgsl_tcsr_init);
-module_exit(hgsl_tcsr_exit);

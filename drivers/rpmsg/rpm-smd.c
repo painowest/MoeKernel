@@ -1,45 +1,38 @@
-/* Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) "%s: " fmt, __func__
 
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/types.h>
-#include <linux/bug.h>
 #include <linux/completion.h>
-#include <linux/delay.h>
-#include <linux/init.h>
-#include <linux/interrupt.h>
-#include <linux/io.h>
+#include <linux/device.h>
 #include <linux/irq.h>
 #include <linux/list.h>
+#include <linux/kernel.h>
+#include <linux/list.h>
+#include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/of_address.h>
-#include <linux/spinlock.h>
-#include <linux/string.h>
-#include <linux/device.h>
 #include <linux/notifier.h>
-#include <linux/slab.h>
-#include <linux/workqueue.h>
-#include <linux/platform_device.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
+#include <linux/pm_domain.h>
 #include <linux/rbtree.h>
+#include <linux/rpmsg.h>
+#include <linux/slab.h>
+#include <linux/spinlock.h>
+#include <linux/string.h>
+#include <linux/suspend.h>
+#include <linux/types.h>
 #include <soc/qcom/rpm-notifier.h>
 #include <soc/qcom/rpm-smd.h>
-#include <linux/rpmsg.h>
+#include <soc/qcom/mpm.h>
+#include "rpmsg_internal.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/trace_rpm_smd.h>
@@ -69,6 +62,8 @@
 #define RPM_RSC_ID_SIZE 12
 #define RPM_DATA_LEN_OFFSET 0
 #define RPM_DATA_LEN_SIZE 16
+#define ACTIVE 0
+#define CLOSED 1
 #define RPM_HDR_SIZE ((rpm_msg_fmt_ver == RPM_MSG_V0_FMT) ?\
 		sizeof(struct rpm_v0_hdr) : sizeof(struct rpm_v1_hdr))
 #define CLEAR_FIELD(offset, size) (~GENMASK(offset + size - 1, offset))
@@ -112,14 +107,16 @@ struct qcom_smd_rpm {
 	struct completion ack;
 	struct mutex lock;
 	int ack_status;
+	struct notifier_block genpd_nb;
 };
 
 struct qcom_smd_rpm *rpm;
-struct qcom_smd_rpm priv_rpm;
 
 static ATOMIC_NOTIFIER_HEAD(msm_rpm_sleep_notifier);
 static bool standalone;
 static int probe_status = -EPROBE_DEFER;
+static int channel_status = ACTIVE;
+static int quickboot_done;
 static void msm_rpm_process_ack(uint32_t msg_id, int errno);
 
 int msm_rpm_register_notifier(struct notifier_block *nb)
@@ -688,8 +685,11 @@ int msm_rpm_smd_buffer_request(struct msm_rpm_request *cdata,
 		}
 		slp->buf = PTR_ALIGN(&slp->ubuf[0], sizeof(u32));
 		memcpy(slp->buf, buf, size);
-		if (tr_insert(&tr_root, slp))
+		if (tr_insert(&tr_root, slp)) {
 			pr_err("Error updating sleep request\n");
+			kfree(slp);
+			return -EINVAL;
+		}
 	} else {
 		/* handle unsent requests */
 		tr_update(slp, buf);
@@ -707,25 +707,7 @@ static struct msm_rpm_driver_data msm_rpm_data = {
 	.smd_open = COMPLETION_INITIALIZER(msm_rpm_data.smd_open),
 };
 
-static int trysend_count = 20;
-module_param(trysend_count, int, 0664);
-static int msm_rpm_trysend_smd_buffer(char *buf, uint32_t size)
-{
-	int ret;
-	int count = 0;
-
-	do {
-		ret = rpmsg_trysend(rpm->rpm_channel, buf, size);
-		if (!ret)
-			break;
-		udelay(10);
-		count++;
-	} while (count < trysend_count);
-
-	return ret;
-}
-
-static int msm_rpm_flush_requests(bool print)
+static int msm_rpm_flush_requests(void)
 {
 	struct rb_node *t;
 	int ret;
@@ -742,7 +724,7 @@ static int msm_rpm_flush_requests(bool print)
 
 		set_msg_id(s->buf, msm_rpm_get_next_msg_id());
 
-		ret = msm_rpm_trysend_smd_buffer(s->buf, get_buf_len(s->buf));
+		ret = rpmsg_send(rpm->rpm_channel, s->buf, get_buf_len(s->buf));
 
 		WARN_ON(ret != 0);
 		trace_rpm_smd_send_sleep_set(get_msg_id(s->buf), type, id);
@@ -1202,7 +1184,7 @@ static void msm_rpm_log_request(struct msm_rpm_request *cdata)
 	}
 
 	pos += scnprintf(buf + pos, buflen - pos, "\n");
-	printk(buf);
+	pr_info("request info %s\n", buf);
 }
 
 static int msm_rpm_send_data(struct msm_rpm_request *cdata,
@@ -1471,7 +1453,7 @@ static int smd_mask_receive_interrupt(bool mask,
 	if (mask) {
 		irq_chip->irq_mask(irq_data);
 		if (cpumask)
-			irq_set_affinity(rpm->irq, cpumask);
+			irq_chip->irq_set_affinity(irq_data, cpumask, true);
 	} else {
 		irq_chip->irq_unmask(irq_data);
 	}
@@ -1483,37 +1465,102 @@ static int smd_mask_receive_interrupt(bool mask,
  * During power collapse, the rpm driver disables the SMD interrupts to make
  * sure that the interrupt doesn't wakes us from sleep.
  */
-int msm_rpm_enter_sleep(bool print, const struct cpumask *cpumask)
+static int msm_rpm_enter_sleep(void)
 {
 	int ret = 0;
+	struct cpumask cpumask;
+	unsigned int cpu = 0;
 
 	if (standalone)
 		return 0;
 
+	if (probe_status)
+		return 0;
 
-	ret = smd_mask_receive_interrupt(true, cpumask);
+	cpumask_copy(&cpumask, cpumask_of(cpu));
+
+	ret = smd_mask_receive_interrupt(true, &cpumask);
 	if (!ret) {
-		ret = msm_rpm_flush_requests(print);
-		if (ret)
+		ret = msm_rpm_flush_requests();
+		if (ret) {
 			smd_mask_receive_interrupt(false, NULL);
+			return ret;
+		}
+#ifdef CONFIG_DEEPSLEEP
+		if (channel_status != ACTIVE)
+			probe_status = -EPROBE_DEFER;
+#endif
 	}
-	return ret;
+
+	return msm_mpm_enter_sleep(&cpumask);
 }
-EXPORT_SYMBOL(msm_rpm_enter_sleep);
 
 /**
  * When the system resumes from power collapse, the SMD interrupt disabled by
  * enter function has to reenabled to continue processing SMD message.
  */
-void msm_rpm_exit_sleep(void)
+static void msm_rpm_exit_sleep(void)
 {
-
 	if (standalone)
+		return;
+
+	if (probe_status)
 		return;
 
 	smd_mask_receive_interrupt(false, NULL);
 }
-EXPORT_SYMBOL(msm_rpm_exit_sleep);
+
+static int rpm_smd_power_cb(struct notifier_block *nb, unsigned long action, void *d)
+{
+	switch (action) {
+	case GENPD_NOTIFY_OFF:
+		if (msm_rpm_waiting_for_ack())
+			return NOTIFY_BAD;
+
+		if (pm_suspend_via_firmware())
+			channel_status = CLOSED;
+
+		if (msm_rpm_enter_sleep())
+			return NOTIFY_BAD;
+
+		break;
+	case GENPD_NOTIFY_ON:
+		if (pm_suspend_via_firmware())
+			channel_status = ACTIVE;
+
+		msm_rpm_exit_sleep();
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static int rpm_smd_pm_notifier(struct notifier_block *nb, unsigned long event, void *unused)
+{
+	int ret;
+
+	if (event == PM_SUSPEND_PREPARE) {
+		ret = msm_rpm_flush_requests();
+		pr_debug("ret = %d\n", ret);
+	}
+
+	/* continue to suspend */
+	return NOTIFY_OK;
+}
+
+static struct notifier_block rpm_smd_pm_nb = {
+	.notifier_call = rpm_smd_pm_notifier,
+};
+
+static int qcom_smd_rpm_suspend(struct device *dev)
+{
+	channel_status = CLOSED;
+	return 0;
+}
+
+static const struct dev_pm_ops qcom_smd_rpm_dev_pm_ops = {
+	.poweroff_noirq = qcom_smd_rpm_suspend,
+};
 
 static int qcom_smd_rpm_callback(struct rpmsg_device *rpdev, void *ptr,
 				int size, void *priv, u32 addr)
@@ -1557,15 +1604,26 @@ static int qcom_smd_rpm_probe(struct rpmsg_device *rpdev)
 {
 	char *key = NULL;
 	struct device_node *p;
+	struct platform_device *rpm_device;
 	int ret = 0;
 	int irq;
 	void __iomem *reg_base;
 	uint32_t version = V0_PROTOCOL_VERSION; /* set to default v0 format */
 
+	if (quickboot_done)
+		return 0;
+
 	p = of_find_compatible_node(NULL, NULL, "qcom,rpm-smd");
 	if (!p) {
 		pr_err("Unable to find rpm-smd\n");
 		probe_status = -ENODEV;
+		goto fail;
+	}
+
+	rpm_device = of_find_device_by_node(p);
+	if (!rpm_device) {
+		probe_status = -ENODEV;
+		pr_err(" Unable to get rpm device structure\n");
 		goto fail;
 	}
 
@@ -1594,17 +1652,33 @@ static int qcom_smd_rpm_probe(struct rpmsg_device *rpdev)
 		goto fail;
 	}
 
-	rpm = devm_kzalloc(&rpdev->dev, sizeof(*rpm), GFP_KERNEL);
+	rpm = kzalloc(sizeof(*rpm), GFP_KERNEL);
 	if (!rpm) {
 		probe_status = -ENOMEM;
 		goto fail;
 	}
 
+	ret = register_pm_notifier(&rpm_smd_pm_nb);
+	if (ret) {
+		pr_err("%s: power state notif error %d\n", __func__, ret);
+		probe_status = -ENODEV;
+		goto fail;
+	}
+
 	rpm->dev = &rpdev->dev;
 	rpm->rpm_channel = rpdev->ept;
-	dev_set_drvdata(&rpdev->dev, rpm);
-	priv_rpm = *rpm;
 	rpm->irq = irq;
+
+	if (of_find_property(p, "power-domains", NULL)) {
+		pm_runtime_enable(&rpm_device->dev);
+		rpm->genpd_nb.notifier_call = rpm_smd_power_cb;
+		ret = dev_pm_genpd_add_notifier(&rpm_device->dev, &rpm->genpd_nb);
+		if (ret) {
+			pm_runtime_disable(&rpm_device->dev);
+			probe_status = ret;
+			goto fail;
+		}
+	}
 
 	mutex_init(&rpm->lock);
 	init_completion(&rpm->ack);
@@ -1618,11 +1692,6 @@ fail:
 	return probe_status;
 }
 
-static void qcom_smd_rpm_remove(struct rpmsg_device *rpdev)
-{
-	of_platform_depopulate(&rpdev->dev);
-}
-
 static struct rpmsg_device_id rpmsg_driver_rpm_id_table[] = {
 	{ .name	= "rpm_requests" },
 	{ },
@@ -1630,18 +1699,18 @@ static struct rpmsg_device_id rpmsg_driver_rpm_id_table[] = {
 
 static struct rpmsg_driver qcom_smd_rpm_driver = {
 	.probe = qcom_smd_rpm_probe,
-	.remove = qcom_smd_rpm_remove,
 	.callback = qcom_smd_rpm_callback,
 	.id_table = rpmsg_driver_rpm_id_table,
 	.drv  = {
 		.name  = "qcom_rpm_smd",
+		.pm = &qcom_smd_rpm_dev_pm_ops,
 		.owner = THIS_MODULE,
 	},
 };
 
-int __init msm_rpm_driver_init(void)
+static int rpm_driver_probe(struct platform_device *pdev)
 {
-	unsigned int ret = 0;
+	int ret;
 
 	ret = register_rpmsg_driver(&qcom_smd_rpm_driver);
 	if (ret)
@@ -1649,4 +1718,76 @@ int __init msm_rpm_driver_init(void)
 
 	return ret;
 }
+
+int qcom_smd_rpm_quickboot(struct rpmsg_device *rpdev, int status)
+{
+	struct rpmsg_channel_info chinfo = {};
+	struct rpmsg_endpoint *ept = NULL;
+	struct rb_node *t;
+
+	if (!probe_status)
+		return 0;
+
+	strscpy(chinfo.name, rpdev->id.name, 32);
+	chinfo.src = rpdev->src;
+	chinfo.dst = RPMSG_ADDR_ANY;
+
+	ept = rpmsg_create_ept(rpdev, qcom_smd_rpm_driver.callback, NULL, chinfo);
+	if (!ept) {
+		pr_err("%s: failed to create endpoint\n", __func__);
+		return -ENOMEM;
+	}
+
+	rpdev->ept = ept;
+	rpdev->src = ept->addr;
+	rpm->dev = &rpdev->dev;
+	rpm->rpm_channel = rpdev->ept;
+
+	for (t = rb_first(&tr_root); t; t = rb_next(t)) {
+
+		struct slp_buf *s = rb_entry(t, struct slp_buf, node);
+
+		rb_erase(&s->node, &tr_root);
+	}
+
+	quickboot_done = 1;
+	probe_status = 0;
+	/*
+	 * We only masked it during msm_rpm_enter_sleep()
+	 * but msm_rpm_exit_sleep() won't unmask same
+	 * since probe_status is not ok.
+	 *
+	 * Lets unmask when glink is ready.
+	 */
+	smd_mask_receive_interrupt(false, NULL);
+
+	return 0;
+}
+EXPORT_SYMBOL(qcom_smd_rpm_quickboot);
+
+static const struct of_device_id rpm_of_match[] = {
+	{ .compatible = "qcom,rpm-smd" },
+	{},
+};
+
+struct platform_driver rpm_driver = {
+	.probe = rpm_driver_probe,
+	.driver  = {
+		.name   = "rpm-smd",
+		.of_match_table = rpm_of_match,
+		.suppress_bind_attrs = true,
+	},
+};
+
+int __init msm_rpm_driver_init(void)
+{
+	return platform_driver_register(&rpm_driver);
+}
+
+#ifdef MODULE
+module_init(msm_rpm_driver_init);
+#else
 postcore_initcall_sync(msm_rpm_driver_init);
+#endif
+MODULE_DESCRIPTION("Qualcomm Technologies, Inc. RPM-SMD Driver");
+MODULE_LICENSE("GPL v2");

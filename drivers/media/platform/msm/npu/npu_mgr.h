@@ -1,13 +1,7 @@
-/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _NPU_MGR_H
@@ -36,7 +30,7 @@
 #define FW_DBG_MODE_PAUSE        (1 << 0)
 #define FW_DBG_MODE_INC_TIMEOUT  (1 << 1)
 #define FW_DBG_DISABLE_WDOG      (1 << 2)
-
+#define FW_DBG_ENABLE_LOGGING    (1 << 3)
 /* -------------------------------------------------------------------------
  * Data Structures
  * -------------------------------------------------------------------------
@@ -84,9 +78,9 @@ struct npu_host_ctx {
 	struct delayed_work fw_deinit_work;
 	atomic_t fw_deinit_work_cnt;
 	struct workqueue_struct *wq;
-	struct completion loopback_done;
+	struct completion misc_done;
 	struct completion fw_deinit_done;
-	struct completion property_done;
+	bool misc_pending;
 	void *prop_buf;
 	int32_t network_num;
 	struct npu_network networks[MAX_LOADED_NETWORK];

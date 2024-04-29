@@ -28,9 +28,6 @@ static inline int arch_futex_atomic_op_inuser(int op, int oparg, int *oval,
 {
 	int oldval = 0, newval, ret;
 
-	load_kernel_asce();
-
-	pagefault_disable();
 	switch (op) {
 	case FUTEX_OP_SET:
 		__futex_atomic_op("lr %2,%5\n",
@@ -55,7 +52,6 @@ static inline int arch_futex_atomic_op_inuser(int op, int oparg, int *oval,
 	default:
 		ret = -ENOSYS;
 	}
-	pagefault_enable();
 
 	if (!ret)
 		*oval = oldval;
@@ -68,7 +64,6 @@ static inline int futex_atomic_cmpxchg_inatomic(u32 *uval, u32 __user *uaddr,
 {
 	int ret;
 
-	load_kernel_asce();
 	asm volatile(
 		"   sacf 256\n"
 		"0: cs   %1,%4,0(%5)\n"

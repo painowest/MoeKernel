@@ -190,39 +190,21 @@ struct scsi_varlen_cdb_hdr {
  *  SCSI Architecture Model (SAM) Status codes. Taken from SAM-3 draft
  *  T10/1561-D Revision 4 Draft dated 7th November 2002.
  */
-#define SAM_STAT_GOOD            0x00
-#define SAM_STAT_CHECK_CONDITION 0x02
-#define SAM_STAT_CONDITION_MET   0x04
-#define SAM_STAT_BUSY            0x08
-#define SAM_STAT_INTERMEDIATE    0x10
-#define SAM_STAT_INTERMEDIATE_CONDITION_MET 0x14
-#define SAM_STAT_RESERVATION_CONFLICT 0x18
-#define SAM_STAT_COMMAND_TERMINATED 0x22	/* obsolete in SAM-3 */
-#define SAM_STAT_TASK_SET_FULL   0x28
-#define SAM_STAT_ACA_ACTIVE      0x30
-#define SAM_STAT_TASK_ABORTED    0x40
+enum sam_status {
+	SAM_STAT_GOOD				= 0x00,
+	SAM_STAT_CHECK_CONDITION		= 0x02,
+	SAM_STAT_CONDITION_MET			= 0x04,
+	SAM_STAT_BUSY				= 0x08,
+	SAM_STAT_INTERMEDIATE			= 0x10,
+	SAM_STAT_INTERMEDIATE_CONDITION_MET	= 0x14,
+	SAM_STAT_RESERVATION_CONFLICT		= 0x18,
+	SAM_STAT_COMMAND_TERMINATED		= 0x22,	/* obsolete in SAM-3 */
+	SAM_STAT_TASK_SET_FULL			= 0x28,
+	SAM_STAT_ACA_ACTIVE			= 0x30,
+	SAM_STAT_TASK_ABORTED			= 0x40,
+};
 
-/*
- *  Status codes. These are deprecated as they are shifted 1 bit right
- *  from those found in the SCSI standards. This causes confusion for
- *  applications that are ported to several OSes. Prefer SAM Status codes
- *  above.
- */
-
-#define GOOD                 0x00
-#define CHECK_CONDITION      0x01
-#define CONDITION_GOOD       0x02
-#define BUSY                 0x04
-#define INTERMEDIATE_GOOD    0x08
-#define INTERMEDIATE_C_GOOD  0x0a
-#define RESERVATION_CONFLICT 0x0c
-#define COMMAND_TERMINATED   0x11
-#define QUEUE_FULL           0x14
-#define ACA_ACTIVE           0x18
-#define TASK_ABORTED         0x20
-
-#define STATUS_MASK          0xfe
-
+#define STATUS_MASK         0xfe
 /*
  *  SENSE KEYS
  */
@@ -236,6 +218,7 @@ struct scsi_varlen_cdb_hdr {
 #define UNIT_ATTENTION      0x06
 #define DATA_PROTECT        0x07
 #define BLANK_CHECK         0x08
+#define VENDOR_SPECIFIC     0x09
 #define COPY_ABORTED        0x0a
 #define ABORTED_COMMAND     0x0b
 #define VOLUME_OVERFLOW     0x0d
@@ -302,19 +285,54 @@ struct scsi_lun {
 
 /* Reporting options for REPORT ZONES */
 enum zbc_zone_reporting_options {
-	ZBC_ZONE_REPORTING_OPTION_ALL = 0,
-	ZBC_ZONE_REPORTING_OPTION_EMPTY,
-	ZBC_ZONE_REPORTING_OPTION_IMPLICIT_OPEN,
-	ZBC_ZONE_REPORTING_OPTION_EXPLICIT_OPEN,
-	ZBC_ZONE_REPORTING_OPTION_CLOSED,
-	ZBC_ZONE_REPORTING_OPTION_FULL,
-	ZBC_ZONE_REPORTING_OPTION_READONLY,
-	ZBC_ZONE_REPORTING_OPTION_OFFLINE,
-	ZBC_ZONE_REPORTING_OPTION_NEED_RESET_WP = 0x10,
-	ZBC_ZONE_REPORTING_OPTION_NON_SEQWRITE,
-	ZBC_ZONE_REPORTING_OPTION_NON_WP = 0x3f,
+	ZBC_ZONE_REPORTING_OPTION_ALL		= 0x00,
+	ZBC_ZONE_REPORTING_OPTION_EMPTY		= 0x01,
+	ZBC_ZONE_REPORTING_OPTION_IMPLICIT_OPEN	= 0x02,
+	ZBC_ZONE_REPORTING_OPTION_EXPLICIT_OPEN	= 0x03,
+	ZBC_ZONE_REPORTING_OPTION_CLOSED	= 0x04,
+	ZBC_ZONE_REPORTING_OPTION_FULL		= 0x05,
+	ZBC_ZONE_REPORTING_OPTION_READONLY	= 0x06,
+	ZBC_ZONE_REPORTING_OPTION_OFFLINE	= 0x07,
+	/* 0x08 to 0x0f are reserved */
+	ZBC_ZONE_REPORTING_OPTION_NEED_RESET_WP	= 0x10,
+	ZBC_ZONE_REPORTING_OPTION_NON_SEQWRITE	= 0x11,
+	/* 0x12 to 0x3e are reserved */
+	ZBC_ZONE_REPORTING_OPTION_NON_WP	= 0x3f,
 };
 
 #define ZBC_REPORT_ZONE_PARTIAL 0x80
+
+/* Zone types of REPORT ZONES zone descriptors */
+enum zbc_zone_type {
+	ZBC_ZONE_TYPE_CONV		= 0x1,
+	ZBC_ZONE_TYPE_SEQWRITE_REQ	= 0x2,
+	ZBC_ZONE_TYPE_SEQWRITE_PREF	= 0x3,
+	/* 0x4 to 0xf are reserved */
+};
+
+/* Zone conditions of REPORT ZONES zone descriptors */
+enum zbc_zone_cond {
+	ZBC_ZONE_COND_NO_WP		= 0x0,
+	ZBC_ZONE_COND_EMPTY		= 0x1,
+	ZBC_ZONE_COND_IMP_OPEN		= 0x2,
+	ZBC_ZONE_COND_EXP_OPEN		= 0x3,
+	ZBC_ZONE_COND_CLOSED		= 0x4,
+	/* 0x5 to 0xc are reserved */
+	ZBC_ZONE_COND_READONLY		= 0xd,
+	ZBC_ZONE_COND_FULL		= 0xe,
+	ZBC_ZONE_COND_OFFLINE		= 0xf,
+};
+
+/* Version descriptor values for INQUIRY */
+enum scsi_version_descriptor {
+	SCSI_VERSION_DESCRIPTOR_FCP4	= 0x0a40,
+	SCSI_VERSION_DESCRIPTOR_ISCSI	= 0x0960,
+	SCSI_VERSION_DESCRIPTOR_SAM5	= 0x00a0,
+	SCSI_VERSION_DESCRIPTOR_SAS3	= 0x0c60,
+	SCSI_VERSION_DESCRIPTOR_SBC3	= 0x04c0,
+	SCSI_VERSION_DESCRIPTOR_SBP3	= 0x0980,
+	SCSI_VERSION_DESCRIPTOR_SPC4	= 0x0460,
+	SCSI_VERSION_DESCRIPTOR_SRP	= 0x0940
+};
 
 #endif /* _SCSI_PROTO_H_ */

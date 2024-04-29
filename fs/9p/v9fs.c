@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/fs/9p/v9fs.c
  *
@@ -5,22 +6,6 @@
  *
  *  Copyright (C) 2004-2008 by Eric Van Hensbergen <ericvh@gmail.com>
  *  Copyright (C) 2002 by Ron Minnich <rminnich@lanl.gov>
- *
- *  This program is free software; you can redistribute it and/or modify
- *  it under the terms of the GNU General Public License version 2
- *  as published by the Free Software Foundation.
- *
- *  This program is distributed in the hope that it will be useful,
- *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to:
- *  Free Software Foundation
- *  51 Franklin Street, Fifth Floor
- *  Boston, MA  02111-1301  USA
- *
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -170,6 +155,7 @@ int v9fs_show_options(struct seq_file *m, struct dentry *root)
 /**
  * v9fs_parse_options - parse mount options into session structure
  * @v9ses: existing v9fs session information
+ * @opts: The mount option string
  *
  * Return 0 upon success, -ERRNO upon failure.
  */
@@ -204,8 +190,10 @@ static int v9fs_parse_options(struct v9fs_session_info *v9ses, char *opts)
 
 	while ((p = strsep(&options, ",")) != NULL) {
 		int token, r;
+
 		if (!*p)
 			continue;
+
 		token = match_token(p, tokens, args);
 		switch (token) {
 		case Opt_debug:
@@ -214,12 +202,12 @@ static int v9fs_parse_options(struct v9fs_session_info *v9ses, char *opts)
 				p9_debug(P9_DEBUG_ERROR,
 					 "integer field, but no integer?\n");
 				ret = r;
-				continue;
-			}
-			v9ses->debug = option;
+			} else {
+				v9ses->debug = option;
 #ifdef CONFIG_NET_9P_DEBUG
-			p9_debug_level = option;
+				p9_debug_level = option;
 #endif
+			}
 			break;
 
 		case Opt_dfltuid:
@@ -235,7 +223,6 @@ static int v9fs_parse_options(struct v9fs_session_info *v9ses, char *opts)
 				p9_debug(P9_DEBUG_ERROR,
 					 "uid field, but not a uid?\n");
 				ret = -EINVAL;
-				continue;
 			}
 			break;
 		case Opt_dfltgid:
@@ -251,7 +238,6 @@ static int v9fs_parse_options(struct v9fs_session_info *v9ses, char *opts)
 				p9_debug(P9_DEBUG_ERROR,
 					 "gid field, but not a gid?\n");
 				ret = -EINVAL;
-				continue;
 			}
 			break;
 		case Opt_afid:
@@ -260,9 +246,9 @@ static int v9fs_parse_options(struct v9fs_session_info *v9ses, char *opts)
 				p9_debug(P9_DEBUG_ERROR,
 					 "integer field, but no integer?\n");
 				ret = r;
-				continue;
+			} else {
+				v9ses->afid = option;
 			}
-			v9ses->afid = option;
 			break;
 		case Opt_uname:
 			kfree(v9ses->uname);
@@ -296,6 +282,10 @@ static int v9fs_parse_options(struct v9fs_session_info *v9ses, char *opts)
 #ifdef CONFIG_9P_FSCACHE
 			kfree(v9ses->cachetag);
 			v9ses->cachetag = match_strdup(&args[0]);
+			if (!v9ses->cachetag) {
+				ret = -ENOMEM;
+				goto free_and_return;
+			}
 #endif
 			break;
 		case Opt_cache:
@@ -306,13 +296,12 @@ static int v9fs_parse_options(struct v9fs_session_info *v9ses, char *opts)
 					 "problem allocating copy of cache arg\n");
 				goto free_and_return;
 			}
-			ret = get_cache_mode(s);
-			if (ret == -EINVAL) {
-				kfree(s);
-				goto free_and_return;
-			}
+			r = get_cache_mode(s);
+			if (r < 0)
+				ret = r;
+			else
+				v9ses->cache = r;
 
-			v9ses->cache = ret;
 			kfree(s);
 			break;
 
@@ -341,14 +330,12 @@ static int v9fs_parse_options(struct v9fs_session_info *v9ses, char *opts)
 					pr_info("Unknown access argument %s\n",
 						s);
 					kfree(s);
-					goto free_and_return;
+					continue;
 				}
 				v9ses->uid = make_kuid(current_user_ns(), uid);
 				if (!uid_valid(v9ses->uid)) {
 					ret = -EINVAL;
-					pr_info("Uknown uid %s\n", s);
-					kfree(s);
-					goto free_and_return;
+					pr_info("Unknown uid %s\n", s);
 				}
 			}
 
@@ -492,6 +479,9 @@ struct p9_fid *v9fs_session_init(struct v9fs_session_info *v9ses,
 	return fid;
 
 err_clnt:
+#ifdef CONFIG_9P_FSCACHE
+	kfree(v9ses->cachetag);
+#endif
 	p9_client_destroy(v9ses->clnt);
 err_names:
 	kfree(v9ses->uname);
@@ -555,12 +545,9 @@ extern int v9fs_error_init(void);
 static struct kobject *v9fs_kobj;
 
 #ifdef CONFIG_9P_FSCACHE
-/**
- * caches_show - list caches associated with a session
- *
- * Returns the size of buffer written.
+/*
+ * List caches associated with a session
  */
-
 static ssize_t caches_show(struct kobject *kobj,
 			   struct kobj_attribute *attr,
 			   char *buf)
@@ -596,7 +583,7 @@ static struct attribute *v9fs_attrs[] = {
 	NULL,
 };
 
-static struct attribute_group v9fs_attr_group = {
+static const struct attribute_group v9fs_attr_group = {
 	.attrs = v9fs_attrs,
 };
 
@@ -674,6 +661,7 @@ static void v9fs_destroy_inode_cache(void)
 static int v9fs_cache_register(void)
 {
 	int ret;
+
 	ret = v9fs_init_inode_cache();
 	if (ret < 0)
 		return ret;
@@ -701,6 +689,7 @@ static void v9fs_cache_unregister(void)
 static int __init init_v9fs(void)
 {
 	int err;
+
 	pr_info("Installing v9fs 9p2000 file system support\n");
 	/* TODO: Setup list of registered trasnport modules */
 
@@ -751,3 +740,4 @@ MODULE_AUTHOR("Latchesar Ionkov <lucho@ionkov.net>");
 MODULE_AUTHOR("Eric Van Hensbergen <ericvh@gmail.com>");
 MODULE_AUTHOR("Ron Minnich <rminnich@lanl.gov>");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(ANDROID_GKI_VFS_EXPORT_ONLY);

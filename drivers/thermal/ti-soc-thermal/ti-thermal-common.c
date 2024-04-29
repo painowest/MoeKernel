@@ -1,24 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * OMAP thermal driver interface
  *
  * Copyright (C) 2012 Texas Instruments Incorporated - http://www.ti.com/
  * Contact:
  *   Eduardo Valentin <eduardo.valentin@ti.com>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA
- * 02110-1301 USA
- *
  */
 
 #include <linux/device.h>
@@ -180,6 +166,7 @@ int ti_thermal_expose_sensor(struct ti_bandgap *bgp, int id,
 			     char *domain)
 {
 	struct ti_thermal_data *data;
+	int interval;
 
 	data = ti_bandgap_get_sensor_data(bgp, id);
 
@@ -197,9 +184,10 @@ int ti_thermal_expose_sensor(struct ti_bandgap *bgp, int id,
 		return PTR_ERR(data->ti_thermal);
 	}
 
+	interval = jiffies_to_msecs(data->ti_thermal->polling_delay_jiffies);
+
 	ti_bandgap_set_sensor_data(bgp, id, data);
-	ti_bandgap_write_update_interval(bgp, data->sensor_id,
-					data->ti_thermal->polling_delay);
+	ti_bandgap_write_update_interval(bgp, data->sensor_id, interval);
 
 	return 0;
 }
@@ -278,7 +266,8 @@ int ti_thermal_unregister_cpu_cooling(struct ti_bandgap *bgp, int id)
 
 	if (!IS_ERR_OR_NULL(data)) {
 		cpufreq_cooling_unregister(data->cool_dev);
-		cpufreq_cpu_put(data->policy);
+		if (data->policy)
+			cpufreq_cpu_put(data->policy);
 	}
 
 	return 0;

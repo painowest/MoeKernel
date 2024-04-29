@@ -1,13 +1,6 @@
-/* Copyright (c) 2012-2017, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _IPA_ODO_BRIDGE_H_
@@ -49,10 +42,10 @@ struct odu_bridge_params {
  */
 struct ipa_bridge_init_params {
 	struct odu_bridge_params info;
-	void (*wakeup_request)(void *);
+	void (*wakeup_request)(void *cl_priv);
 };
 
-#ifdef CONFIG_IPA3
+#if IS_ENABLED(CONFIG_IPA3)
 
 int ipa_bridge_init(struct ipa_bridge_init_params *params, u32 *hdl);
 
@@ -71,7 +64,7 @@ int ipa_bridge_tx_dp(u32 hdl, struct sk_buff *skb,
 
 int ipa_bridge_cleanup(u32 hdl);
 
-#else
+#else /* IS_ENABLED(CONFIG_IPA3) */
 
 static inline int ipa_bridge_init(struct odu_bridge_params *params, u32 *hdl)
 {
@@ -114,22 +107,9 @@ static inline int ipa_bridge_cleanup(u32 hdl)
 	return -EPERM;
 }
 
-#endif /* CONFIG_IPA3 */
+#endif /* IS_ENABLED(CONFIG_IPA3) */
 
 /* Below API is deprecated. Please use the API above */
-# if defined CONFIG_IPA || defined CONFIG_IPA3
-
-int odu_bridge_init(struct odu_bridge_params *params);
-
-int odu_bridge_connect(void);
-
-int odu_bridge_disconnect(void);
-
-int odu_bridge_tx_dp(struct sk_buff *skb, struct ipa_tx_meta *metadata);
-
-int odu_bridge_cleanup(void);
-
-#else
 
 static inline int odu_bridge_init(struct odu_bridge_params *params)
 {
@@ -156,7 +136,5 @@ static inline int odu_bridge_cleanup(void)
 {
 	return -EPERM;
 }
-
-#endif /* CONFIG_IPA || defined CONFIG_IPA3 */
 
 #endif /* _IPA_ODO_BRIDGE_H */

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * driver/usb/gadget/fsl_qe_udc.c
  *
@@ -11,11 +12,6 @@
  * Freescle QE/CPM USB Pheripheral Controller Driver
  * The controller can be found on MPC8360, MPC8272, and etc.
  * MPC8360 Rev 1.1 may need QE mircocode update
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation;  either version 2 of the License, or (at your
- * option) any later version.
  */
 
 #undef USB_TRACE
@@ -545,6 +541,7 @@ static int qe_ep_init(struct qe_udc *udc,
 			case USB_SPEED_HIGH:
 			if ((max == 128) || (max == 256) || (max == 512))
 				break;
+			fallthrough;
 			default:
 				switch (max) {
 				case 4:
@@ -566,9 +563,11 @@ static int qe_ep_init(struct qe_udc *udc,
 			case USB_SPEED_HIGH:
 				if (max <= 1024)
 					break;
+				fallthrough;
 			case USB_SPEED_FULL:
 				if (max <= 64)
 					break;
+				fallthrough;
 			default:
 				if (max <= 8)
 					break;
@@ -583,9 +582,11 @@ static int qe_ep_init(struct qe_udc *udc,
 			case USB_SPEED_HIGH:
 				if (max <= 1024)
 					break;
+				fallthrough;
 			case USB_SPEED_FULL:
 				if (max <= 1023)
 					break;
+				fallthrough;
 			default:
 				goto en_done;
 			}
@@ -609,6 +610,7 @@ static int qe_ep_init(struct qe_udc *udc,
 				default:
 					goto en_done;
 				}
+				fallthrough;
 			case USB_SPEED_LOW:
 				switch (max) {
 				case 1:
@@ -927,9 +929,9 @@ static int qe_ep_rxframe_handle(struct qe_ep *ep)
 	return 0;
 }
 
-static void ep_rx_tasklet(unsigned long data)
+static void ep_rx_tasklet(struct tasklet_struct *t)
 {
-	struct qe_udc *udc = (struct qe_udc *)data;
+	struct qe_udc *udc = from_tasklet(udc, t, rx_tasklet);
 	struct qe_ep *ep;
 	struct qe_frame *pframe;
 	struct qe_bd __iomem *bd;
@@ -2561,8 +2563,7 @@ static int qe_udc_probe(struct platform_device *ofdev)
 					DMA_TO_DEVICE);
 	}
 
-	tasklet_init(&udc->rx_tasklet, ep_rx_tasklet,
-			(unsigned long)udc);
+	tasklet_setup(&udc->rx_tasklet, ep_rx_tasklet);
 	/* request irq and disable DR  */
 	udc->usb_irq = irq_of_parse_and_map(np, 0);
 	if (!udc->usb_irq) {

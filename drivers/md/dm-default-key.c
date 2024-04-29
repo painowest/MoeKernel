@@ -11,8 +11,6 @@
 
 #define DM_DEFAULT_KEY_MAX_WRAPPED_KEY_SIZE 128
 
-#define SECTOR_SIZE			(1 << SECTOR_SHIFT)
-
 static const struct dm_default_key_cipher {
 	const char *name;
 	enum blk_crypto_mode_num mode_num;
@@ -52,7 +50,6 @@ struct default_key_c {
 	struct blk_crypto_key key;
 	bool is_hw_wrapped;
 	u64 max_dun;
-	bool set_dun;
 };
 
 static const struct dm_default_key_cipher *
@@ -70,21 +67,17 @@ lookup_cipher(const char *cipher_string)
 static void default_key_dtr(struct dm_target *ti)
 {
 	struct default_key_c *dkc = ti->private;
-	int err;
 
 	if (dkc->dev) {
-		err = blk_crypto_evict_key(dkc->dev->bdev->bd_queue, &dkc->key);
-		if (err && err != -ENOKEY)
-			DMWARN("Failed to evict crypto key: %d", err);
+		blk_crypto_evict_key(bdev_get_queue(dkc->dev->bdev), &dkc->key);
 		dm_put_device(ti, dkc->dev);
 	}
-	kzfree(dkc->cipher_string);
-	kzfree(dkc);
+	kfree_sensitive(dkc->cipher_string);
+	kfree_sensitive(dkc);
 }
 
 static int default_key_ctr_optional(struct dm_target *ti,
-				    unsigned int argc, char **argv,
-				    bool is_legacy)
+				    unsigned int argc, char **argv)
 {
 	struct default_key_c *dkc = ti->private;
 	struct dm_arg_set as;
@@ -124,8 +117,6 @@ static int default_key_ctr_optional(struct dm_target *ti,
 			iv_large_sectors = true;
 		} else if (!strcmp(opt_string, "wrappedkey_v0")) {
 			dkc->is_hw_wrapped = true;
-		} else if (!strcmp(opt_string, "set_dun") && is_legacy) {
-			dkc->set_dun = true;
 		} else {
 			ti->error = "Invalid feature arguments";
 			return -EINVAL;
@@ -139,39 +130,6 @@ static int default_key_ctr_optional(struct dm_target *ti,
 	}
 
 	return 0;
-}
-
-static void default_key_adjust_sector_size_and_iv(char **argv,
-						  struct dm_target *ti,
-						  struct default_key_c **dkc,
-						  u8 *raw, u32 size,
-						  bool is_legacy)
-{
-	struct dm_dev *dev;
-	int i;
-	union {
-		u8 bytes[BLK_CRYPTO_MAX_WRAPPED_KEY_SIZE];
-		u32 words[BLK_CRYPTO_MAX_WRAPPED_KEY_SIZE / sizeof(u32)];
-	} key_new;
-
-	dev = (*dkc)->dev;
-
-	if (is_legacy) {
-		memcpy(key_new.bytes, raw, size);
-
-		for (i = 0; i < ARRAY_SIZE(key_new.words); i++)
-			__cpu_to_be32s(&key_new.words[i]);
-
-		memcpy(raw, key_new.bytes, size);
-
-		if ((ti->len & (((*dkc)->sector_size >> SECTOR_SHIFT) - 1)) ||
-		    ((*dkc)->dev->bdev->bd_disk->disk_name[0] &&
-		     !strcmp((*dkc)->dev->bdev->bd_disk->disk_name, "mmcblk0")))
-			(*dkc)->sector_size = SECTOR_SIZE;
-
-		if (dev->bdev->bd_part && !(*dkc)->set_dun)
-			(*dkc)->iv_offset += dev->bdev->bd_part->start_sect;
-	}
 }
 
 /*
@@ -192,33 +150,6 @@ static int default_key_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	unsigned long long tmpll;
 	char dummy;
 	int err;
-	int __argc;
-	char *_argv[10];
-	bool is_legacy = false;
-
-	if (argc >= 4 && !strcmp(argv[0], "AES-256-XTS")) {
-		__argc = 0;
-		_argv[__argc++] = "aes-xts-plain64";
-		_argv[__argc++] = argv[1];
-		_argv[__argc++] = "0";
-		_argv[__argc++] = argv[2];
-		_argv[__argc++] = argv[3];
-		if (argc > 4)
-			_argv[__argc++] = "4";
-		else
-			_argv[__argc++] = "3";
-
-		_argv[__argc++] = "allow_discards";
-		_argv[__argc++] = "sector_size:4096";
-		_argv[__argc++] = "iv_large_sectors";
-		if (argc > 4)
-			_argv[__argc++] = argv[5];
-
-		_argv[__argc] = NULL;
-		argv = _argv;
-		argc = __argc;
-		is_legacy = true;
-	}
 
 	if (argc < 5) {
 		ti->error = "Not enough arguments";
@@ -288,15 +219,10 @@ static int default_key_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	/* optional arguments */
 	dkc->sector_size = SECTOR_SIZE;
 	if (argc > 5) {
-		err = default_key_ctr_optional(ti, argc - 5, &argv[5],
-					       is_legacy);
+		err = default_key_ctr_optional(ti, argc - 5, &argv[5]);
 		if (err)
 			goto bad;
 	}
-
-	default_key_adjust_sector_size_and_iv(argv, ti, &dkc, raw_key,
-					      raw_key_size, is_legacy);
-
 	dkc->sector_bits = ilog2(dkc->sector_size);
 	if (ti->len & ((dkc->sector_size >> SECTOR_SHIFT) - 1)) {
 		ti->error = "Device size is not a multiple of sector_size";
@@ -316,17 +242,14 @@ static int default_key_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		goto bad;
 	}
 
-	err = blk_crypto_start_using_mode(cipher->mode_num, dun_bytes,
-					  dkc->sector_size, dkc->is_hw_wrapped,
-					  dkc->dev->bdev->bd_queue);
+	err = blk_crypto_start_using_key(&dkc->key,
+					 bdev_get_queue(dkc->dev->bdev));
 	if (err) {
 		ti->error = "Error starting to use blk-crypto";
 		goto bad;
 	}
 
 	ti->num_flush_bios = 1;
-
-	ti->may_passthrough_inline_crypto = true;
 
 	err = 0;
 	goto out;
@@ -338,13 +261,6 @@ out:
 	return err;
 }
 
-static void default_key_map_dun(struct bio *bio, u64 *dun)
-{
-	dun[0] += 1;
-	memcpy(bio->bi_crypt_context->bc_dun, dun,
-	       sizeof(bio->bi_crypt_context->bc_dun));
-	bio->bi_crypt_context->is_ext4 = false;
-}
 static int default_key_map(struct dm_target *ti, struct bio *bio)
 {
 	const struct default_key_c *dkc = ti->private;
@@ -369,15 +285,14 @@ static int default_key_map(struct dm_target *ti, struct bio *bio)
 	 * file's contents), or if it doesn't have any data (e.g. if it's a
 	 * DISCARD request), there's nothing more to do.
 	 */
-	if ((bio_should_skip_dm_default_key(bio) && !dkc->set_dun) ||
-	    !bio_has_data(bio))
+	if (bio_should_skip_dm_default_key(bio) || !bio_has_data(bio))
 		return DM_MAPIO_REMAPPED;
 
 	/*
 	 * Else, dm-default-key needs to set this bio's encryption context.
 	 * It must not already have one.
 	 */
-	if (WARN_ON_ONCE(bio_has_crypt_ctx(bio) && !dkc->set_dun))
+	if (WARN_ON_ONCE(bio_has_crypt_ctx(bio)))
 		return DM_MAPIO_KILL;
 
 	/* Calculate the DUN and enforce data-unit (crypto sector) alignment. */
@@ -393,11 +308,7 @@ static int default_key_map(struct dm_target *ti, struct bio *bio)
 	if (WARN_ON_ONCE(dun[0] > dkc->max_dun))
 		return DM_MAPIO_KILL;
 
-	if (!bio_has_crypt_ctx(bio))
-		bio_crypt_set_ctx(bio, &dkc->key, dun, GFP_NOIO);
-
-	if (dkc->set_dun)
-		default_key_map_dun(bio, dun);
+	bio_crypt_set_ctx(bio, &dkc->key, dun, GFP_NOIO);
 
 	return DM_MAPIO_REMAPPED;
 }
@@ -412,6 +323,7 @@ static void default_key_status(struct dm_target *ti, status_type_t type,
 
 	switch (type) {
 	case STATUSTYPE_INFO:
+	case STATUSTYPE_IMA:
 		result[0] = '\0';
 		break;
 
@@ -425,8 +337,6 @@ static void default_key_status(struct dm_target *ti, status_type_t type,
 			num_feature_args += 2;
 		if (dkc->is_hw_wrapped)
 			num_feature_args += 1;
-		if (dkc->set_dun)
-			num_feature_args += 1;
 		if (num_feature_args != 0) {
 			DMEMIT(" %d", num_feature_args);
 			if (ti->num_discard_bios)
@@ -437,16 +347,13 @@ static void default_key_status(struct dm_target *ti, status_type_t type,
 			}
 			if (dkc->is_hw_wrapped)
 				DMEMIT(" wrappedkey_v0");
-			if (dkc->set_dun)
-				DMEMIT(" set_dun");
 		}
 		break;
 	}
 }
 
 static int default_key_prepare_ioctl(struct dm_target *ti,
-				     struct block_device **bdev,
-				     fmode_t *mode)
+				     struct block_device **bdev)
 {
 	const struct default_key_c *dkc = ti->private;
 	const struct dm_dev *dev = dkc->dev;
@@ -476,7 +383,7 @@ static void default_key_io_hints(struct dm_target *ti,
 	const unsigned int sector_size = dkc->sector_size;
 
 	limits->logical_block_size =
-		max_t(unsigned short, limits->logical_block_size, sector_size);
+		max_t(unsigned int, limits->logical_block_size, sector_size);
 	limits->physical_block_size =
 		max_t(unsigned int, limits->physical_block_size, sector_size);
 	limits->io_min = max_t(unsigned int, limits->io_min, sector_size);
@@ -485,6 +392,7 @@ static void default_key_io_hints(struct dm_target *ti,
 static struct target_type default_key_target = {
 	.name			= "default-key",
 	.version		= {2, 1, 0},
+	.features		= DM_TARGET_PASSES_CRYPTO,
 	.module			= THIS_MODULE,
 	.ctr			= default_key_ctr,
 	.dtr			= default_key_dtr,

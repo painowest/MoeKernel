@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * CALIPSO - Common Architecture Label IPv6 Security Option
  *
@@ -6,25 +7,10 @@
  *
  * Authors: Paul Moore <paul.moore@hp.com>
  *          Huw Davies <huw@codeweavers.com>
- *
  */
 
 /* (c) Copyright Hewlett-Packard Development Company, L.P., 2006, 2008
  * (c) Copyright Huw Davies <huw@codeweavers.com>, 2015
- *
- * This program is free software;  you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY;  without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- * the GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program;  if not, see <http://www.gnu.org/licenses/>.
- *
  */
 
 #include <linux/init.h>
@@ -440,7 +426,7 @@ static void calipso_doi_free_rcu(struct rcu_head *entry)
 /**
  * calipso_doi_remove - Remove an existing DOI from the CALIPSO protocol engine
  * @doi: the DOI value
- * @audit_secid: the LSM secid to use in the audit message
+ * @audit_info: NetLabel audit information
  *
  * Description:
  * Removes a DOI definition from the CALIPSO engine.  The NetLabel routines will
@@ -771,7 +757,7 @@ static int calipso_genopt(unsigned char *buf, u32 start, u32 buf_len,
 	calipso[1] = len - 2;
 	*(__be32 *)(calipso + 2) = htonl(doi_def->doi);
 	calipso[6] = (len - CALIPSO_HDR_LEN) / 4;
-	calipso[7] = secattr->attr.mls.lvl,
+	calipso[7] = secattr->attr.mls.lvl;
 	crc = ~crc_ccitt(0xffff, calipso, len);
 	calipso[8] = crc & 0xff;
 	calipso[9] = (crc >> 8) & 0xff;
@@ -1236,7 +1222,7 @@ static int calipso_req_setattr(struct request_sock *req,
 
 /**
  * calipso_req_delattr - Delete the CALIPSO option from a request socket
- * @reg: the request socket
+ * @req: the request socket
  *
  * Description:
  * Removes the CALIPSO option from a request socket, if present.

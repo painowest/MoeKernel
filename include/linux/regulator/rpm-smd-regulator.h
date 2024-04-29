@@ -1,14 +1,7 @@
-/* Copyright (c) 2012-2013, 2015, 2017 The Linux Foundation. All rights
- * reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2012-2013, 2015, 2017, 2019-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _LINUX_REGULATOR_RPM_SMD_H
@@ -90,45 +83,14 @@ enum rpm_regulator_mode {
 	RPM_REGULATOR_MODE_HPM,
 };
 
-#ifdef CONFIG_REGULATOR_RPM_SMD
+#ifdef CONFIG_DEBUG_FS
 
-struct rpm_regulator *rpm_regulator_get(struct device *dev, const char *supply);
-
-void rpm_regulator_put(struct rpm_regulator *regulator);
-
-int rpm_regulator_enable(struct rpm_regulator *regulator);
-
-int rpm_regulator_disable(struct rpm_regulator *regulator);
-
-int rpm_regulator_set_voltage(struct rpm_regulator *regulator, int min_uV,
-			      int max_uV);
-
-int rpm_regulator_set_mode(struct rpm_regulator *regulator,
-				enum rpm_regulator_mode mode);
-
-int rpm_smd_regulator_driver_init(void);
+static void rpm_vreg_create_debugfs(struct rpm_regulator *reg);
 
 #else
 
-static inline struct rpm_regulator *rpm_regulator_get(struct device *dev,
-					const char *supply) { return NULL; }
-
-static inline void rpm_regulator_put(struct rpm_regulator *regulator) { }
-
-static inline int rpm_regulator_enable(struct rpm_regulator *regulator)
-			{ return 0; }
-
-static inline int rpm_regulator_disable(struct rpm_regulator *regulator)
-			{ return 0; }
-
-static inline int rpm_regulator_set_voltage(struct rpm_regulator *regulator,
-					int min_uV, int max_uV) { return 0; }
-
-static inline int rpm_regulator_set_mode(struct rpm_regulator *regulator,
-				enum rpm_regulator_mode mode) { return 0; }
-
-static inline int __init rpm_smd_regulator_driver_init(void) { return 0; }
-
-#endif /* CONFIG_REGULATOR_RPM_SMD */
-
+static inline void rpm_vreg_create_debugfs(struct rpm_regulator *reg)
+{
+}
+#endif
 #endif

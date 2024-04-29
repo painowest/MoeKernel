@@ -1,17 +1,13 @@
-/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __QPNP_REVID
 #define __QPNP_REVID
+
+#include <linux/types.h>
 
 /* Common TYPE for all PMICs */
 #define PMIC_TYPE		0x51
@@ -185,14 +181,11 @@
 #define PM8150_SUBTYPE		0x1E
 #define PM8150L_SUBTYPE		0x1F
 #define PM8150B_SUBTYPE		0x20
-#define PM8150A_SUBTYPE		0x27
 
-/* PM6150 SUBTYPE */
 #define PM6150_SUBTYPE		0x28
 #define PM6150L_SUBTYPE		0x1F
 
-/* PME9205 SUBTYPE */
-#define PME9205_SUBTYPE		0x24
+#define PM7250B_SUBTYPE		0x2E
 
 /* PM6125 SUBTYPE */
 #define PM6125_SUBTYPE		0x2D
@@ -274,29 +267,6 @@
 #define PM8150L_V3P0_REV3	0x00
 #define PM8150L_V3P0_REV4	0x03
 
-/* PM8150A_REV_ID */
-#define PM8150A_V1P0_REV1	0x00
-#define PM8150A_V1P0_REV2	0x00
-#define PM8150A_V1P0_REV3	0x00
-#define PM8150A_V1P0_REV4	0x01
-
-#define PM8150A_V2P0_REV1	0x00
-#define PM8150A_V2P0_REV2	0x00
-#define PM8150A_V2P0_REV3	0x00
-#define PM8150A_V2P0_REV4	0x02
-
-/* PME9205_REV_ID */
-#define PME9205_V1P0_REV1	0x00
-#define PME9205_V1P0_REV2	0x00
-#define PME9205_V1P0_REV3	0x00
-#define PME9205_V1P0_REV4	0x01
-
-#define PME9205_V2P0_REV1	0x00
-#define PME9205_V2P0_REV2	0x00
-#define PME9205_V2P0_REV3	0x00
-#define PME9205_V2P0_REV4	0x02
-
-/* PM6150_REV_ID */
 #define PM6150_V1P0_REV1	0x00
 #define PM6150_V1P0_REV2	0x00
 #define PM6150_V1P0_REV3	0x00
@@ -311,6 +281,12 @@
 #define PM6150_V2P0_REV2	0x00
 #define PM6150_V2P0_REV3	0x00
 #define PM6150_V2P0_REV4	0x02
+
+/* PM7250B_REV_ID */
+#define PM7250B_V1P0_REV1	0x00
+#define PM7250B_V1P0_REV2	0x00
+#define PM7250B_V1P0_REV3	0x00
+#define PM7250B_V1P0_REV4	0x01
 
 /* PM6125_REV_ID */
 #define PM6125_V1P0_REV1	0x00
@@ -357,7 +333,9 @@ struct pmic_revid_data {
 	int		tp_rev;
 };
 
-#ifdef CONFIG_QPNP_REVID
+struct device_node;
+
+#if IS_ENABLED(CONFIG_QPNP_REVID)
 struct pmic_revid_data *get_revid_data(struct device_node *dev_node);
 #else
 static inline

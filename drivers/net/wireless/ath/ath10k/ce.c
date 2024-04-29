@@ -1,19 +1,8 @@
+// SPDX-License-Identifier: ISC
 /*
  * Copyright (c) 2005-2011 Atheros Communications Inc.
  * Copyright (c) 2011-2017 Qualcomm Atheros, Inc.
  * Copyright (c) 2018 The Linux Foundation. All rights reserved.
- *
- * Permission to use, copy, modify, and/or distribute this software for any
- * purpose with or without fee is hereby granted, provided that the above
- * copyright notice and this permission notice appear in all copies.
- *
- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
- * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
- * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
- * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
 #include "hif.h"
@@ -634,6 +623,87 @@ exit:
 	return ret;
 }
 
+static int _ath10k_ce_send_nolock_64(struct ath10k_ce_pipe *ce_state,
+				     void *per_transfer_context,
+				     dma_addr_t buffer,
+				     unsigned int nbytes,
+				     unsigned int transfer_id,
+				     unsigned int flags)
+{
+	struct ath10k *ar = ce_state->ar;
+	struct ath10k_ce_ring *src_ring = ce_state->src_ring;
+	struct ce_desc_64 *desc, sdesc;
+	unsigned int nentries_mask = src_ring->nentries_mask;
+	unsigned int sw_index;
+	unsigned int write_index = src_ring->write_index;
+	u32 ctrl_addr = ce_state->ctrl_addr;
+	__le32 *addr;
+	u32 desc_flags = 0;
+	int ret = 0;
+
+	if (test_bit(ATH10K_FLAG_CRASH_FLUSH, &ar->dev_flags))
+		return -ESHUTDOWN;
+
+	if (nbytes > ce_state->src_sz_max)
+		ath10k_warn(ar, "%s: send more we can (nbytes: %d, max: %d)\n",
+			    __func__, nbytes, ce_state->src_sz_max);
+
+	if (ar->hw_params.rri_on_ddr)
+		sw_index = ath10k_ce_src_ring_read_index_from_ddr(ar, ce_state->id);
+	else
+		sw_index = src_ring->sw_index;
+
+	if (unlikely(CE_RING_DELTA(nentries_mask,
+				   write_index, sw_index - 1) <= 0)) {
+		ret = -ENOSR;
+		goto exit;
+	}
+
+	desc = CE_SRC_RING_TO_DESC_64(src_ring->base_addr_owner_space,
+				      write_index);
+
+	desc_flags |= SM(transfer_id, CE_DESC_FLAGS_META_DATA);
+
+	if (flags & CE_SEND_FLAG_GATHER)
+		desc_flags |= CE_DESC_FLAGS_GATHER;
+
+	if (flags & CE_SEND_FLAG_BYTE_SWAP)
+		desc_flags |= CE_DESC_FLAGS_BYTE_SWAP;
+
+	addr = (__le32 *)&sdesc.addr;
+
+	flags |= upper_32_bits(buffer) & CE_DESC_ADDR_HI_MASK;
+	addr[0] = __cpu_to_le32(buffer);
+	addr[1] = __cpu_to_le32(flags);
+	if (flags & CE_SEND_FLAG_GATHER)
+		addr[1] |= __cpu_to_le32(CE_WCN3990_DESC_FLAGS_GATHER);
+	else
+		addr[1] &= ~(__cpu_to_le32(CE_WCN3990_DESC_FLAGS_GATHER));
+
+	sdesc.nbytes = __cpu_to_le16(nbytes);
+	sdesc.flags  = __cpu_to_le16(desc_flags);
+
+	*desc = sdesc;
+
+	src_ring->per_transfer_context[write_index] = per_transfer_context;
+
+	/* Update Source Ring Write Index */
+	write_index = CE_RING_IDX_INCR(nentries_mask, write_index);
+
+	if (!(flags & CE_SEND_FLAG_GATHER)) {
+		if (ar->hw_params.shadow_reg_support)
+			ath10k_ce_shadow_src_ring_write_index_set(ar, ce_state,
+								  write_index);
+		else
+			ath10k_ce_src_ring_write_index_set(ar, ctrl_addr,
+							   write_index);
+	}
+
+	src_ring->write_index = write_index;
+exit:
+	return ret;
+}
+
 int ath10k_ce_send_nolock(struct ath10k_ce_pipe *ce_state,
 			  void *per_transfer_context,
 			  dma_addr_t buffer,
@@ -1077,8 +1147,8 @@ EXPORT_SYMBOL(ath10k_ce_revoke_recv_next);
  * Guts of ath10k_ce_completed_send_next.
  * The caller takes responsibility for any necessary locking.
  */
-int ath10k_ce_completed_send_next_nolock(struct ath10k_ce_pipe *ce_state,
-					 void **per_transfer_contextp)
+static int _ath10k_ce_completed_send_next_nolock(struct ath10k_ce_pipe *ce_state,
+						 void **per_transfer_contextp)
 {
 	struct ath10k_ce_ring *src_ring = ce_state->src_ring;
 	u32 ctrl_addr = ce_state->ctrl_addr;
@@ -1128,6 +1198,102 @@ int ath10k_ce_completed_send_next_nolock(struct ath10k_ce_pipe *ce_state,
 	src_ring->sw_index = sw_index;
 
 	return 0;
+}
+EXPORT_SYMBOL(ath10k_ce_completed_send_next_nolock);
+
+static void ath10k_ce_extract_desc_data(struct ath10k *ar,
+					struct ath10k_ce_ring *src_ring,
+					u32 sw_index,
+					dma_addr_t *bufferp,
+					u32 *nbytesp,
+					u32 *transfer_idp)
+{
+		struct ce_desc *base = src_ring->base_addr_owner_space;
+		struct ce_desc *desc = CE_SRC_RING_TO_DESC(base, sw_index);
+
+		/* Return data from completed source descriptor */
+		*bufferp = __le32_to_cpu(desc->addr);
+		*nbytesp = __le16_to_cpu(desc->nbytes);
+		*transfer_idp = MS(__le16_to_cpu(desc->flags),
+				   CE_DESC_FLAGS_META_DATA);
+}
+
+static void ath10k_ce_extract_desc_data_64(struct ath10k *ar,
+					   struct ath10k_ce_ring *src_ring,
+					   u32 sw_index,
+					   dma_addr_t *bufferp,
+					   u32 *nbytesp,
+					   u32 *transfer_idp)
+{
+		struct ce_desc_64 *base = src_ring->base_addr_owner_space;
+		struct ce_desc_64 *desc =
+			CE_SRC_RING_TO_DESC_64(base, sw_index);
+
+		/* Return data from completed source descriptor */
+		*bufferp = __le64_to_cpu(desc->addr);
+		*nbytesp = __le16_to_cpu(desc->nbytes);
+		*transfer_idp = MS(__le16_to_cpu(desc->flags),
+				   CE_DESC_FLAGS_META_DATA);
+}
+
+static int _ath10k_ce_completed_send_next_nolock_64(struct ath10k_ce_pipe *ce_state,
+						    void **per_transfer_contextp)
+{
+	struct ath10k_ce_ring *src_ring = ce_state->src_ring;
+	u32 ctrl_addr = ce_state->ctrl_addr;
+	struct ath10k *ar = ce_state->ar;
+	unsigned int nentries_mask = src_ring->nentries_mask;
+	unsigned int sw_index = src_ring->sw_index;
+	unsigned int read_index;
+	struct ce_desc_64 *desc;
+
+	if (src_ring->hw_index == sw_index) {
+		/*
+		 * The SW completion index has caught up with the cached
+		 * version of the HW completion index.
+		 * Update the cached HW completion index to see whether
+		 * the SW has really caught up to the HW, or if the cached
+		 * value of the HW index has become stale.
+		 */
+
+		read_index = ath10k_ce_src_ring_read_index_get(ar, ctrl_addr);
+		if (read_index == 0xffffffff)
+			return -ENODEV;
+
+		read_index &= nentries_mask;
+		src_ring->hw_index = read_index;
+	}
+
+	if (ar->hw_params.rri_on_ddr)
+		read_index = ath10k_ce_src_ring_read_index_get(ar, ctrl_addr);
+	else
+		read_index = src_ring->hw_index;
+
+	if (read_index == sw_index)
+		return -EIO;
+
+	if (per_transfer_contextp)
+		*per_transfer_contextp =
+			src_ring->per_transfer_context[sw_index];
+
+	/* sanity */
+	src_ring->per_transfer_context[sw_index] = NULL;
+	desc = CE_SRC_RING_TO_DESC_64(src_ring->base_addr_owner_space,
+				      sw_index);
+	desc->nbytes = 0;
+
+	/* Update sw_index */
+	sw_index = CE_RING_IDX_INCR(nentries_mask, sw_index);
+	src_ring->sw_index = sw_index;
+
+	return 0;
+}
+
+int ath10k_ce_completed_send_next_nolock(struct ath10k_ce_pipe *ce_state,
+					 void **per_transfer_contextp)
+{
+	return ce_state->ops->ce_completed_send_next_nolock(ce_state,
+							    per_transfer_contextp);
 }
 EXPORT_SYMBOL(ath10k_ce_completed_send_next_nolock);
 
@@ -1250,29 +1416,24 @@ void ath10k_ce_per_engine_service(struct ath10k *ar, unsigned int ce_id)
 	struct ath10k_hw_ce_host_wm_regs *wm_regs = ar->hw_ce_regs->wm_regs;
 	u32 ctrl_addr = ce_state->ctrl_addr;
 
-	spin_lock_bh(&ce->ce_lock);
-
-	/* Clear the copy-complete interrupts that will be handled here. */
+	/*
+	 * Clear before handling
+	 *
+	 * Misc CE interrupts are not being handled, but still need
+	 * to be cleared.
+	 *
+	 * NOTE: When the last copy engine interrupt is cleared the
+	 * hardware will go to sleep.  Once this happens any access to
+	 * the CE registers can cause a hardware fault.
+	 */
 	ath10k_ce_engine_int_status_clear(ar, ctrl_addr,
-					  wm_regs->cc_mask);
-
-	spin_unlock_bh(&ce->ce_lock);
+					  wm_regs->cc_mask | wm_regs->wm_mask);
 
 	if (ce_state->recv_cb)
 		ce_state->recv_cb(ce_state);
 
 	if (ce_state->send_cb)
 		ce_state->send_cb(ce_state);
-
-	spin_lock_bh(&ce->ce_lock);
-
-	/*
-	 * Misc CE interrupts are not being handled, but still need
-	 * to be cleared.
-	 */
-	ath10k_ce_engine_int_status_clear(ar, ctrl_addr, wm_regs->wm_mask);
-
-	spin_unlock_bh(&ce->ce_lock);
 }
 EXPORT_SYMBOL(ath10k_ce_per_engine_service);
 
@@ -1323,35 +1484,55 @@ static void ath10k_ce_per_engine_handler_adjust(struct ath10k_ce_pipe *ce_state)
 	ath10k_ce_watermark_intr_disable(ar, ctrl_addr);
 }
 
-int ath10k_ce_disable_interrupts(struct ath10k *ar)
+void ath10k_ce_disable_interrupt(struct ath10k *ar, int ce_id)
+{
+	struct ath10k_ce *ce = ath10k_ce_priv(ar);
+	struct ath10k_ce_pipe *ce_state;
+	u32 ctrl_addr;
+
+	ce_state  = &ce->ce_states[ce_id];
+	if (ce_state->attr_flags & CE_ATTR_POLL)
+		return;
+
+	ctrl_addr = ath10k_ce_base_address(ar, ce_id);
+
+	ath10k_ce_copy_complete_intr_disable(ar, ctrl_addr);
+	ath10k_ce_error_intr_disable(ar, ctrl_addr);
+	ath10k_ce_watermark_intr_disable(ar, ctrl_addr);
+}
+EXPORT_SYMBOL(ath10k_ce_disable_interrupt);
+
+void ath10k_ce_disable_interrupts(struct ath10k *ar)
 {
 	int ce_id;
 
-	for (ce_id = 0; ce_id < CE_COUNT; ce_id++) {
-		u32 ctrl_addr = ath10k_ce_base_address(ar, ce_id);
-
-		ath10k_ce_copy_complete_intr_disable(ar, ctrl_addr);
-		ath10k_ce_error_intr_disable(ar, ctrl_addr);
-		ath10k_ce_watermark_intr_disable(ar, ctrl_addr);
-	}
-
-	return 0;
+	for (ce_id = 0; ce_id < CE_COUNT; ce_id++)
+		ath10k_ce_disable_interrupt(ar, ce_id);
 }
 EXPORT_SYMBOL(ath10k_ce_disable_interrupts);
 
-void ath10k_ce_enable_interrupts(struct ath10k *ar)
+void ath10k_ce_enable_interrupt(struct ath10k *ar, int ce_id)
 {
 	struct ath10k_ce *ce = ath10k_ce_priv(ar);
-	int ce_id;
 	struct ath10k_ce_pipe *ce_state;
 
-	/* Skip the last copy engine, CE7 the diagnostic window, as that
-	 * uses polling and isn't initialized for interrupts.
+	ce_state  = &ce->ce_states[ce_id];
+	if (ce_state->attr_flags & CE_ATTR_POLL)
+		return;
+
+	ath10k_ce_per_engine_handler_adjust(ce_state);
+}
+EXPORT_SYMBOL(ath10k_ce_enable_interrupt);
+
+void ath10k_ce_enable_interrupts(struct ath10k *ar)
+{
+	int ce_id;
+
+	/* Enable interrupts for copy engine that
+	 * are not using polling mode.
 	 */
-	for (ce_id = 0; ce_id < CE_COUNT - 1; ce_id++) {
-		ce_state  = &ce->ce_states[ce_id];
-		ath10k_ce_per_engine_handler_adjust(ce_state);
-	}
+	for (ce_id = 0; ce_id < CE_COUNT; ce_id++)
+		ath10k_ce_enable_interrupt(ar, ce_id);
 }
 EXPORT_SYMBOL(ath10k_ce_enable_interrupts);
 
@@ -1439,12 +1620,12 @@ static int ath10k_ce_alloc_shadow_base(struct ath10k *ar,
 				       u32 nentries)
 {
 	src_ring->shadow_base_unaligned = kcalloc(nentries,
-						  sizeof(struct ce_desc),
+						  sizeof(struct ce_desc_64),
 						  GFP_KERNEL);
 	if (!src_ring->shadow_base_unaligned)
 		return -ENOMEM;
 
-	src_ring->shadow_base = (struct ce_desc *)
+	src_ring->shadow_base = (struct ce_desc_64 *)
 			PTR_ALIGN(src_ring->shadow_base_unaligned,
 				  CE_DESC_RING_ALIGN);
 	return 0;
@@ -1461,10 +1642,8 @@ ath10k_ce_alloc_src_ring(struct ath10k *ar, unsigned int ce_id,
 
 	nentries = roundup_pow_of_two(nentries);
 
-	src_ring = kzalloc(sizeof(*src_ring) +
-			   (nentries *
-			    sizeof(*src_ring->per_transfer_context)),
-			   GFP_KERNEL);
+	src_ring = kzalloc(struct_size(src_ring, per_transfer_context,
+				       nentries), GFP_KERNEL);
 	if (src_ring == NULL)
 		return ERR_PTR(-ENOMEM);
 
@@ -1521,10 +1700,8 @@ ath10k_ce_alloc_src_ring_64(struct ath10k *ar, unsigned int ce_id,
 
 	nentries = roundup_pow_of_two(nentries);
 
-	src_ring = kzalloc(sizeof(*src_ring) +
-			   (nentries *
-			    sizeof(*src_ring->per_transfer_context)),
-			   GFP_KERNEL);
+	src_ring = kzalloc(struct_size(src_ring, per_transfer_context,
+				       nentries), GFP_KERNEL);
 	if (!src_ring)
 		return ERR_PTR(-ENOMEM);
 
@@ -1557,7 +1734,7 @@ ath10k_ce_alloc_src_ring_64(struct ath10k *ar, unsigned int ce_id,
 		ret = ath10k_ce_alloc_shadow_base(ar, src_ring, nentries);
 		if (ret) {
 			dma_free_coherent(ar->dev,
-					  (nentries * sizeof(struct ce_desc) +
+					  (nentries * sizeof(struct ce_desc_64) +
 					   CE_DESC_RING_ALIGN),
 					  src_ring->base_addr_owner_space_unaligned,
 					  base_addr);
@@ -1579,10 +1756,8 @@ ath10k_ce_alloc_dest_ring(struct ath10k *ar, unsigned int ce_id,
 
 	nentries = roundup_pow_of_two(attr->dest_nentries);
 
-	dest_ring = kzalloc(sizeof(*dest_ring) +
-			    (nentries *
-			     sizeof(*dest_ring->per_transfer_context)),
-			    GFP_KERNEL);
+	dest_ring = kzalloc(struct_size(dest_ring, per_transfer_context,
+					nentries), GFP_KERNEL);
 	if (dest_ring == NULL)
 		return ERR_PTR(-ENOMEM);
 
@@ -1594,10 +1769,10 @@ ath10k_ce_alloc_dest_ring(struct ath10k *ar, unsigned int ce_id,
 	 * coherent DMA are unsupported
 	 */
 	dest_ring->base_addr_owner_space_unaligned =
-		dma_zalloc_coherent(ar->dev,
-				    (nentries * sizeof(struct ce_desc) +
-				     CE_DESC_RING_ALIGN),
-				    &base_addr, GFP_KERNEL);
+		dma_alloc_coherent(ar->dev,
+				   (nentries * sizeof(struct ce_desc) +
+				    CE_DESC_RING_ALIGN),
+				   &base_addr, GFP_KERNEL);
 	if (!dest_ring->base_addr_owner_space_unaligned) {
 		kfree(dest_ring);
 		return ERR_PTR(-ENOMEM);
@@ -1625,10 +1800,8 @@ ath10k_ce_alloc_dest_ring_64(struct ath10k *ar, unsigned int ce_id,
 
 	nentries = roundup_pow_of_two(attr->dest_nentries);
 
-	dest_ring = kzalloc(sizeof(*dest_ring) +
-			    (nentries *
-			     sizeof(*dest_ring->per_transfer_context)),
-			    GFP_KERNEL);
+	dest_ring = kzalloc(struct_size(dest_ring, per_transfer_context,
+					nentries), GFP_KERNEL);
 	if (!dest_ring)
 		return ERR_PTR(-ENOMEM);
 
@@ -1653,9 +1826,6 @@ ath10k_ce_alloc_dest_ring_64(struct ath10k *ar, unsigned int ce_id,
 	/* Correctly initialize memory to 0 to prevent garbage
 	 * data crashing system when download firmware
 	 */
-	memset(dest_ring->base_addr_owner_space_unaligned, 0,
-	       nentries * sizeof(struct ce_desc_64) + CE_DESC_RING_ALIGN);
-
 	dest_ring->base_addr_owner_space =
 			PTR_ALIGN(dest_ring->base_addr_owner_space_unaligned,
 				  CE_DESC_RING_ALIGN);
@@ -1804,7 +1974,7 @@ void ath10k_ce_dump_registers(struct ath10k *ar,
 	struct ath10k_ce_crash_data ce_data;
 	u32 addr, id;
 
-	lockdep_assert_held(&ar->data_lock);
+	lockdep_assert_held(&ar->dump_mutex);
 
 	ath10k_err(ar, "Copy Engine register dump:\n");
 
@@ -1848,6 +2018,7 @@ static const struct ath10k_ce_ops ce_ops = {
 	.ce_send_nolock = _ath10k_ce_send_nolock,
 	.ce_set_src_ring_base_addr_hi = NULL,
 	.ce_set_dest_ring_base_addr_hi = NULL,
+	.ce_completed_send_next_nolock = _ath10k_ce_completed_send_next_nolock,
 };
 
 static const struct ath10k_ce_ops ce_64_ops = {
@@ -1862,6 +2033,7 @@ static const struct ath10k_ce_ops ce_64_ops = {
 	.ce_send_nolock = _ath10k_ce_send_nolock_64,
 	.ce_set_src_ring_base_addr_hi = ath10k_ce_set_src_ring_base_addr_hi,
 	.ce_set_dest_ring_base_addr_hi = ath10k_ce_set_dest_ring_base_addr_hi,
+	.ce_completed_send_next_nolock = _ath10k_ce_completed_send_next_nolock_64,
 };
 
 static void ath10k_ce_set_ops(struct ath10k *ar,
@@ -1966,8 +2138,6 @@ void ath10k_ce_alloc_rri(struct ath10k *ar)
 		value |= ar->hw_ce_regs->upd->mask;
 		ath10k_ce_write32(ar, ce_base_addr + ctrl1_regs, value);
 	}
-
-	memset(ce->vaddr_rri, 0, CE_COUNT * sizeof(u32));
 }
 EXPORT_SYMBOL(ath10k_ce_alloc_rri);
 

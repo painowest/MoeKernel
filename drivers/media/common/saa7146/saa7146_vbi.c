@@ -22,7 +22,7 @@ static int vbi_workaround(struct saa7146_dev *dev)
 	   as specified. there is this workaround, but please
 	   don't let me explain it. ;-) */
 
-	cpu = pci_alloc_consistent(dev->pci, 4096, &dma_addr);
+	cpu = dma_alloc_coherent(&dev->pci->dev, 4096, &dma_addr, GFP_KERNEL);
 	if (NULL == cpu)
 		return -ENOMEM;
 
@@ -123,12 +123,12 @@ static int vbi_workaround(struct saa7146_dev *dev)
 			/* stop rps1 for sure */
 			saa7146_write(dev, MC1, MASK_29);
 
-			pci_free_consistent(dev->pci, 4096, cpu, dma_addr);
+			dma_free_coherent(&dev->pci->dev, 4096, cpu, dma_addr);
 			return -EINTR;
 		}
 	}
 
-	pci_free_consistent(dev->pci, 4096, cpu, dma_addr);
+	dma_free_coherent(&dev->pci->dev, 4096, cpu, dma_addr);
 	return 0;
 }
 
@@ -349,9 +349,10 @@ static void vbi_stop(struct saa7146_fh *fh, struct file *file)
 	spin_unlock_irqrestore(&dev->slock, flags);
 }
 
-static void vbi_read_timeout(unsigned long data)
+static void vbi_read_timeout(struct timer_list *t)
 {
-	struct file *file = (struct file*)data;
+	struct saa7146_vv *vv = from_timer(vv, t, vbi_read_timeout);
+	struct file *file = vv->vbi_read_timeout_file;
 	struct saa7146_fh *fh = file->private_data;
 	struct saa7146_dev *dev = fh->dev;
 
@@ -366,8 +367,7 @@ static void vbi_init(struct saa7146_dev *dev, struct saa7146_vv *vv)
 
 	INIT_LIST_HEAD(&vv->vbi_dmaq.queue);
 
-	setup_timer(&vv->vbi_dmaq.timeout, saa7146_buffer_timeout,
-		    (unsigned long)(&vv->vbi_dmaq));
+	timer_setup(&vv->vbi_dmaq.timeout, saa7146_buffer_timeout, 0);
 	vv->vbi_dmaq.dev              = dev;
 
 	init_waitqueue_head(&vv->vbi_wq);
@@ -403,7 +403,7 @@ static int vbi_open(struct saa7146_dev *dev, struct file *file)
 			    file, &dev->v4l2_lock);
 
 	vv->vbi_read_timeout.function = vbi_read_timeout;
-	vv->vbi_read_timeout.data = (unsigned long)file;
+	vv->vbi_read_timeout_file = file;
 
 	/* initialize the brs */
 	if ( 0 != (SAA7146_USE_PORT_B_FOR_VBI & dev->ext_vv_data->flags)) {
@@ -489,7 +489,7 @@ static ssize_t vbi_read(struct file *file, char __user *data, size_t count, loff
 	return ret;
 }
 
-struct saa7146_use_ops saa7146_vbi_uops = {
+const struct saa7146_use_ops saa7146_vbi_uops = {
 	.init		= vbi_init,
 	.open		= vbi_open,
 	.release	= vbi_close,

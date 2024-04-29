@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Signal Handling for ARC
  *
  * Copyright (C) 2004, 2007-2010, 2011-2012 Synopsys, Inc. (www.synopsys.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  * vineetg: Jan 2010 (Restarting of timer related syscalls)
  *
@@ -212,7 +209,7 @@ SYSCALL_DEFINE0(rt_sigreturn)
 
 	sf = (struct rt_sigframe __force __user *)(regs->sp);
 
-	if (!access_ok(VERIFY_READ, sf, sizeof(*sf)))
+	if (!access_ok(sf, sizeof(*sf)))
 		goto badframe;
 
 	if (__get_user(magic, &sf->sigret_magic))
@@ -240,7 +237,7 @@ SYSCALL_DEFINE0(rt_sigreturn)
 	return regs->r0;
 
 badframe:
-	force_sig(SIGSEGV, current);
+	force_sig(SIGSEGV);
 	return 0;
 }
 
@@ -262,7 +259,7 @@ static inline void __user *get_sigframe(struct ksignal *ksig,
 	frame = (void __user *)((sp - framesize) & ~7);
 
 	/* Check that we can actually write to the signal frame */
-	if (!access_ok(VERIFY_WRITE, frame, framesize))
+	if (!access_ok(frame, framesize))
 		frame = NULL;
 
 	return frame;
@@ -305,7 +302,7 @@ setup_rt_frame(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs)
 		regs->r2 = (unsigned long)&sf->uc;
 
 		/*
-		 * small optim to avoid unconditonally calling do_sigaltstack
+		 * small optim to avoid unconditionally calling do_sigaltstack
 		 * in sigreturn path, now that we only have rt_sigreturn
 		 */
 		magic = MAGIC_SIGALTSTK;
@@ -367,7 +364,7 @@ static void arc_restart_syscall(struct k_sigaction *ka, struct pt_regs *regs)
 			regs->r0 = -EINTR;
 			break;
 		}
-		/* fallthrough */
+		fallthrough;
 
 	case -ERESTARTNOINTR:
 		/*
@@ -408,7 +405,7 @@ void do_signal(struct pt_regs *regs)
 
 	restart_scall = in_syscall(regs) && syscall_restartable(regs);
 
-	if (get_signal(&ksig)) {
+	if (test_thread_flag(TIF_SIGPENDING) && get_signal(&ksig)) {
 		if (restart_scall) {
 			arc_restart_syscall(&ksig.ka, regs);
 			syscall_wont_restart(regs);	/* No more restarts */
@@ -437,9 +434,9 @@ void do_signal(struct pt_regs *regs)
 void do_notify_resume(struct pt_regs *regs)
 {
 	/*
-	 * ASM glue gaurantees that this is only called when returning to
+	 * ASM glue guarantees that this is only called when returning to
 	 * user mode
 	 */
-	if (test_and_clear_thread_flag(TIF_NOTIFY_RESUME))
+	if (test_thread_flag(TIF_NOTIFY_RESUME))
 		tracehook_notify_resume(regs);
 }

@@ -1,13 +1,7 @@
-/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023-2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -20,6 +14,9 @@
 #include <soc/qcom/subsystem_restart.h>
 #include <linux/device.h>
 #include <linux/platform_device.h>
+#include <linux/firmware.h>
+#include <linux/qcom_scm.h>
+#include <linux/soc/qcom/mdt_loader.h>
 
 #include "npu_hw_access.h"
 #include "npu_common.h"
@@ -110,7 +107,7 @@ void npu_mem_write(struct npu_device *npu_dev, void *dst, void *src,
 {
 	size_t dst_off = (size_t)dst;
 	uint32_t *src_ptr32 = (uint32_t *)src;
-	uint8_t *src_ptr8 = 0;
+	uint8_t *src_ptr8 = NULL;
 	uint32_t i = 0;
 	uint32_t num = 0;
 
@@ -145,7 +142,7 @@ int32_t npu_mem_read(struct npu_device *npu_dev, void *src, void *dst,
 {
 	size_t src_off = (size_t)src;
 	uint32_t *out32 = (uint32_t *)dst;
-	uint8_t *out8 = 0;
+	uint8_t *out8 = NULL;
 	uint32_t i = 0;
 	uint32_t num = 0;
 
@@ -374,7 +371,7 @@ void npu_mem_invalidate(struct npu_client *client, int buf_hdl)
 
 bool npu_mem_verify_addr(struct npu_client *client, uint64_t addr)
 {
-	struct npu_ion_buf *ion_buf = 0;
+	struct npu_ion_buf *ion_buf = NULL;
 	struct list_head *pos = NULL;
 	bool valid = false;
 
@@ -394,7 +391,7 @@ bool npu_mem_verify_addr(struct npu_client *client, uint64_t addr)
 void npu_mem_unmap(struct npu_client *client, int buf_hdl,  uint64_t addr)
 {
 	struct npu_device *npu_dev = client->npu_dev;
-	struct npu_ion_buf *ion_buf = 0;
+	struct npu_ion_buf *ion_buf = NULL;
 
 	/* clear entry and retrieve the corresponding buffer */
 	ion_buf = npu_get_npu_ion_buffer(client, buf_hdl);
@@ -439,59 +436,48 @@ uint8_t npu_hw_log_enabled(void)
  * Functions - Subsystem/PIL
  * -------------------------------------------------------------------------
  */
-void *subsystem_get_local(char *sub_system)
+#define NPU_PAS_ID (23)
+
+int npu_subsystem_get(struct npu_device *npu_dev, const char *fw_name)
 {
-	return subsystem_get(sub_system);
-}
+	struct device *dev = npu_dev->device;
+	const struct firmware *firmware_p;
+	ssize_t fw_size;
+	/* load firmware */
+	int ret = request_firmware(&firmware_p, fw_name, dev);
 
-void subsystem_put_local(void *sub_system_handle)
-{
-	return subsystem_put(sub_system_handle);
-}
-
-/* -------------------------------------------------------------------------
- * Functions - Log
- * -------------------------------------------------------------------------
- */
-void npu_process_log_message(struct npu_device *npu_dev, uint32_t *message,
-	uint32_t size)
-{
-	struct npu_debugfs_ctx *debugfs = &npu_dev->debugfs_ctx;
-
-	/* mutex log lock */
-	mutex_lock(&debugfs->log_lock);
-
-	if ((debugfs->log_num_bytes_buffered + size) >
-		debugfs->log_buf_size) {
-		/* No more space, invalidate it all and start over */
-		debugfs->log_read_index = 0;
-		debugfs->log_write_index = size;
-		debugfs->log_num_bytes_buffered = size;
-		memcpy(debugfs->log_buf, message, size);
-	} else {
-		if ((debugfs->log_write_index + size) >
-			debugfs->log_buf_size) {
-			/* Wrap around case */
-			uint8_t *src_addr = (uint8_t *)message;
-			uint8_t *dst_addr = 0;
-			uint32_t remaining_to_end = debugfs->log_buf_size -
-				debugfs->log_write_index + 1;
-			dst_addr = debugfs->log_buf + debugfs->log_write_index;
-			memcpy(dst_addr, src_addr, remaining_to_end);
-			src_addr = &(src_addr[remaining_to_end]);
-			dst_addr = debugfs->log_buf;
-			memcpy(dst_addr, src_addr, size-remaining_to_end);
-			debugfs->log_write_index = size-remaining_to_end;
-		} else {
-			memcpy((debugfs->log_buf + debugfs->log_write_index),
-				message, size);
-			debugfs->log_write_index += size;
-			if (debugfs->log_write_index == debugfs->log_buf_size)
-				debugfs->log_write_index = 0;
-		}
-		debugfs->log_num_bytes_buffered += size;
+	if (ret < 0) {
+		pr_err("request_firmware %s failed: %d\n", fw_name, ret);
+		return ret;
 	}
+	fw_size = qcom_mdt_get_size(firmware_p);
+	if (fw_size < 0 || fw_size > npu_dev->fw_io.mem_size) {
+		pr_err("npu fw size invalid, %lld\n", fw_size);
+		return -EINVAL;
+	}
+	/* load the ELF segments to memory */
+	ret = qcom_mdt_load(dev, firmware_p, fw_name, NPU_PAS_ID,
+				    npu_dev->fw_io.mem_region, npu_dev->fw_io.mem_phys,
+				    npu_dev->fw_io.mem_size, &npu_dev->fw_io.mem_reloc);
+	release_firmware(firmware_p);
+	if (ret) {
+		pr_err("qcom_mdt_load failure, %d\n", ret);
+		return ret;
+	}
+	ret = qcom_scm_pas_auth_and_reset(NPU_PAS_ID);
+	if (ret) {
+		pr_err("failed to authenticate image and release reset\n");
+		return -2;
+	}
+	pr_debug("done pas auth\n");
+	return 0;
+}
 
-	/* mutex log unlock */
-	mutex_unlock(&debugfs->log_lock);
+void npu_subsystem_put(struct npu_device *npu_dev)
+{
+	int ret = qcom_scm_pas_shutdown(NPU_PAS_ID);
+
+	if (ret)
+		pr_err("failed to shutdown: %d\n", ret);
+
 }

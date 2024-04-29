@@ -1,15 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _DP_LINK_H_
@@ -19,25 +10,27 @@
 
 #define DS_PORT_STATUS_CHANGED 0x200
 #define DP_TEST_BIT_DEPTH_UNKNOWN 0xFFFFFFFF
-#define DP_LINK_ENUM_STR(x)		#x
+#define DP_LINK_CAP_ENHANCED_FRAMING (1 << 0)
+
+struct dp_link_info {
+	unsigned char revision;
+	unsigned int rate;
+	unsigned int num_lanes;
+	unsigned long capabilities;
+};
 
 enum dp_link_voltage_level {
-	DP_LINK_VOLTAGE_LEVEL_0	= 0,
-	DP_LINK_VOLTAGE_LEVEL_1	= 1,
-	DP_LINK_VOLTAGE_LEVEL_2	= 2,
-	DP_LINK_VOLTAGE_MAX	= DP_LINK_VOLTAGE_LEVEL_2,
+	DP_TRAIN_VOLTAGE_SWING_LVL_0	= 0,
+	DP_TRAIN_VOLTAGE_SWING_LVL_1	= 1,
+	DP_TRAIN_VOLTAGE_SWING_LVL_2	= 2,
+	DP_TRAIN_VOLTAGE_SWING_MAX	= DP_TRAIN_VOLTAGE_SWING_LVL_2,
 };
 
 enum dp_link_preemaphasis_level {
-	DP_LINK_PRE_EMPHASIS_LEVEL_0	= 0,
-	DP_LINK_PRE_EMPHASIS_LEVEL_1	= 1,
-	DP_LINK_PRE_EMPHASIS_LEVEL_2	= 2,
-	DP_LINK_PRE_EMPHASIS_MAX	= DP_LINK_PRE_EMPHASIS_LEVEL_2,
-};
-
-struct dp_link_sink_count {
-	u32 count;
-	bool cp_ready;
+	DP_TRAIN_PRE_EMPHASIS_LVL_0	= 0,
+	DP_TRAIN_PRE_EMPHASIS_LVL_1	= 1,
+	DP_TRAIN_PRE_EMPHASIS_LVL_2	= 2,
+	DP_TRAIN_PRE_EMPHASIS_MAX	= DP_TRAIN_PRE_EMPHASIS_LVL_2,
 };
 
 struct dp_link_test_video {
@@ -72,92 +65,23 @@ struct dp_link_test_audio {
 	u32 test_audio_period_ch_8;
 };
 
-struct dp_link_hdcp_status {
-	int hdcp_state;
-	int hdcp_version;
-};
-
 struct dp_link_phy_params {
 	u32 phy_test_pattern_sel;
 	u8 v_level;
 	u8 p_level;
 };
 
-struct dp_link_params {
-	u32 lane_count;
-	u32 bw_code;
-};
-
-static inline char *dp_link_get_test_name(u32 test_requested)
-{
-	switch (test_requested) {
-	case DP_TEST_LINK_TRAINING:
-		return DP_LINK_ENUM_STR(DP_TEST_LINK_TRAINING);
-	case DP_TEST_LINK_VIDEO_PATTERN:
-		return DP_LINK_ENUM_STR(DP_TEST_LINK_VIDEO_PATTERN);
-	case DP_TEST_LINK_EDID_READ:
-		return DP_LINK_ENUM_STR(DP_TEST_LINK_EDID_READ);
-	case DP_TEST_LINK_PHY_TEST_PATTERN:
-		return DP_LINK_ENUM_STR(DP_TEST_LINK_PHY_TEST_PATTERN);
-	case DP_TEST_LINK_AUDIO_PATTERN:
-		return DP_LINK_ENUM_STR(DP_TEST_LINK_AUDIO_PATTERN);
-	case DS_PORT_STATUS_CHANGED:
-		return DP_LINK_ENUM_STR(DS_PORT_STATUS_CHANGED);
-	case DP_LINK_STATUS_UPDATED:
-		return DP_LINK_ENUM_STR(DP_LINK_STATUS_UPDATED);
-	default:
-		return "unknown";
-	}
-}
-
 struct dp_link {
 	u32 sink_request;
 	u32 test_response;
+	bool psm_enabled;
 
-	struct dp_link_sink_count sink_count;
+	u8 sink_count;
 	struct dp_link_test_video test_video;
 	struct dp_link_test_audio test_audio;
 	struct dp_link_phy_params phy_params;
-	struct dp_link_params link_params;
-	struct dp_link_hdcp_status hdcp_status;
-
-	u32 (*get_test_bits_depth)(struct dp_link *dp_link, u32 bpp);
-	int (*process_request)(struct dp_link *dp_link);
-	int (*get_colorimetry_config)(struct dp_link *dp_link);
-	int (*adjust_levels)(struct dp_link *dp_link, u8 *link_status);
-	int (*send_psm_request)(struct dp_link *dp_link, bool req);
-	void (*send_test_response)(struct dp_link *dp_link);
-	int (*psm_config)(struct dp_link *dp_link,
-		struct drm_dp_link *link_info, bool enable);
-	void (*send_edid_checksum)(struct dp_link *dp_link, u8 checksum);
+	struct dp_link_info link_params;
 };
-
-static inline char *dp_link_get_phy_test_pattern(u32 phy_test_pattern_sel)
-{
-	switch (phy_test_pattern_sel) {
-	case DP_TEST_PHY_PATTERN_NONE:
-		return DP_LINK_ENUM_STR(DP_TEST_PHY_PATTERN_NONE);
-	case DP_TEST_PHY_PATTERN_D10_2_NO_SCRAMBLING:
-		return DP_LINK_ENUM_STR(
-			DP_TEST_PHY_PATTERN_D10_2_NO_SCRAMBLING);
-	case DP_TEST_PHY_PATTERN_SYMBOL_ERR_MEASUREMENT_CNT:
-		return DP_LINK_ENUM_STR(
-			DP_TEST_PHY_PATTERN_SYMBOL_ERR_MEASUREMENT_CNT);
-	case DP_TEST_PHY_PATTERN_PRBS7:
-		return DP_LINK_ENUM_STR(DP_TEST_PHY_PATTERN_PRBS7);
-	case DP_TEST_PHY_PATTERN_80_BIT_CUSTOM_PATTERN:
-		return DP_LINK_ENUM_STR(
-			DP_TEST_PHY_PATTERN_80_BIT_CUSTOM_PATTERN);
-	case DP_TEST_PHY_PATTERN_CP2520_PATTERN_1:
-		return DP_LINK_ENUM_STR(DP_TEST_PHY_PATTERN_CP2520_PATTERN_1);
-	case DP_TEST_PHY_PATTERN_CP2520_PATTERN_2:
-		return DP_LINK_ENUM_STR(DP_TEST_PHY_PATTERN_CP2520_PATTERN_2);
-	case DP_TEST_PHY_PATTERN_CP2520_PATTERN_3:
-		return DP_LINK_ENUM_STR(DP_TEST_PHY_PATTERN_CP2520_PATTERN_3);
-	default:
-		return "unknown";
-	}
-}
 
 /**
  * mdss_dp_test_bit_depth_to_bpp() - convert test bit depth to bpp
@@ -169,8 +93,6 @@ static inline char *dp_link_get_phy_test_pattern(u32 phy_test_pattern_sel)
  */
 static inline u32 dp_link_bit_depth_to_bpp(u32 tbd)
 {
-	u32 bpp;
-
 	/*
 	 * Few simplistic rules and assumptions made here:
 	 *    1. Bit depth is per color component
@@ -179,21 +101,49 @@ static inline u32 dp_link_bit_depth_to_bpp(u32 tbd)
 	 */
 	switch (tbd) {
 	case DP_TEST_BIT_DEPTH_6:
-		bpp = 18;
-		break;
+		return 18;
 	case DP_TEST_BIT_DEPTH_8:
-		bpp = 24;
-		break;
+		return 24;
 	case DP_TEST_BIT_DEPTH_10:
-		bpp = 30;
-		break;
+		return 30;
 	case DP_TEST_BIT_DEPTH_UNKNOWN:
 	default:
-		bpp = 0;
+		return 0;
 	}
-
-	return bpp;
 }
+
+/**
+ * dp_test_bit_depth_to_bpc() - convert test bit depth to bpc
+ * @tbd: test bit depth
+ *
+ * Returns the bits per comp (bpc) to be used corresponding to the
+ * bit depth value. This function assumes that bit depth has
+ * already been validated.
+ */
+static inline u32 dp_link_bit_depth_to_bpc(u32 tbd)
+{
+	switch (tbd) {
+	case DP_TEST_BIT_DEPTH_6:
+		return 6;
+	case DP_TEST_BIT_DEPTH_8:
+		return 8;
+	case DP_TEST_BIT_DEPTH_10:
+		return 10;
+	case DP_TEST_BIT_DEPTH_UNKNOWN:
+	default:
+		return 0;
+	}
+}
+
+void dp_link_reset_phy_params_vx_px(struct dp_link *dp_link);
+u32 dp_link_get_test_bits_depth(struct dp_link *dp_link, u32 bpp);
+int dp_link_process_request(struct dp_link *dp_link);
+int dp_link_get_colorimetry_config(struct dp_link *dp_link);
+int dp_link_adjust_levels(struct dp_link *dp_link, u8 *link_status);
+bool dp_link_send_test_response(struct dp_link *dp_link);
+int dp_link_psm_config(struct dp_link *dp_link,
+		struct dp_link_info *link_info, bool enable);
+bool dp_link_send_edid_checksum(struct dp_link *dp_link, u8 checksum);
 
 /**
  * dp_link_get() - get the functionalities of dp test module
@@ -201,14 +151,6 @@ static inline u32 dp_link_bit_depth_to_bpp(u32 tbd)
  *
  * return: a pointer to dp_link struct
  */
-struct dp_link *dp_link_get(struct device *dev, struct dp_aux *aux);
-
-/**
- * dp_link_put() - releases the dp test module's resources
- *
- * @dp_link: an instance of dp_link module
- *
- */
-void dp_link_put(struct dp_link *dp_link);
+struct dp_link *dp_link_get(struct device *dev, struct drm_dp_aux *aux);
 
 #endif /* _DP_LINK_H_ */

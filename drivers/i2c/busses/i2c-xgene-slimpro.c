@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * X-Gene SLIMpro I2C Driver
  *
@@ -5,22 +6,8 @@
  * Author: Feng Kan <fkan@apm.com>
  * Author: Hieu Le <hnle@apm.com>
  *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation; either version 2 of
- * the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, see <http://www.gnu.org/licenses/>.
- *
  * This driver provides support for X-Gene SLIMpro I2C device access
  * using the APM X-Gene SLIMpro mailbox driver.
- *
  */
 #include <acpi/pcc.h>
 #include <linux/acpi.h>
@@ -32,7 +19,6 @@
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/version.h>
 
 #define MAILBOX_OP_TIMEOUT		1000	/* Operation time out in ms */
 #define MAILBOX_I2C_INDEX		0
@@ -128,6 +114,11 @@ struct slimpro_i2c_dev {
 
 #define to_slimpro_i2c_dev(cl)	\
 		container_of(cl, struct slimpro_i2c_dev, mbox_client)
+
+enum slimpro_i2c_version {
+	XGENE_SLIMPRO_I2C_V1 = 0,
+	XGENE_SLIMPRO_I2C_V2 = 1,
+};
 
 /*
  * This function tests and clears a bitmask then returns its old value
@@ -479,6 +470,15 @@ static int xgene_slimpro_i2c_probe(struct platform_device *pdev)
 		}
 	} else {
 		struct acpi_pcct_hw_reduced *cppc_ss;
+		const struct acpi_device_id *acpi_id;
+		int version = XGENE_SLIMPRO_I2C_V1;
+
+		acpi_id = acpi_match_device(pdev->dev.driver->acpi_match_table,
+					    &pdev->dev);
+		if (!acpi_id)
+			return -EINVAL;
+
+		version = (int)acpi_id->driver_data;
 
 		if (device_property_read_u32(&pdev->dev, "pcc-channel",
 					     &ctx->mbox_idx))
@@ -517,9 +517,16 @@ static int xgene_slimpro_i2c_probe(struct platform_device *pdev)
 		 */
 		ctx->comm_base_addr = cppc_ss->base_address;
 		if (ctx->comm_base_addr) {
-			ctx->pcc_comm_addr = memremap(ctx->comm_base_addr,
-						      cppc_ss->length,
-						      MEMREMAP_WB);
+			if (version == XGENE_SLIMPRO_I2C_V2)
+				ctx->pcc_comm_addr = memremap(
+							ctx->comm_base_addr,
+							cppc_ss->length,
+							MEMREMAP_WT);
+			else
+				ctx->pcc_comm_addr = memremap(
+							ctx->comm_base_addr,
+							cppc_ss->length,
+							MEMREMAP_WB);
 		} else {
 			dev_err(&pdev->dev, "Failed to get PCC comm region\n");
 			rc = -ENOENT;
@@ -584,7 +591,8 @@ MODULE_DEVICE_TABLE(of, xgene_slimpro_i2c_dt_ids);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id xgene_slimpro_i2c_acpi_ids[] = {
-	{"APMC0D40", 0},
+	{"APMC0D40", XGENE_SLIMPRO_I2C_V1},
+	{"APMC0D8B", XGENE_SLIMPRO_I2C_V2},
 	{}
 };
 MODULE_DEVICE_TABLE(acpi, xgene_slimpro_i2c_acpi_ids);

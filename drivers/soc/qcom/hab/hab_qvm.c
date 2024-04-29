@@ -1,21 +1,19 @@
-/* Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #include "hab.h"
 #include "hab_qvm.h"
 
 /*
- * this is for platform does not provide probe features. the size should match
- * hab device side (all mmids)
+ * 1. The entry values are only for platform without probe features. For those
+ * platforms with probe feature, correct address and irq will be updated in it.
+ * 2. Length of the array decides the maximum number of successful probe attempts.
+ * Excessive probe attempts will fail and return -ENODEV.
+ * 3. The number of vdev-shmem devices for hab in linux-lv/la.config should be
+ * the same as the entry number of the below array to successfully probe and only
+ * probe those vdev-shmem devices for HAB if other vdev-shmem users exist.
  */
 static struct shmem_irq_config pchan_factory_settings[] = {
 	{0x1b000000, 7},
@@ -42,6 +40,8 @@ static struct shmem_irq_config pchan_factory_settings[] = {
 	{0x1b015000, 28},
 	{0x1b016000, 29},
 	{0x1b017000, 30},
+	{0x1b018000, 31},
+	{0x1b019000, 32},
 };
 
 struct qvm_plugin_info qvm_priv_info = {
@@ -111,7 +111,8 @@ void hab_pipe_reset(struct physical_channel *pchan)
 	struct hab_pipe_endpoint *pipe_ep;
 	struct qvm_channel *dev  = (struct qvm_channel *)pchan->hyp_data;
 
-	pipe_ep = hab_pipe_init(dev->pipe, PIPE_SHMEM_SIZE,
+	pipe_ep = hab_pipe_init(dev->pipe, &dev->tx_buf,
+				&dev->rx_buf, &dev->dbg_itms, PIPE_SHMEM_SIZE,
 				pchan->is_be ? 0 : 1);
 	if (dev->pipe_ep != pipe_ep)
 		pr_warn("The pipe endpoint must not change\n");
@@ -173,8 +174,8 @@ int habhyp_commdev_alloc(void **commdev, int is_be, char *name,
 	dev->pipe = (struct hab_pipe *)shmdata;
 	pr_debug("\"%s\": pipesize %d, addr 0x%pK, be %d\n", name,
 				 pipe_alloc_size, dev->pipe, is_be);
-	dev->pipe_ep = hab_pipe_init(dev->pipe, PIPE_SHMEM_SIZE,
-		is_be ? 0 : 1);
+	dev->pipe_ep = hab_pipe_init(dev->pipe, &dev->tx_buf, &dev->rx_buf,
+		&dev->dbg_itms, PIPE_SHMEM_SIZE, is_be ? 0 : 1);
 	/* newly created pchan is added to mmid device list */
 	*pchan = hab_pchan_alloc(mmid_device, vmid_remote);
 	if (!(*pchan)) {
@@ -184,7 +185,7 @@ int habhyp_commdev_alloc(void **commdev, int is_be, char *name,
 
 	(*pchan)->closed = 0;
 	(*pchan)->hyp_data = (void *)dev;
-	strlcpy((*pchan)->name, name, MAX_VMID_NAME_SIZE);
+	strscpy((*pchan)->name, name, MAX_VMID_NAME_SIZE);
 	(*pchan)->is_be = is_be;
 
 	ret = habhyp_commdev_create_dispatcher(*pchan);
@@ -219,8 +220,7 @@ int habhyp_commdev_dealloc(void *commdev)
 	kfree(dev->os_data);
 	kfree(dev);
 
-	if (pchan)
-		hab_pchan_put(pchan);
+	hab_pchan_put(pchan);
 
 	return 0;
 }
@@ -246,5 +246,7 @@ done:
 
 void hab_hypervisor_unregister(void)
 {
-	pr_info("unregistration is called, but do nothing\n");
+	hab_hypervisor_unregister_os();
 }
+
+int hab_hypervisor_register_post(void) { return 0; }

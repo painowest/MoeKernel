@@ -1,14 +1,11 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * xhci-plat.c - xHCI host controller driver platform Bus Glue.
  *
- * Copyright (C) 2012 Texas Instruments Incorporated - http://www.ti.com
+ * Copyright (C) 2012 Texas Instruments Incorporated - https://www.ti.com
  * Author: Sebastian Andrzej Siewior <bigeasy@linutronix.de>
  *
  * A lot of code borrowed from the Linux xHCI driver.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
  */
 
 #include <linux/clk.h>
@@ -16,10 +13,12 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/of.h>
+#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/usb/phy.h>
 #include <linux/slab.h>
 #include <linux/acpi.h>
+#include <linux/usb/of.h>
 
 #include "xhci.h"
 #include "xhci-plat.h"
@@ -45,6 +44,16 @@ static void xhci_priv_plat_start(struct usb_hcd *hcd)
 		priv->plat_start(hcd);
 }
 
+static int xhci_priv_plat_setup(struct usb_hcd *hcd)
+{
+	struct xhci_plat_priv *priv = hcd_to_xhci_priv(hcd);
+
+	if (!priv->plat_setup)
+		return 0;
+
+	return priv->plat_setup(hcd);
+}
+
 static int xhci_priv_init_quirk(struct usb_hcd *hcd)
 {
 	struct xhci_plat_priv *priv = hcd_to_xhci_priv(hcd);
@@ -53,6 +62,16 @@ static int xhci_priv_init_quirk(struct usb_hcd *hcd)
 		return 0;
 
 	return priv->init_quirk(hcd);
+}
+
+static int xhci_priv_suspend_quirk(struct usb_hcd *hcd)
+{
+	struct xhci_plat_priv *priv = hcd_to_xhci_priv(hcd);
+
+	if (!priv->suspend_quirk)
+		return 0;
+
+	return priv->suspend_quirk(hcd);
 }
 
 static int xhci_priv_resume_quirk(struct usb_hcd *hcd)
@@ -67,12 +86,14 @@ static int xhci_priv_resume_quirk(struct usb_hcd *hcd)
 
 static void xhci_plat_quirks(struct device *dev, struct xhci_hcd *xhci)
 {
+	struct xhci_plat_priv *priv = xhci_to_priv(xhci);
+
 	/*
 	 * As of now platform drivers don't provide MSI support so we ensure
 	 * here that the generic code does not try to make a pci_dev from our
 	 * dev struct in order to setup MSI
 	 */
-	xhci->quirks |= XHCI_PLAT;
+	xhci->quirks |= XHCI_PLAT | priv->quirks;
 }
 
 /* called during probe() after chip reset completes */
@@ -99,17 +120,21 @@ static const struct xhci_plat_priv xhci_plat_marvell_armada = {
 	.init_quirk = xhci_mvebu_mbus_init_quirk,
 };
 
+static const struct xhci_plat_priv xhci_plat_marvell_armada3700 = {
+	.plat_setup = xhci_mvebu_a3700_plat_setup,
+	.init_quirk = xhci_mvebu_a3700_init_quirk,
+};
+
 static const struct xhci_plat_priv xhci_plat_renesas_rcar_gen2 = {
-	.firmware_name = XHCI_RCAR_FIRMWARE_NAME_V1,
-	.init_quirk = xhci_rcar_init_quirk,
-	.plat_start = xhci_rcar_start,
-	.resume_quirk = xhci_rcar_resume_quirk,
+	SET_XHCI_PLAT_PRIV_FOR_RCAR(XHCI_RCAR_FIRMWARE_NAME_V1)
 };
 
 static const struct xhci_plat_priv xhci_plat_renesas_rcar_gen3 = {
-	.init_quirk = xhci_rcar_init_quirk,
-	.plat_start = xhci_rcar_start,
-	.resume_quirk = xhci_rcar_resume_quirk,
+	SET_XHCI_PLAT_PRIV_FOR_RCAR(XHCI_RCAR_FIRMWARE_NAME_V3)
+};
+
+static const struct xhci_plat_priv xhci_plat_brcm = {
+	.quirks = XHCI_RESET_ON_RESUME | XHCI_SUSPEND_RESUME_CLKS,
 };
 
 static const struct of_device_id usb_xhci_of_match[] = {
@@ -123,6 +148,9 @@ static const struct of_device_id usb_xhci_of_match[] = {
 	}, {
 		.compatible = "marvell,armada-380-xhci",
 		.data = &xhci_plat_marvell_armada,
+	}, {
+		.compatible = "marvell,armada3700-xhci",
+		.data = &xhci_plat_marvell_armada3700,
 	}, {
 		.compatible = "renesas,xhci-r8a7790",
 		.data = &xhci_plat_renesas_rcar_gen2,
@@ -144,6 +172,12 @@ static const struct of_device_id usb_xhci_of_match[] = {
 	}, {
 		.compatible = "renesas,rcar-gen3-xhci",
 		.data = &xhci_plat_renesas_rcar_gen3,
+	}, {
+		.compatible = "brcm,xhci-brcm-v2",
+		.data = &xhci_plat_brcm,
+	}, {
+		.compatible = "brcm,bcm7445-xhci",
+		.data = &xhci_plat_brcm,
 	},
 	{},
 };
@@ -205,17 +239,16 @@ static DEVICE_ATTR(config_imod, 0644, config_imod_show, config_imod_store);
 
 static int xhci_plat_probe(struct platform_device *pdev)
 {
-	const struct of_device_id *match;
+	const struct xhci_plat_priv *priv_match;
 	const struct hc_driver	*driver;
-	struct device		*sysdev;
+	struct device		*sysdev, *tmpdev;
 	struct xhci_hcd		*xhci;
 	struct resource         *res;
 	struct usb_hcd		*hcd;
-	struct clk              *clk;
 	int			ret;
 	int			irq;
-	u32			temp, imod;
-	unsigned long		flags;
+	struct xhci_plat_priv	*priv = NULL;
+
 
 	if (usb_disabled())
 		return -ENODEV;
@@ -274,8 +307,7 @@ static int xhci_plat_probe(struct platform_device *pdev)
 	if (!hcd)
 		return -ENOMEM;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	hcd->regs = devm_ioremap_resource(&pdev->dev, res);
+	hcd->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(hcd->regs)) {
 		ret = PTR_ERR(hcd->regs);
 		goto put_hcd;
@@ -284,43 +316,45 @@ static int xhci_plat_probe(struct platform_device *pdev)
 	hcd->rsrc_start = res->start;
 	hcd->rsrc_len = resource_size(res);
 
+	xhci = hcd_to_xhci(hcd);
+
 	/*
-	 * Not all platforms have a clk so it is not an error if the
-	 * clock does not exists.
+	 * Not all platforms have clks so it is not an error if the
+	 * clock do not exist.
 	 */
-	clk = devm_clk_get(&pdev->dev, NULL);
-	if (!IS_ERR(clk)) {
-		ret = clk_prepare_enable(clk);
-		if (ret)
-			goto put_hcd;
-	} else if (PTR_ERR(clk) == -EPROBE_DEFER) {
-		ret = -EPROBE_DEFER;
+	xhci->reg_clk = devm_clk_get_optional(&pdev->dev, "reg");
+	if (IS_ERR(xhci->reg_clk)) {
+		ret = PTR_ERR(xhci->reg_clk);
 		goto put_hcd;
 	}
 
-	if (pdev->dev.parent)
-		pm_runtime_resume(pdev->dev.parent);
+	ret = clk_prepare_enable(xhci->reg_clk);
+	if (ret)
+		goto put_hcd;
 
-	pm_runtime_use_autosuspend(&pdev->dev);
-	pm_runtime_set_autosuspend_delay(&pdev->dev, 1000);
-	pm_runtime_set_active(&pdev->dev);
-	pm_runtime_enable(&pdev->dev);
-	pm_runtime_get_sync(&pdev->dev);
+	xhci->clk = devm_clk_get_optional(&pdev->dev, NULL);
+	if (IS_ERR(xhci->clk)) {
+		ret = PTR_ERR(xhci->clk);
+		goto disable_reg_clk;
+	}
 
-	xhci = hcd_to_xhci(hcd);
-	match = of_match_node(usb_xhci_of_match, pdev->dev.of_node);
-	if (match) {
-		const struct xhci_plat_priv *priv_match = match->data;
-		struct xhci_plat_priv *priv = hcd_to_xhci_priv(hcd);
+	ret = clk_prepare_enable(xhci->clk);
+	if (ret)
+		goto disable_reg_clk;
 
+	if (pdev->dev.of_node)
+		priv_match = of_device_get_match_data(&pdev->dev);
+	else
+		priv_match = dev_get_platdata(&pdev->dev);
+
+	if (priv_match) {
+		priv = hcd_to_xhci_priv(hcd);
 		/* Just copy data for now */
-		if (priv_match)
-			*priv = *priv_match;
+		*priv = *priv_match;
 	}
 
 	device_set_wakeup_capable(&pdev->dev, true);
 
-	xhci->clk = clk;
 	xhci->main_hcd = hcd;
 	xhci->shared_hcd = __usb_create_hcd(driver, sysdev, &pdev->dev,
 			dev_name(&pdev->dev), hcd);
@@ -329,11 +363,24 @@ static int xhci_plat_probe(struct platform_device *pdev)
 		goto disable_clk;
 	}
 
-	if (device_property_read_bool(&pdev->dev, "usb3-lpm-capable"))
-		xhci->quirks |= XHCI_LPM_SUPPORT;
+	/* imod_interval is the interrupt moderation value in nanoseconds. */
+	xhci->imod_interval = 40000;
 
-	if (device_property_read_bool(&pdev->dev, "quirk-broken-port-ped"))
-		xhci->quirks |= XHCI_BROKEN_PORT_PED;
+	/* Iterate over all parent nodes for finding quirks */
+	for (tmpdev = &pdev->dev; tmpdev; tmpdev = tmpdev->parent) {
+
+		if (device_property_read_bool(tmpdev, "usb2-lpm-disable"))
+			xhci->quirks |= XHCI_HW_LPM_DISABLE;
+
+		if (device_property_read_bool(tmpdev, "usb3-lpm-capable"))
+			xhci->quirks |= XHCI_LPM_SUPPORT;
+
+		if (device_property_read_bool(tmpdev, "quirk-broken-port-ped"))
+			xhci->quirks |= XHCI_BROKEN_PORT_PED;
+
+		device_property_read_u32(tmpdev, "imod-interval-ns",
+					 &xhci->imod_interval);
+	}
 
 	if (!device_property_read_bool(&pdev->dev,
 					"ignore-wakeup-src-in-hostmode")) {
@@ -359,14 +406,20 @@ static int xhci_plat_probe(struct platform_device *pdev)
 			goto put_usb3_hcd;
 	}
 
-	hcd->usb3_phy = devm_usb_get_phy_by_phandle(pdev->dev.parent, "usb-phy",
-			1);
-	if (IS_ERR(hcd->usb3_phy)) {
-		ret = PTR_ERR(hcd->usb3_phy);
-		if (ret == -EPROBE_DEFER)
-			goto put_usb3_hcd;
-		hcd->usb3_phy = NULL;
+	hcd->tpl_support = of_usb_host_tpl_support(sysdev->of_node);
+	xhci->shared_hcd->tpl_support = hcd->tpl_support;
+
+	if (priv) {
+		ret = xhci_priv_plat_setup(hcd);
+		if (ret)
+			goto disable_usb_phy;
 	}
+
+	if ((xhci->quirks & XHCI_SKIP_PHY_INIT) || (priv && (priv->quirks & XHCI_SKIP_PHY_INIT)))
+		hcd->skip_phy_initialization = 1;
+
+	if (priv && (priv->quirks & XHCI_SG_TRB_CACHE_SIZE_QUIRK))
+		xhci->quirks |= XHCI_SG_TRB_CACHE_SIZE_QUIRK;
 
 	ret = usb_add_hcd(hcd, irq, IRQF_SHARED);
 	if (ret)
@@ -414,8 +467,10 @@ put_usb3_hcd:
 	usb_put_hcd(xhci->shared_hcd);
 
 disable_clk:
-	if (!IS_ERR(clk))
-		clk_disable_unprepare(clk);
+	clk_disable_unprepare(xhci->clk);
+
+disable_reg_clk:
+	clk_disable_unprepare(xhci->reg_clk);
 
 put_hcd:
 	usb_put_hcd(hcd);
@@ -428,21 +483,21 @@ static int xhci_plat_remove(struct platform_device *dev)
 	struct usb_hcd	*hcd = platform_get_drvdata(dev);
 	struct xhci_hcd	*xhci = hcd_to_xhci(hcd);
 	struct clk *clk = xhci->clk;
+	struct clk *reg_clk = xhci->reg_clk;
 	struct usb_hcd *shared_hcd = xhci->shared_hcd;
 
 	pm_runtime_get_sync(&dev->dev);
 	xhci->xhc_state |= XHCI_STATE_REMOVING;
 
-	device_remove_file(&dev->dev, &dev_attr_config_imod);
 	usb_remove_hcd(shared_hcd);
+	xhci->shared_hcd = NULL;
 	usb_phy_shutdown(hcd->usb_phy);
 
 	usb_remove_hcd(hcd);
-	xhci->shared_hcd = NULL;
 	usb_put_hcd(shared_hcd);
 
-	if (!IS_ERR(clk))
-		clk_disable_unprepare(clk);
+	clk_disable_unprepare(clk);
+	clk_disable_unprepare(reg_clk);
 	usb_put_hcd(hcd);
 
 	pm_runtime_disable(&dev->dev);
@@ -458,17 +513,26 @@ static int xhci_plat_suspend(struct device *dev)
 	struct usb_hcd  *hcd = dev_get_drvdata(dev);
 	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
 
+	if (pm_runtime_suspended(dev))
+		pm_runtime_resume(dev);
+
+	ret = xhci_priv_suspend_quirk(hcd);
+	if (ret)
+		return ret;
 	/*
-	 * 'skip_resume' will be true for targets not supporting PM suspend if
-	 * runtimePM state is active. No need of xhci_plat PM ops in such case.
+	 * xhci_suspend() needs `do_wakeup` to know whether host is allowed
+	 * to do wakeup during suspend.
 	 */
-	if (!xhci || hcd_to_bus(hcd)->skip_resume)
-		return 0;
+	ret = xhci_suspend(xhci, device_may_wakeup(dev));
+	if (ret)
+		return ret;
 
-	dev_dbg(dev, "xhci-plat PM suspend\n");
+	if (!device_may_wakeup(dev) && (xhci->quirks & XHCI_SUSPEND_RESUME_CLKS)) {
+		clk_disable_unprepare(xhci->clk);
+		clk_disable_unprepare(xhci->reg_clk);
+	}
 
-	/* Disable wakeup capability */
-	return xhci_suspend(xhci, false);
+	return 0;
 }
 
 static int xhci_plat_resume(struct device *dev)
@@ -477,71 +541,35 @@ static int xhci_plat_resume(struct device *dev)
 	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
 	int ret;
 
-	/* xhci PM ops not required if 'skip_resume' is true */
-	if (!xhci || hcd_to_bus(hcd)->skip_resume)
-		return 0;
-
-	dev_dbg(dev, "xhci-plat PM resume\n");
-
-	ret = xhci_priv_resume_quirk(hcd);
-	if (ret)
-		return ret;
-
-	ret = xhci_resume(xhci, false);
-	pm_runtime_disable(dev);
-	pm_runtime_set_active(dev);
-	pm_runtime_enable(dev);
-
-	return ret;
-}
-
-static int xhci_plat_restore(struct device *dev)
-{
-	struct usb_hcd  *hcd = dev_get_drvdata(dev);
-	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
-	int ret;
-
-	/* xhci PM ops not required if 'skip_resume' is true */
-	if (!xhci || hcd_to_bus(hcd)->skip_resume)
-		return 0;
-
-	dev_dbg(dev, "xhci-plat PM restore\n");
+	if (!device_may_wakeup(dev) && (xhci->quirks & XHCI_SUSPEND_RESUME_CLKS)) {
+		clk_prepare_enable(xhci->clk);
+		clk_prepare_enable(xhci->reg_clk);
+	}
 
 	ret = xhci_priv_resume_quirk(hcd);
 	if (ret)
 		return ret;
 
-	/* resume from hibernation/power-collapse */
-	ret = xhci_resume(xhci, true);
+	ret = xhci_resume(xhci, 0);
+	if (ret)
+		return ret;
+
 	pm_runtime_disable(dev);
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
 
-	return ret;
-}
-#endif
-
-static int __maybe_unused xhci_plat_runtime_idle(struct device *dev)
-{
-	/*
-	 * When pm_runtime_put_autosuspend() is called on this device,
-	 * after this idle callback returns the PM core will schedule the
-	 * autosuspend if there is any remaining time until expiry. However,
-	 * when reaching this point because the child_count becomes 0, the
-	 * core does not honor autosuspend in that case and results in
-	 * idle/suspend happening immediately. In order to have a delay
-	 * before suspend we have to call pm_runtime_autosuspend() manually.
-	 */
-
-	pm_runtime_mark_last_busy(dev);
-	pm_runtime_autosuspend(dev);
-	return -EBUSY;
+	return 0;
 }
 
 static int __maybe_unused xhci_plat_runtime_suspend(struct device *dev)
 {
 	struct usb_hcd  *hcd = dev_get_drvdata(dev);
 	struct xhci_hcd *xhci = hcd_to_xhci(hcd);
+	int ret;
+
+	ret = xhci_priv_suspend_quirk(hcd);
+	if (ret)
+		return ret;
 
 	if (!xhci)
 		return 0;
@@ -584,12 +612,14 @@ static const struct dev_pm_ops xhci_plat_pm_ops = {
 			   xhci_plat_runtime_idle)
 };
 
+#ifdef CONFIG_ACPI
 static const struct acpi_device_id usb_xhci_acpi_match[] = {
 	/* XHCI-compliant USB Controller */
 	{ "PNP0D10", },
 	{ }
 };
 MODULE_DEVICE_TABLE(acpi, usb_xhci_acpi_match);
+#endif
 
 static struct platform_driver usb_xhci_driver = {
 	.probe	= xhci_plat_probe,

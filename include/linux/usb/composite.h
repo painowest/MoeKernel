@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * composite.h -- framework for usb gadgets which are composite devices
  *
@@ -273,6 +274,9 @@ int usb_get_func_interface_id(struct usb_function *func);
 int config_ep_by_speed_and_alt(struct usb_gadget *g, struct usb_function *f,
 				struct usb_ep *_ep, u8 alt);
 
+int config_ep_by_speed_and_alt(struct usb_gadget *g, struct usb_function *f,
+				struct usb_ep *_ep, u8 alt);
+
 int config_ep_by_speed(struct usb_gadget *g, struct usb_function *f,
 			struct usb_ep *_ep);
 
@@ -292,7 +296,7 @@ int config_ep_by_speed(struct usb_gadget *g, struct usb_function *f,
  * @bConfigurationValue: Copied into configuration descriptor.
  * @iConfiguration: Copied into configuration descriptor.
  * @bmAttributes: Copied into configuration descriptor.
- * @MaxPower: Power consumtion in mA. Used to compute bMaxPower in the
+ * @MaxPower: Power consumption in mA. Used to compute bMaxPower in the
  *	configuration descriptor after considering the bus speed.
  * @cdev: assigned by @usb_add_config() before calling @bind(); this is
  *	the device associated with this configuration.
@@ -458,7 +462,7 @@ static inline struct usb_composite_driver *to_cdriver(
 #define OS_STRING_IDX			0xEE
 
 /**
- * struct usb_composite_device - represents one composite usb gadget
+ * struct usb_composite_dev - represents one composite usb gadget
  * @gadget: read-only, abstracts the gadget's usb peripheral controller
  * @req: used for control responses; buffer is pre-allocated
  * @os_desc_req: used for OS descriptors responses; buffer is pre-allocated
@@ -546,6 +550,8 @@ extern struct usb_string *usb_gstrings_attach(struct usb_composite_dev *cdev,
 extern int usb_string_ids_n(struct usb_composite_dev *c, unsigned n);
 
 extern void composite_disconnect(struct usb_gadget *gadget);
+extern void composite_reset(struct usb_gadget *gadget);
+
 extern int composite_setup(struct usb_gadget *gadget,
 		const struct usb_ctrlrequest *ctrl);
 extern void composite_suspend(struct usb_gadget *gadget);
@@ -597,8 +603,8 @@ static inline u16 get_default_bcdDevice(void)
 {
 	u16 bcdDevice;
 
-	bcdDevice = bin2bcd((LINUX_VERSION_CODE >> 16 & 0xff)) << 8;
-	bcdDevice |= bin2bcd((LINUX_VERSION_CODE >> 8 & 0xff));
+	bcdDevice = bin2bcd(LINUX_VERSION_MAJOR) << 8;
+	bcdDevice |= bin2bcd(LINUX_VERSION_PATCHLEVEL);
 	return bcdDevice;
 }
 

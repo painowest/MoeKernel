@@ -1,14 +1,5 @@
-/* Copyright (c) 2010-2017, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/* Copyright (c) 2010-2015, The Linux Foundation. All rights reserved.
  */
 
 #include "hdmi.h"
@@ -770,7 +761,7 @@ static int msm_hdmi_hdcp_auth_part1_key_exchange(struct hdmi_hdcp_ctrl *hdcp_ctr
 	if (rc) {
 		pr_err("%s: wait key and an ready failed\n", __func__);
 		return rc;
-	};
+	}
 
 	/* Read BCAPS and send to HDCP engine */
 	rc = msm_hdmi_hdcp_recv_bcaps(hdcp_ctrl);

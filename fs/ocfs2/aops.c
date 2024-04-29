@@ -1,22 +1,6 @@
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+// SPDX-License-Identifier: GPL-2.0-or-later
+/*
  * Copyright (C) 2002, 2004 Oracle.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License as published by the Free Software Foundation; either
- * version 2 of the License, or (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; if not, write to the
- * Free Software Foundation, Inc., 59 Temple Place - Suite 330,
- * Boston, MA 021110-1307, USA.
  */
 
 #include <linux/fs.h>
@@ -25,11 +9,11 @@
 #include <linux/pagemap.h>
 #include <asm/byteorder.h>
 #include <linux/swap.h>
-#include <linux/pipe_fs_i.h>
 #include <linux/mpage.h>
 #include <linux/quotaops.h>
 #include <linux/blkdev.h>
 #include <linux/uio.h>
+#include <linux/mm.h>
 
 #include <cluster/masklog.h>
 
@@ -346,7 +330,7 @@ static int ocfs2_readpage(struct file *file, struct page *page)
 	unlock = 0;
 
 out_alloc:
-	up_read(&OCFS2_I(inode)->ip_alloc_sem);
+	up_read(&oi->ip_alloc_sem);
 out_inode_unlock:
 	ocfs2_inode_unlock(inode, 0);
 out:
@@ -364,14 +348,11 @@ out:
  * grow out to a tree. If need be, detecting boundary extents could
  * trivially be added in a future version of ocfs2_get_block().
  */
-static int ocfs2_readpages(struct file *filp, struct address_space *mapping,
-			   struct list_head *pages, unsigned nr_pages)
+static void ocfs2_readahead(struct readahead_control *rac)
 {
-	int ret, err = -EIO;
-	struct inode *inode = mapping->host;
+	int ret;
+	struct inode *inode = rac->mapping->host;
 	struct ocfs2_inode_info *oi = OCFS2_I(inode);
-	loff_t start;
-	struct page *last;
 
 	/*
 	 * Use the nonblocking flag for the dlm code to avoid page
@@ -379,36 +360,31 @@ static int ocfs2_readpages(struct file *filp, struct address_space *mapping,
 	 */
 	ret = ocfs2_inode_lock_full(inode, NULL, 0, OCFS2_LOCK_NONBLOCK);
 	if (ret)
-		return err;
+		return;
 
-	if (down_read_trylock(&oi->ip_alloc_sem) == 0) {
-		ocfs2_inode_unlock(inode, 0);
-		return err;
-	}
+	if (down_read_trylock(&oi->ip_alloc_sem) == 0)
+		goto out_unlock;
 
 	/*
 	 * Don't bother with inline-data. There isn't anything
 	 * to read-ahead in that case anyway...
 	 */
 	if (oi->ip_dyn_features & OCFS2_INLINE_DATA_FL)
-		goto out_unlock;
+		goto out_up;
 
 	/*
 	 * Check whether a remote node truncated this file - we just
 	 * drop out in that case as it's not worth handling here.
 	 */
-	last = list_entry(pages->prev, struct page, lru);
-	start = (loff_t)last->index << PAGE_SHIFT;
-	if (start >= i_size_read(inode))
-		goto out_unlock;
+	if (readahead_pos(rac) >= i_size_read(inode))
+		goto out_up;
 
-	err = mpage_readpages(mapping, pages, nr_pages, ocfs2_get_block);
+	mpage_readahead(rac, ocfs2_get_block);
 
-out_unlock:
+out_up:
 	up_read(&oi->ip_alloc_sem);
+out_unlock:
 	ocfs2_inode_unlock(inode, 0);
-
-	return err;
 }
 
 /* Note: Because we don't support holes, our allocation has
@@ -656,8 +632,7 @@ int ocfs2_map_page_blocks(struct page *page, u64 *p_blkno,
 		}
 
 		if (PageUptodate(page)) {
-			if (!buffer_uptodate(bh))
-				set_buffer_uptodate(bh);
+			set_buffer_uptodate(bh);
 		} else if (!buffer_uptodate(bh) && !buffer_delay(bh) &&
 			   !buffer_new(bh) &&
 			   ocfs2_should_read_blk(inode, page, block_start) &&
@@ -797,6 +772,7 @@ struct ocfs2_write_ctxt {
 	struct ocfs2_cached_dealloc_ctxt w_dealloc;
 
 	struct list_head		w_unwritten_list;
+	unsigned int			w_unwritten_count;
 };
 
 void ocfs2_unlock_and_free_pages(struct page **pages, int num_pages)
@@ -954,7 +930,8 @@ static void ocfs2_write_failure(struct inode *inode,
 
 		if (tmppage && page_has_buffers(tmppage)) {
 			if (ocfs2_should_order_data(inode))
-				ocfs2_jbd2_file_inode(wc->w_handle, inode);
+				ocfs2_jbd2_inode_add_write(wc->w_handle, inode,
+							   user_pos, user_len);
 
 			block_commit_write(tmppage, from, to);
 		}
@@ -1386,12 +1363,12 @@ retry:
 	desc->c_clear_unwritten = 0;
 	list_add_tail(&new->ue_ip_node, &oi->ip_unwritten_list);
 	list_add_tail(&new->ue_node, &wc->w_unwritten_list);
+	wc->w_unwritten_count++;
 	new = NULL;
 unlock:
 	spin_unlock(&oi->ip_lock);
 out:
-	if (new)
-		kfree(new);
+	kfree(new);
 	return ret;
 }
 
@@ -2049,8 +2026,14 @@ int ocfs2_write_end_nolock(struct address_space *mapping,
 		}
 
 		if (page_has_buffers(tmppage)) {
-			if (handle && ocfs2_should_order_data(inode))
-				ocfs2_jbd2_file_inode(handle, inode);
+			if (handle && ocfs2_should_order_data(inode)) {
+				loff_t start_byte =
+					((loff_t)tmppage->index << PAGE_SHIFT) +
+					from;
+				loff_t length = to - from;
+				ocfs2_jbd2_inode_add_write(handle, inode,
+							   start_byte, length);
+			}
 			block_commit_write(tmppage, from, to);
 		}
 	}
@@ -2243,7 +2226,7 @@ static int ocfs2_dio_wr_get_block(struct inode *inode, sector_t iblock,
 	down_write(&oi->ip_alloc_sem);
 
 	if (first_get_block) {
-		if (ocfs2_sparse_alloc(OCFS2_SB(inode->i_sb)))
+		if (ocfs2_sparse_alloc(osb))
 			ret = ocfs2_zero_tail(inode, di_bh, pos);
 		else
 			ret = ocfs2_expand_nonsparse_inode(inode, di_bh, pos,
@@ -2291,7 +2274,7 @@ static int ocfs2_dio_wr_get_block(struct inode *inode, sector_t iblock,
 		ue->ue_phys = desc->c_phys;
 
 		list_splice_tail_init(&wc->w_unwritten_list, &dwc->dw_zero_list);
-		dwc->dw_zero_count++;
+		dwc->dw_zero_count += wc->w_unwritten_count;
 	}
 
 	ret = ocfs2_write_end_nolock(inode->i_mapping, pos, len, len, wc);
@@ -2357,6 +2340,12 @@ static int ocfs2_dio_end_io_write(struct inode *inode,
 	di = (struct ocfs2_dinode *)di_bh->b_data;
 
 	ocfs2_init_dinode_extent_tree(&et, INODE_CACHE(inode), di_bh);
+
+	/* Attach dealloc with extent tree in case that we may reuse extents
+	 * which are already unlinked from current extent tree due to extent
+	 * rotation and merging.
+	 */
+	et.et_dealloc = &dealloc;
 
 	ret = ocfs2_lock_allocators(inode, &et, 0, dwc->dw_zero_count*2,
 				    &data_ac, &meta_ac);
@@ -2478,8 +2467,9 @@ static ssize_t ocfs2_direct_IO(struct kiocb *iocb, struct iov_iter *iter)
 }
 
 const struct address_space_operations ocfs2_aops = {
+	.set_page_dirty		= __set_page_dirty_buffers,
 	.readpage		= ocfs2_readpage,
-	.readpages		= ocfs2_readpages,
+	.readahead		= ocfs2_readahead,
 	.writepage		= ocfs2_writepage,
 	.write_begin		= ocfs2_write_begin,
 	.write_end		= ocfs2_write_end,

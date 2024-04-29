@@ -1,13 +1,6 @@
-/* Copyright (c) 2013-2014, 2017, 2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright (c) 2013-2014, 2017, 2019-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __QPNP_MISC_H
@@ -19,8 +12,7 @@ enum twm_state {
 	PMIC_TWM_CLEAR,
 	PMIC_TWM_ENABLE,
 };
-
-#ifdef CONFIG_QPNP_MISC
+#ifdef CONFIG_QPNP_MISC_MODULE
 /**
  * qpnp_misc_irqs_available - check if IRQs are available
  *

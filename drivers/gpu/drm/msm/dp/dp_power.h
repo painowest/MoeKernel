@@ -1,44 +1,96 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2012-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
  */
 
 #ifndef _DP_POWER_H_
 #define _DP_POWER_H_
 
 #include "dp_parser.h"
-#include "sde_power_handle.h"
 
 /**
  * sruct dp_power - DisplayPort's power related data
  *
- * @sim_mode: simulation mode enable flag
  * @init: initializes the regulators/core clocks/GPIOs/pinctrl
  * @deinit: turns off the regulators/core clocks/GPIOs/pinctrl
  * @clk_enable: enable/disable the DP clocks
  * @set_pixel_clk_parent: set the parent of DP pixel clock
  */
 struct dp_power {
-	bool sim_mode;
-
-	int (*init)(struct dp_power *power, bool flip);
-	int (*deinit)(struct dp_power *power);
-	int (*clk_enable)(struct dp_power *power, enum dp_pm_type pm_type,
-				bool enable);
-	int (*set_pixel_clk_parent)(struct dp_power *power, u32 stream_id);
-	int (*power_client_init)(struct dp_power *power,
-				struct sde_power_handle *phandle);
-	void (*power_client_deinit)(struct dp_power *power);
+	bool core_clks_on;
+	bool link_clks_on;
+	bool stream_clks_on;
 };
+
+/**
+ * dp_power_init() - enable power supplies for display controller
+ *
+ * @power: instance of power module
+ * @flip: bool for flipping gpio direction
+ * return: 0 if success or error if failure.
+ *
+ * This API will turn on the regulators and configures gpio's
+ * aux/hpd.
+ */
+int dp_power_init(struct dp_power *power, bool flip);
+
+/**
+ * dp_power_deinit() - turn off regulators and gpios.
+ *
+ * @power: instance of power module
+ * return: 0 for success
+ *
+ * This API turns off power and regulators.
+ */
+int dp_power_deinit(struct dp_power *power);
+
+/**
+ * dp_power_clk_status() - display controller clocks status
+ *
+ * @power: instance of power module
+ * @pm_type: type of pm, core/ctrl/phy
+ * return: status of power clocks
+ *
+ * This API return status of DP clocks
+ */
+
+int dp_power_clk_status(struct dp_power *dp_power, enum dp_pm_type pm_type);
+
+/**
+ * dp_power_clk_enable() - enable display controller clocks
+ *
+ * @power: instance of power module
+ * @pm_type: type of pm, core/ctrl/phy
+ * @enable: enables or disables
+ * return: pointer to allocated power module data
+ *
+ * This API will call setrate and enable for DP clocks
+ */
+
+int dp_power_clk_enable(struct dp_power *power, enum dp_pm_type pm_type,
+				bool enable);
+
+/**
+ * dp_power_client_init() - initialize clock and regulator modules
+ *
+ * @power: instance of power module
+ * return: 0 for success, error for failure.
+ *
+ * This API will configure the DisplayPort's clocks and regulator
+ * modules.
+ */
+int dp_power_client_init(struct dp_power *power);
+
+/**
+ * dp_power_clinet_deinit() - de-initialize clock and regulator modules
+ *
+ * @power: instance of power module
+ * return: 0 for success, error for failure.
+ *
+ * This API will de-initialize the DisplayPort's clocks and regulator
+ * modules.
+ */
+void dp_power_client_deinit(struct dp_power *power);
 
 /**
  * dp_power_get() - configure and get the DisplayPort power module data
@@ -48,14 +100,8 @@ struct dp_power {
  *
  * This API will configure the DisplayPort's power module and provides
  * methods to be called by the client to configure the power related
- * modueles.
+ * modules.
  */
-struct dp_power *dp_power_get(struct dp_parser *parser);
+struct dp_power *dp_power_get(struct device *dev, struct dp_parser *parser);
 
-/**
- * dp_power_put() - release the power related resources
- *
- * @power: pointer to the power module's data
- */
-void dp_power_put(struct dp_power *power);
 #endif /* _DP_POWER_H_ */

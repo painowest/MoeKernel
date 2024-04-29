@@ -1,121 +1,67 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2012-2020, The Linux Foundation. All rights reserved.
  */
+
 #define pr_fmt(fmt)	"[drm-dp] %s: " fmt, __func__
 
 #include <linux/slab.h>
 #include <linux/device.h>
-#include <linux/delay.h>
-#include <linux/err.h>
 
 #include "dp_hpd.h"
-#include "dp_usbpd.h"
-#include "dp_gpio_hpd.h"
-#include "dp_lphw_hpd.h"
-#include "dp_bridge_hpd.h"
 
-static void dp_hpd_host_init(struct dp_hpd *dp_hpd,
-		struct dp_catalog_hpd *catalog)
+/* DP specific VDM commands */
+#define DP_USBPD_VDM_STATUS	0x10
+#define DP_USBPD_VDM_CONFIGURE	0x11
+
+/* USBPD-TypeC specific Macros */
+#define VDM_VERSION		0x0
+#define USB_C_DP_SID		0xFF01
+
+struct dp_hpd_private {
+	struct device *dev;
+	struct dp_usbpd_cb *dp_cb;
+	struct dp_usbpd dp_usbpd;
+};
+
+int dp_hpd_connect(struct dp_usbpd *dp_usbpd, bool hpd)
 {
-	if (!catalog) {
-		pr_err("invalid input");
-		return;
+	int rc = 0;
+	struct dp_hpd_private *hpd_priv;
+
+	hpd_priv = container_of(dp_usbpd, struct dp_hpd_private,
+					dp_usbpd);
+
+	if (!hpd_priv->dp_cb || !hpd_priv->dp_cb->configure
+				|| !hpd_priv->dp_cb->disconnect) {
+		pr_err("hpd dp_cb not initialized\n");
+		return -EINVAL;
 	}
-	catalog->config_hpd(catalog, true);
+	if (hpd)
+		hpd_priv->dp_cb->configure(hpd_priv->dev);
+	else
+		hpd_priv->dp_cb->disconnect(hpd_priv->dev);
+
+	return rc;
 }
 
-static void dp_hpd_host_deinit(struct dp_hpd *dp_hpd,
-		struct dp_catalog_hpd *catalog)
+struct dp_usbpd *dp_hpd_get(struct device *dev, struct dp_usbpd_cb *cb)
 {
-	if (!catalog) {
-		pr_err("invalid input");
-		return;
-	}
-	catalog->config_hpd(catalog, false);
-}
+	struct dp_hpd_private *dp_hpd;
 
-static void dp_hpd_isr(struct dp_hpd *dp_hpd)
-{
-}
-
-struct dp_hpd *dp_hpd_get(struct device *dev, struct dp_parser *parser,
-		struct dp_catalog_hpd *catalog, struct usbpd *pd,
-		struct msm_dp_aux_bridge *aux_bridge,
-		struct dp_hpd_cb *cb)
-{
-	struct dp_hpd *dp_hpd;
-
-	if (aux_bridge && (aux_bridge->flag & MSM_DP_AUX_BRIDGE_HPD)) {
-		dp_hpd = dp_bridge_hpd_get(dev, cb, aux_bridge);
-		if (IS_ERR(dp_hpd)) {
-			pr_err("failed to get bridge hpd\n");
-			goto out;
-		}
-		dp_hpd->type = DP_HPD_BRIDGE;
-	} else if (parser->no_aux_switch && parser->lphw_hpd) {
-		dp_hpd = dp_lphw_hpd_get(dev, parser, catalog, cb);
-		if (IS_ERR(dp_hpd)) {
-			pr_err("failed to get lphw hpd\n");
-			return dp_hpd;
-		}
-		dp_hpd->type = DP_HPD_LPHW;
-	} else if (parser->no_aux_switch) {
-		dp_hpd = dp_gpio_hpd_get(dev, cb);
-		if (IS_ERR(dp_hpd)) {
-			pr_err("failed to get gpio hpd\n");
-			goto out;
-		}
-		dp_hpd->type = DP_HPD_GPIO;
-	} else {
-		dp_hpd = dp_usbpd_init(dev, pd, cb);
-		if (IS_ERR(dp_hpd)) {
-			pr_err("failed to get usbpd\n");
-			goto out;
-		}
-		dp_hpd->type = DP_HPD_USBPD;
+	if (!cb) {
+		pr_err("invalid cb data\n");
+		return ERR_PTR(-EINVAL);
 	}
 
-	if (!dp_hpd->host_init)
-		dp_hpd->host_init	= dp_hpd_host_init;
-	if (!dp_hpd->host_deinit)
-		dp_hpd->host_deinit	= dp_hpd_host_deinit;
-	if (!dp_hpd->isr)
-		dp_hpd->isr		= dp_hpd_isr;
-
-out:
-	return dp_hpd;
-}
-
-void dp_hpd_put(struct dp_hpd *dp_hpd)
-{
+	dp_hpd = devm_kzalloc(dev, sizeof(*dp_hpd), GFP_KERNEL);
 	if (!dp_hpd)
-		return;
+		return ERR_PTR(-ENOMEM);
 
-	switch (dp_hpd->type) {
-	case DP_HPD_USBPD:
-		dp_usbpd_deinit(dp_hpd);
-		break;
-	case DP_HPD_GPIO:
-		dp_gpio_hpd_put(dp_hpd);
-		break;
-	case DP_HPD_LPHW:
-		dp_lphw_hpd_put(dp_hpd);
-		break;
-	case DP_HPD_BRIDGE:
-		dp_bridge_hpd_put(dp_hpd);
-		break;
-	default:
-		pr_err("unknown hpd type %d\n", dp_hpd->type);
-		break;
-	}
+	dp_hpd->dev = dev;
+	dp_hpd->dp_cb = cb;
+
+	dp_hpd->dp_usbpd.connect = dp_hpd_connect;
+
+	return &dp_hpd->dp_usbpd;
 }

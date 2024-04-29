@@ -32,7 +32,7 @@ int ubifs_encrypt(const struct inode *inode, struct ubifs_data_node *dn,
 	unsigned int pad_len = round_up(in_len, UBIFS_CIPHER_BLOCK_SIZE);
 	int err;
 
-	ubifs_assert(pad_len <= *out_len);
+	ubifs_assert(c, pad_len <= *out_len);
 	dn->compr_size = cpu_to_le16(in_len);
 
 	/* pad to full block cipher length */
@@ -63,7 +63,7 @@ int ubifs_decrypt(const struct inode *inode, struct ubifs_data_node *dn,
 		return -EINVAL;
 	}
 
-	ubifs_assert(dlen <= UBIFS_BLOCK_SIZE);
+	ubifs_assert(c, dlen <= UBIFS_BLOCK_SIZE);
 	err = fscrypt_decrypt_block_inplace(inode, virt_to_page(&dn->data),
 					    dlen, offset_in_page(&dn->data),
 					    block);
@@ -82,5 +82,4 @@ const struct fscrypt_operations ubifs_crypt_operations = {
 	.get_context		= ubifs_crypt_get_context,
 	.set_context		= ubifs_crypt_set_context,
 	.empty_dir		= ubifs_crypt_empty_dir,
-	.max_namelen		= UBIFS_MAX_NLEN,
 };

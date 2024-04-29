@@ -1,4 +1,7 @@
-/* Copyright (c) 2014-2018, The Linux Foundation. All rights reserved.
+/* SPDX-License-Identifier: GPL-2.0-only
+ *
+ * Copyright (c) 2014-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -130,6 +133,17 @@
 
 #define SPI_PINCTRL_STATE_DEFAULT "spi_default"
 #define SPI_PINCTRL_STATE_SLEEP "spi_sleep"
+#define SPI_ICC_PATH_NAME "blsp-ddr"
+
+#define spi_ipc(log_ctx, print, dev, x...) do { \
+ipc_log_string(log_ctx, x); \
+if (print) { \
+	if (dev) \
+		dev_err((dev), x); \
+	else \
+		pr_err(x); \
+} \
+} while (0)
 
 enum msm_spi_state {
 	SPI_OP_STATE_RESET = 0x00000000,
@@ -174,6 +188,10 @@ enum msm_spi_state {
 #define spi_dma_mask(dev)   (dma_set_mask((dev), DMA_BIT_MASK(32)))
 #endif
 
+#define DEFAULT_BUS_WIDTH	(4)
+
+/* In KHz */
+#define DEFAULT_SE_CLK		19200
 
 enum msm_spi_qup_version {
 	SPI_QUP_VERSION_NONE    = 0x0,
@@ -192,16 +210,17 @@ enum msm_spi_clk_path_vec_idx {
 	MSM_SPI_CLK_PATH_SUSPEND_VEC = 0,
 	MSM_SPI_CLK_PATH_RESUME_VEC  = 1,
 };
+
 #define MSM_SPI_CLK_PATH_AVRG_BW(dd) (76800000)
 #define MSM_SPI_CLK_PATH_BRST_BW(dd) (76800000)
 
-static char const * const spi_rsrcs[] = {
+static const char * const spi_rsrcs[] = {
 	"spi_clk",
 	"spi_miso",
 	"spi_mosi"
 };
 
-static char const * const spi_cs_rsrcs[] = {
+static const char * const spi_cs_rsrcs[] = {
 	"spi_cs",
 	"spi_cs1",
 	"spi_cs2",
@@ -226,6 +245,7 @@ struct msm_spi_debugfs_data {
 	int offset;
 	struct msm_spi *dd;
 };
+
 /* Used to create debugfs entries */
 static struct msm_spi_regs{
 	const char *name;
@@ -288,6 +308,11 @@ struct msm_spi_bam {
 	u32			 bam_tx_len;
 };
 
+struct geni_icc_path {
+	struct icc_path *path;
+	unsigned int avg_bw;
+};
+
 struct msm_spi {
 	u8                      *read_buf;
 	const u8                *write_buf;
@@ -304,6 +329,7 @@ struct msm_spi {
 	struct msm_bus_client_handle *bus_cl_hdl;
 	unsigned long            mem_phys_addr;
 	size_t                   mem_size;
+	void			*ipc_logs; /* ipc logs handler */
 	int                      input_fifo_size;
 	int                      output_fifo_size;
 	u32                      rx_bytes_remaining;
@@ -376,6 +402,7 @@ struct msm_spi {
 	struct pinctrl_state	*pins_sleep;
 	bool			is_init_complete;
 	bool			pack_words;
+	struct geni_icc_path	icc_path;
 };
 
 /* Forward declaration */
@@ -404,29 +431,29 @@ static inline void msm_spi_enable_irqs(struct msm_spi *dd)
 }
 
 static inline int msm_spi_request_irq(struct msm_spi *dd,
-				struct platform_device *pdev,
-				struct spi_master *master)
+				      struct platform_device *pdev,
+				      struct spi_master *master)
 {
 	int rc;
 
 	dd->irq_in  = platform_get_irq(pdev, 0);
 	dd->irq_out = platform_get_irq(pdev, 1);
 	dd->irq_err = platform_get_irq(pdev, 2);
-	if ((dd->irq_in < 0) || (dd->irq_out < 0) || (dd->irq_err < 0))
+	if (dd->irq_in < 0 || dd->irq_out < 0 || dd->irq_err < 0)
 		return -EINVAL;
 
 	rc = devm_request_irq(dd->dev, dd->irq_in, msm_spi_input_irq,
-		IRQF_TRIGGER_RISING, pdev->name, dd);
+			      IRQF_TRIGGER_RISING, pdev->name, dd);
 	if (rc)
 		goto error_irq;
 
 	rc = devm_request_irq(dd->dev, dd->irq_out, msm_spi_output_irq,
-		IRQF_TRIGGER_RISING, pdev->name, dd);
+			      IRQF_TRIGGER_RISING, pdev->name, dd);
 	if (rc)
 		goto error_irq;
 
 	rc = devm_request_irq(dd->dev, dd->irq_err, msm_spi_error_irq,
-		IRQF_TRIGGER_RISING, pdev->name, master);
+			      IRQF_TRIGGER_RISING, pdev->name, master);
 	if (rc)
 		goto error_irq;
 
@@ -443,6 +470,7 @@ static inline void msm_spi_start_write(struct msm_spi *dd, u32 read_count)
 {
 	msm_spi_write_word_to_fifo(dd);
 }
+
 static inline void msm_spi_set_write_count(struct msm_spi *dd, int val) {}
 
 static inline void msm_spi_complete(struct msm_spi *dd)
@@ -463,8 +491,8 @@ static inline void msm_spi_clear_error_flags(struct msm_spi *dd)
 #else
 /* In QUP the same interrupt line is used for input, output and error*/
 static inline int msm_spi_request_irq(struct msm_spi *dd,
-				struct platform_device *pdev,
-				struct spi_master *master)
+				      struct platform_device *pdev,
+				      struct spi_master *master)
 {
 	dd->irq_in  = platform_get_irq(pdev, 0);
 	if (dd->irq_in < 0)
@@ -504,7 +532,7 @@ static inline void msm_spi_set_qup_config(struct msm_spi *dd, int bpw)
 {
 	u32 qup_config = readl_relaxed(dd->base + QUP_CONFIG);
 
-	msm_spi_set_bpw_and_no_io_flags(dd, &qup_config, bpw-1);
+	msm_spi_set_bpw_and_no_io_flags(dd, &qup_config, bpw - 1);
 	writel_relaxed(qup_config | QUP_CONFIG_SPI_MODE, dd->base + QUP_CONFIG);
 }
 
@@ -536,9 +564,8 @@ static inline void msm_spi_complete(struct msm_spi *dd)
 static inline void msm_spi_enable_error_flags(struct msm_spi *dd)
 {
 	if (dd->qup_ver == SPI_QUP_VERSION_BFAM)
-		writel_relaxed(
-			SPI_ERR_CLK_UNDER_RUN_ERR | SPI_ERR_CLK_OVER_RUN_ERR,
-			dd->base + SPI_ERROR_FLAGS_EN);
+		writel_relaxed(SPI_ERR_CLK_UNDER_RUN_ERR | SPI_ERR_CLK_OVER_RUN_ERR,
+			       dd->base + SPI_ERROR_FLAGS_EN);
 	else
 		writel_relaxed(0x00000078, dd->base + SPI_ERROR_FLAGS_EN);
 }
@@ -546,9 +573,8 @@ static inline void msm_spi_enable_error_flags(struct msm_spi *dd)
 static inline void msm_spi_clear_error_flags(struct msm_spi *dd)
 {
 	if (dd->qup_ver == SPI_QUP_VERSION_BFAM)
-		writel_relaxed(
-			SPI_ERR_CLK_UNDER_RUN_ERR | SPI_ERR_CLK_OVER_RUN_ERR,
-			dd->base + SPI_ERROR_FLAGS);
+		writel_relaxed(SPI_ERR_CLK_UNDER_RUN_ERR | SPI_ERR_CLK_OVER_RUN_ERR,
+			       dd->base + SPI_ERROR_FLAGS);
 	else
 		writel_relaxed(0x0000007C, dd->base + SPI_ERROR_FLAGS);
 }

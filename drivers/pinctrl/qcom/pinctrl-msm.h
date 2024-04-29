@@ -1,15 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2013, Sony Mobile Communications AB.
- * Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2021, The Linux Foundation. All rights reserved.
  */
 #ifndef __PINCTRL_MSM_H__
 #define __PINCTRL_MSM_H__
@@ -46,11 +38,12 @@ struct msm_function {
  * @intr_status_reg:      Offset of the register holding the status bits for this group.
  * @intr_target_reg:      Offset of the register specifying routing of the interrupts
  *                        from this group.
- * @dir_conn_reg:         Offset of the register specifying direct connect
- *                        setup of this group.
+ * @dir_conn_reg:         Offset of the register hmss setup in tile.
+ * @reg_size_4k:          Size of the group register space in 4k granularity.
  * @mux_bit:              Offset in @ctl_reg for the pinmux function selection.
  * @pull_bit:             Offset in @ctl_reg for the bias configuration.
  * @drv_bit:              Offset in @ctl_reg for the drive strength configuration.
+ * @od_bit:               Offset in @ctl_reg for controlling open drain.
  * @oe_bit:               Offset in @ctl_reg for controlling output enable.
  * @in_bit:               Offset in @io_reg for the input bit value.
  * @out_bit:              Offset in @io_reg for the output bit value.
@@ -58,6 +51,7 @@ struct msm_function {
  * @intr_status_bit:      Offset in @intr_status_reg for reading and acking the interrupt
  *                        status.
  * @intr_target_bit:      Offset in @intr_target_reg for configuring the interrupt routing.
+ * @intr_target_width:    Number of bits used for specifying interrupt routing target.
  * @intr_target_kpss_val: Value in @intr_target_bit for specifying that the interrupt from
  *                        this gpio should get routed to the KPSS processor.
  * @intr_raw_status_bit:  Offset in @intr_cfg_reg for the raw status bit.
@@ -66,6 +60,7 @@ struct msm_function {
  * @intr_detection_width: Number of bits used for specifying interrupt type,
  *                        Should be 2 for SoCs that can detect both edges in hardware,
  *                        otherwise 1.
+ * @dir_conn_en_bit:      Offset in @intr_cfg_reg for direct connect enable bit
  * @wake_reg:             Offset of the WAKEUP_INT_EN register from base tile
  * @wake_bit:             Bit number for the corresponding gpio
  */
@@ -86,12 +81,16 @@ struct msm_pingroup {
 	u32 intr_status_reg;
 	u32 intr_target_reg;
 	u32 dir_conn_reg;
+	unsigned int reg_size_4k:5;
+
+	unsigned int tile:2;
 
 	unsigned mux_bit:5;
 
 	unsigned pull_bit:5;
 	unsigned drv_bit:5;
 
+	unsigned od_bit:5;
 	unsigned egpio_enable:5;
 	unsigned egpio_present:5;
 	unsigned oe_bit:5;
@@ -103,48 +102,56 @@ struct msm_pingroup {
 	unsigned intr_ack_high:1;
 
 	unsigned intr_target_bit:5;
+	unsigned intr_target_width:5;
 	unsigned intr_target_kpss_val:5;
 	unsigned intr_raw_status_bit:5;
 	unsigned intr_polarity_bit:5;
 	unsigned intr_detection_bit:5;
 	unsigned intr_detection_width:5;
 	unsigned dir_conn_en_bit:8;
+
 	u32 wake_reg;
 	unsigned int wake_bit;
 };
 
 /**
- * struct msm_gpio_mux_input - Map GPIO to Mux pin
- * @mux::	The mux pin to which the GPIO is connected to
- * @gpio:	GPIO pin number
- * @init:	Setup PDC connection at probe
+ * struct msm_gpio_wakeirq_map - Map of GPIOs and their wakeup pins
+ * @gpio:          The GPIOs that are wakeup capable
+ * @wakeirq:       The interrupt at the always-on interrupt controller
  */
-struct msm_gpio_mux_input {
-	unsigned int mux;
+struct msm_gpio_wakeirq_map {
 	unsigned int gpio;
-	bool init;
+	unsigned int wakeirq;
 };
 
 /**
- * struct msm_pdc_mux_output - GPIO mux pin to PDC port
- * @mux:	GPIO mux pin number
- * @hwirq:	The PDC port (hwirq) that GPIO is connected to
- */
-struct msm_pdc_mux_output {
-	unsigned int mux;
-	irq_hw_number_t hwirq;
-};
-
-/**
- * struct msm_dir_conn - Direct GPIO connect configuration
- * @gpio:	GPIO pin number
- * @hwirq:	The GIC interrupt that the pin is connected to
- * @tlmm_dc:	indicates if the GPIO is routed to GIC directly
+ * struct msm_dir_conn - TLMM Direct GPIO connect configuration
+ * @gpio:      GPIO pin number
+ * @irq:       The GIC interrupt that the pin is connected to
  */
 struct msm_dir_conn {
 	int gpio;
-	irq_hw_number_t hwirq;
-	bool tlmm_dc;
+	int irq;
+};
+
+/*
+ * struct pinctrl_qup - Qup mode configuration
+ * @mode:	Qup i3c mode
+ * @offset:	Offset of the register
+ */
+struct pinctrl_qup {
+	u32 mode;
+	u32 offset;
+};
+
+/*
+ * struct msm_spare_tlmm - TLMM spare registers config
+ * @spare_reg:	spare register number
+ * @offset:	Offset of spare register
+ */
+struct msm_spare_tlmm {
+	int spare_reg;
+	u32 offset;
 };
 
 /**
@@ -157,14 +164,13 @@ struct msm_dir_conn {
  * @ngroups:    The numbmer of entries in @groups.
  * @ngpio:      The number of pingroups the driver should expose as GPIOs.
  * @pull_no_keeper: The SoC does not support keeper bias.
- * @dir_conn:   An array describing all the pins directly connected to GIC.
- * @ndirconns:  The number of pins directly connected to GIC
- * @dir_conn_irq_base:  Direct connect interrupt base register for kpss.
- * @gpio_mux_in:	Map of GPIO pin to the hwirq.
- * @n_gpioc_mux_in:	The number of entries in @pdc_mux_in.
- * @pdc_mux_out:	Map of GPIO mux to PDC port.
- * @n_pdc_mux_out:	The number of entries in @pdc_mux_out.
- * @n_pdc_offset:	The offset for the PDC mux pins
+ * @wakeirq_map:    The map of wakeup capable GPIOs and the pin at PDC/MPM
+ * @nwakeirq_map:   The number of entries in @wakeirq_map
+ * @dir_conn:       An array describing all the pins directly connected to GIC.
+ * @wakeirq_dual_edge_errata: If true then GPIOs using the wakeirq_map need
+ *                            to be aware that their parent can't handle dual
+ *                            edge interrupts.
+ * @gpio_func: Which function number is GPIO (usually 0).
  */
 struct msm_pinctrl_soc_data {
 	const struct pinctrl_pin_desc *pins;
@@ -175,26 +181,22 @@ struct msm_pinctrl_soc_data {
 	unsigned ngroups;
 	unsigned ngpios;
 	bool pull_no_keeper;
-	const struct msm_dir_conn *dir_conn;
-	unsigned int n_dir_conns;
-	unsigned int dir_conn_irq_base;
-	struct msm_pdc_mux_output *pdc_mux_out;
-	unsigned int n_pdc_mux_out;
-	struct msm_gpio_mux_input *gpio_mux_in;
-	unsigned int n_gpio_mux_in;
-	unsigned int n_pdc_mux_offset;
-#ifdef CONFIG_HIBERNATION
+	const char *const *tiles;
+	unsigned int ntiles;
+	const int *reserved_gpios;
+	const struct msm_gpio_wakeirq_map *wakeirq_map;
+	unsigned int nwakeirq_map;
+	bool wakeirq_dual_edge_errata;
+	struct pinctrl_qup *qup_regs;
+	unsigned int nqup_regs;
+	unsigned int gpio_func;
+	const struct msm_spare_tlmm *spare_regs;
+	unsigned int nspare_regs;
 	u32 *dir_conn_addr;
-	u32 tile_count;
-#endif
-#ifdef CONFIG_FRAGMENTED_GPIO_ADDRESS_SPACE
-	const u32 *tile_start;
-	const u32 *tile_offsets;
-	unsigned int n_tile;
-	void __iomem **pin_base;
-	const u32 *tile_end;
-#endif
+	struct msm_dir_conn *dir_conn;
 };
+
+extern const struct dev_pm_ops msm_pinctrl_dev_pm_ops;
 
 int msm_pinctrl_probe(struct platform_device *pdev,
 		      const struct msm_pinctrl_soc_data *soc_data);

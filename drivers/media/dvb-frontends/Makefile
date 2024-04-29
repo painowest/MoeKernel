@@ -3,7 +3,6 @@
 # Makefile for the kernel DVB frontend device drivers.
 #
 
-ccflags-y += -I$(srctree)/drivers/media/dvb-core/
 ccflags-y += -I$(srctree)/drivers/media/tuners/
 
 # FIXME: RTL2832 SDR driver uses power management directly from USB IF driver
@@ -21,7 +20,6 @@ obj-$(CONFIG_DVB_PLL) += dvb-pll.o
 obj-$(CONFIG_DVB_STV0299) += stv0299.o
 obj-$(CONFIG_DVB_STB0899) += stb0899.o
 obj-$(CONFIG_DVB_STB6100) += stb6100.o
-obj-$(CONFIG_DVB_SP8870) += sp8870.o
 obj-$(CONFIG_DVB_CX22700) += cx22700.o
 obj-$(CONFIG_DVB_S5H1432) += s5h1432.o
 obj-$(CONFIG_DVB_CX24110) += cx24110.o
@@ -56,9 +54,11 @@ obj-$(CONFIG_DVB_S5H1420) += s5h1420.o
 obj-$(CONFIG_DVB_LGDT330X) += lgdt330x.o
 obj-$(CONFIG_DVB_LGDT3305) += lgdt3305.o
 obj-$(CONFIG_DVB_LGDT3306A) += lgdt3306a.o
+obj-$(CONFIG_DVB_MXL692) += mxl692.o
 obj-$(CONFIG_DVB_LG2160) += lg2160.o
 obj-$(CONFIG_DVB_CX24123) += cx24123.o
 obj-$(CONFIG_DVB_LNBH25) += lnbh25.o
+obj-$(CONFIG_DVB_LNBH29) += lnbh29.o
 obj-$(CONFIG_DVB_LNBP21) += lnbp21.o
 obj-$(CONFIG_DVB_LNBP22) += lnbp22.o
 obj-$(CONFIG_DVB_ISL6405) += isl6405.o
@@ -126,7 +126,10 @@ obj-$(CONFIG_DVB_AF9033) += af9033.o
 obj-$(CONFIG_DVB_AS102_FE) += as102_fe.o
 obj-$(CONFIG_DVB_GP8PSK_FE) += gp8psk-fe.o
 obj-$(CONFIG_DVB_TC90522) += tc90522.o
+obj-$(CONFIG_DVB_MN88443X) += mn88443x.o
 obj-$(CONFIG_DVB_HORUS3A) += horus3a.o
 obj-$(CONFIG_DVB_ASCOT2E) += ascot2e.o
 obj-$(CONFIG_DVB_HELENE) += helene.o
 obj-$(CONFIG_DVB_ZD1301_DEMOD) += zd1301_demod.o
+obj-$(CONFIG_DVB_CXD2099) += cxd2099.o
+obj-$(CONFIG_DVB_CXD2880) += cxd2880/

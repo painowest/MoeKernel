@@ -1,18 +1,7 @@
+/* SPDX-License-Identifier: ISC */
 /*
  * Copyright (c) 2012-2017 Qualcomm Atheros, Inc.
  * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
- *
- * Permission to use, copy, modify, and/or distribute this software for any
- * purpose with or without fee is hereby granted, provided that the above
- * copyright notice and this permission notice appear in all copies.
- *
- * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
- * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
- * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
- * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
- * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
- * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
- * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
 #ifndef __WIL6210_H__
@@ -27,7 +16,6 @@
 #include <linux/irqreturn.h>
 #include "wmi.h"
 #include "wil_platform.h"
-#include "ftm.h"
 #include "fw.h"
 
 extern bool no_fw_recovery;
@@ -39,7 +27,8 @@ extern bool rx_large_buf;
 extern bool debug_fw;
 extern bool disable_ap_sme;
 extern bool ftm_mode;
-extern ushort headroom_size;
+extern bool drop_if_ring_full;
+extern uint max_assoc_sta;
 
 struct wil6210_priv;
 struct wil6210_vif;
@@ -69,8 +58,6 @@ union wil_tx_desc;
  */
 #define WIL_MAX_VIFS 4
 
-#define WIL_BRD_SUFFIX_LEN 4 /* max 3 letters + terminating null */
-
 /**
  * extract bits [@b0:@b1] (inclusive) from the value @x
  * it should be @b0 <= @b1, or result is incorrect
@@ -93,13 +80,18 @@ static inline u32 WIL_GET_BITS(u32 x, int b0, int b1)
 #define WIL_RING_SIZE_ORDER_MIN	(5)
 #define WIL_RING_SIZE_ORDER_MAX	(15)
 #define WIL6210_MAX_TX_RINGS	(24) /* HW limit */
-#define WIL6210_MAX_CID		(8) /* HW limit */
+#define WIL6210_MAX_CID		(20) /* max number of stations */
+#define WIL6210_RX_DESC_MAX_CID	(8)  /* HW limit */
 #define WIL6210_NAPI_BUDGET	(16) /* arbitrary */
 #define WIL_MAX_AMPDU_SIZE	(64 * 1024) /* FW/HW limit */
 #define WIL_MAX_AGG_WSIZE	(32) /* FW/HW limit */
 #define WIL_MAX_AMPDU_SIZE_128	(128 * 1024) /* FW/HW limit */
 #define WIL_MAX_AGG_WSIZE_64	(64) /* FW/HW limit */
 #define WIL6210_MAX_STATUS_RINGS	(8)
+#define WIL_WMI_CALL_GENERAL_TO_MS 100
+#define WIL_EXTENDED_MCS_26 (26) /* FW reports MCS 12.1 to driver as "26" */
+#define WIL_BASE_MCS_FOR_EXTENDED_26 (7) /* MCS 7 is base MCS for MCS 12.1 */
+#define WIL_EXTENDED_MCS_CHECK(x) (((x) == WIL_EXTENDED_MCS_26) ? "12.1" : #x)
 
 /* Hardware offload block adds the following:
  * 26 bytes - 3-address QoS data header
@@ -186,6 +178,7 @@ struct RGF_ICR {
 
 /* registers - FW addresses */
 #define RGF_USER_USAGE_1		(0x880004)
+#define RGF_USER_USAGE_2		(0x880008)
 #define RGF_USER_USAGE_6		(0x880018)
 	#define BIT_USER_OOB_MODE		BIT(31)
 	#define BIT_USER_OOB_R2_MODE		BIT(30)
@@ -335,6 +328,11 @@ struct RGF_ICR {
 	#define BIT_BOOT_FROM_ROM		BIT(31)
 
 /* eDMA */
+#define RGF_SCM_PTRS_SUBQ_RD_PTR	(0x8b4000)
+#define RGF_SCM_PTRS_COMPQ_RD_PTR	(0x8b4100)
+#define RGF_DMA_SCM_SUBQ_CONS		(0x8b60ec)
+#define RGF_DMA_SCM_COMPQ_PROD		(0x8b616c)
+
 #define RGF_INT_COUNT_ON_SPECIAL_EVT	(0x8b62d8)
 
 #define RGF_INT_CTRL_INT_GEN_CFG_0	(0x8bc000)
@@ -552,6 +550,7 @@ struct wil_ring_rx_data {
 	struct sk_buff *skb;
 	/* true if we are skipping a bad fragmented packet */
 	bool skipping;
+	u16 buff_size;
 };
 
 /**
@@ -571,7 +570,7 @@ struct wil_status_ring {
 };
 
 #define WIL_STA_TID_NUM (16)
-#define WIL_MCS_MAX (12) /* Maximum MCS supported */
+#define WIL_MCS_MAX (15) /* Maximum MCS supported */
 
 struct wil_net_stats {
 	unsigned long	rx_packets;
@@ -592,6 +591,7 @@ struct wil_net_stats {
 	unsigned long	rx_amsdu_error; /* eDMA specific */
 	unsigned long	rx_csum_err;
 	u16 last_mcs_rx;
+	u8 last_cb_mode_rx;
 	u64 rx_per_mcs[WIL_MCS_MAX + 1];
 	u32 ft_roams; /* relevant in STA mode */
 };
@@ -733,6 +733,12 @@ enum wil_sta_status {
 	wil_sta_connected = 2,
 };
 
+enum wil_rekey_state {
+	WIL_REKEY_IDLE = 0,
+	WIL_REKEY_M3_RECEIVED = 1,
+	WIL_REKEY_WAIT_M4_SENT = 2,
+};
+
 /**
  * struct wil_sta_info - data for peer
  *
@@ -762,7 +768,6 @@ struct wil_sta_info {
 	struct wil_tid_crypto_rx tid_crypto_rx[WIL_STA_TID_NUM];
 	struct wil_tid_crypto_rx group_crypto_rx;
 	u8 aid; /* 1-254; 0 if unknown/not reported */
-	bool fst_link_loss;
 
 	/* amsdu frame related info to check if the frame is valid */
 	int amsdu_drop_sn;
@@ -802,7 +807,7 @@ struct wil_halp {
 	struct mutex		lock; /* protect halp ref_cnt */
 	unsigned int		ref_cnt;
 	struct completion	comp;
-	atomic_t		handle_icr;
+	u8			handle_icr;
 };
 
 struct wil_blob_wrapper {
@@ -859,6 +864,7 @@ struct wil6210_vif {
 	DECLARE_BITMAP(status, wil_vif_status_last);
 	u32 privacy; /* secure connection? */
 	u16 channel; /* relevant in AP mode */
+	u8 wmi_edmg_channel; /* relevant in AP mode */
 	u8 hidden_ssid; /* relevant in AP mode */
 	u32 ap_isolate; /* no intra-BSS communication */
 	bool pbss;
@@ -879,8 +885,6 @@ struct wil6210_vif {
 	struct cfg80211_scan_request *scan_request;
 	struct timer_list scan_timer; /* detect scan timeout */
 	struct wil_p2p_info p2p;
-	/* fine timing measurement */
-	struct wil_ftm_priv ftm;
 	/* keep alive */
 	struct list_head probe_client_pending;
 	struct mutex probe_client_mutex; /* protect @probe_client_pending */
@@ -888,6 +892,10 @@ struct wil6210_vif {
 	int net_queue_stopped; /* netif_tx_stop_all_queues invoked */
 	bool fw_stats_ready; /* per-cid statistics are ready inside sta_info */
 	u64 fw_stats_tsf; /* measurement timestamp */
+
+	/* PTK rekey race prevention, this is relevant to station mode only */
+	enum wil_rekey_state ptk_rekey_state;
+	struct work_struct enable_tx_key_worker;
 };
 
 /**
@@ -921,6 +929,11 @@ struct wil_fw_stats_global {
 	struct wmi_link_stats_global stats;
 };
 
+struct wil_brd_info {
+	u32 file_addr;
+	u32 file_max_size;
+};
+
 struct wil6210_priv {
 	struct pci_dev *pdev;
 	u32 bar_size;
@@ -935,9 +948,8 @@ struct wil6210_priv {
 	const char *hw_name;
 	const char *wil_fw_name;
 	char *board_file;
-	char board_file_reg_suffix[WIL_BRD_SUFFIX_LEN]; /* empty or CN or FCC */
-	u32 brd_file_addr;
-	u32 brd_file_max_size;
+	u32 num_of_brd_entries;
+	struct wil_brd_info *brd_info;
 	DECLARE_BITMAP(hw_capa, hw_capa_last);
 	DECLARE_BITMAP(fw_capabilities, WMI_FW_CAPABILITY_MAX);
 	DECLARE_BITMAP(platform_capa, WIL_PLATFORM_CAPA_MAX);
@@ -949,6 +961,8 @@ struct wil6210_priv {
 	struct wil6210_vif *vifs[WIL_MAX_VIFS];
 	struct mutex vif_mutex; /* protects access to VIF entries */
 	atomic_t connected_vifs;
+	u32 max_assoc_sta; /* max sta's supported by the driver and the FW */
+
 	/* profile */
 	struct cfg80211_chan_def monitor_chandef;
 	u32 monitor_flags;
@@ -982,6 +996,7 @@ struct wil6210_priv {
 	 */
 	spinlock_t wmi_ev_lock;
 	spinlock_t net_queue_lock; /* guarding stop/wake netif queue */
+	spinlock_t eap_lock; /* guarding access to eap rekey fields */
 	struct napi_struct napi_rx;
 	struct napi_struct napi_tx;
 	struct net_device napi_ndev; /* dummy net_device serving all VIFs */
@@ -1015,7 +1030,6 @@ struct wil6210_priv {
 	u8 wakeup_trigger;
 	struct wil_suspend_stats suspend_stats;
 	struct wil_debugfs_data dbg_data;
-	u8 force_edmg_channel;
 	bool tx_latency; /* collect TX latency measurements */
 	size_t tx_latency_res; /* bin resolution in usec */
 
@@ -1048,11 +1062,7 @@ struct wil6210_priv {
 	/* current reg domain configured in kernel */
 	char regdomain[3]; /* alpha2 */
 
-#ifdef CONFIG_PM
-#ifdef CONFIG_PM_SLEEP
 	struct notifier_block pm_notify;
-#endif /* CONFIG_PM_SLEEP */
-#endif /* CONFIG_PM */
 
 	bool suspend_resp_rcvd;
 	bool suspend_resp_comp;
@@ -1063,12 +1073,6 @@ struct wil6210_priv {
 	u32 rgf_ucode_assert_code_addr;
 	u32 iccm_base;
 
-	bool secured_boot;
-	u8 boot_config;
-
-	bool publish_nl_evt; /* deliver WMI events to user space */
-	bool force_wmi_send; /* allow WMI command while FW in sysassert */
-
 	/* relevant only for eDMA */
 	bool use_compressed_rx_status;
 	u32 rx_status_ring_order;
@@ -1076,13 +1080,15 @@ struct wil6210_priv {
 	u32 rx_buff_id_count;
 	bool amsdu_en;
 	bool use_rx_hw_reordering;
-
-	u32 max_agg_wsize;
-	u32 max_ampdu_size;
+	bool secured_boot;
+	u8 boot_config;
 
 	struct wil_fw_stats_global fw_stats_global;
 
-	struct work_struct pci_linkdown_recovery_worker;
+	u32 max_agg_wsize;
+	u32 max_ampdu_size;
+	u8 multicast_to_unicast;
+	s32 cqm_rssi_thold;
 };
 
 #define wil_to_wiphy(i) (i->wiphy)
@@ -1094,6 +1100,7 @@ struct wil6210_priv {
 #define vif_to_wil(v) (v->wil)
 #define vif_to_ndev(v) (v->ndev)
 #define vif_to_wdev(v) (&v->wdev)
+#define GET_MAX_VIFS(wil) min_t(int, (wil)->max_vifs, WIL_MAX_VIFS)
 
 static inline struct wil6210_vif *wdev_to_vif(struct wil6210_priv *wil,
 					      struct wireless_dev *wdev)
@@ -1164,6 +1171,14 @@ static inline void wil_s(struct wil6210_priv *wil, u32 reg, u32 val)
 static inline void wil_c(struct wil6210_priv *wil, u32 reg, u32 val)
 {
 	wil_w(wil, reg, wil_r(wil, reg) & ~val);
+}
+
+/**
+ * wil_cid_valid - check cid is valid
+ */
+static inline bool wil_cid_valid(struct wil6210_priv *wil, int cid)
+{
+	return (cid >= 0 && cid < wil->max_assoc_sta && cid < WIL6210_MAX_CID);
 }
 
 void wil_get_board_file(struct wil6210_priv *wil, char *buf, size_t len);
@@ -1241,6 +1256,7 @@ int __wil_down(struct wil6210_priv *wil);
 void wil_refresh_fw_capabilities(struct wil6210_priv *wil);
 void wil_mbox_ring_le2cpus(struct wil6210_mbox_ring *r);
 int wil_find_cid(struct wil6210_priv *wil, u8 mid, const u8 *mac);
+int wil_find_cid_by_idx(struct wil6210_priv *wil, u8 mid, int idx);
 void wil_set_ethtoolops(struct net_device *ndev);
 
 struct fw_map *wil_find_fw_mapping(const char *section);
@@ -1250,8 +1266,6 @@ void __iomem *wmi_addr(struct wil6210_priv *wil, u32 ptr);
 int wmi_read_hdr(struct wil6210_priv *wil, __le32 ptr,
 		 struct wil6210_mbox_hdr *hdr);
 int wmi_send(struct wil6210_priv *wil, u16 cmdid, u8 mid, void *buf, u16 len);
-int wmi_force_send(struct wil6210_priv *wil, u16 cmdid, u8 mid, void *buf,
-		   u16 len);
 void wmi_recv_cmd(struct wil6210_priv *wil);
 int wmi_call(struct wil6210_priv *wil, u16 cmdid, u8 mid, void *buf, u16 len,
 	     u16 reply_id, void *reply, u16 reply_size, int to_msec);
@@ -1272,12 +1286,15 @@ int wmi_rx_chain_add(struct wil6210_priv *wil, struct wil_ring *vring);
 int wmi_update_ft_ies(struct wil6210_vif *vif, u16 ie_len, const void *ie);
 int wmi_rxon(struct wil6210_priv *wil, bool on);
 int wmi_get_temperature(struct wil6210_priv *wil, u32 *t_m, u32 *t_r);
+int wmi_get_all_temperatures(struct wil6210_priv *wil,
+			     struct wmi_temp_sense_all_done_event
+			     *sense_all_evt);
 int wmi_disconnect_sta(struct wil6210_vif *vif, const u8 *mac, u16 reason,
 		       bool del_sta);
 int wmi_addba(struct wil6210_priv *wil, u8 mid,
 	      u8 ringid, u8 size, u16 timeout);
 int wmi_delba_tx(struct wil6210_priv *wil, u8 mid, u8 ringid, u16 reason);
-int wmi_delba_rx(struct wil6210_priv *wil, u8 mid, u8 cidxtid, u16 reason);
+int wmi_delba_rx(struct wil6210_priv *wil, u8 mid, u8 cid, u8 tid, u16 reason);
 int wmi_addba_rx_resp(struct wil6210_priv *wil,
 		      u8 mid, u8 cid, u8 tid, u8 token,
 		      u16 status, bool amsdu, u16 agg_wsize, u16 timeout);
@@ -1286,14 +1303,12 @@ int wmi_ps_dev_profile_cfg(struct wil6210_priv *wil,
 int wmi_set_mgmt_retry(struct wil6210_priv *wil, u8 retry_short);
 int wmi_get_mgmt_retry(struct wil6210_priv *wil, u8 *retry_short);
 int wmi_new_sta(struct wil6210_vif *vif, const u8 *mac, u8 aid);
-int wmi_set_tt_cfg(struct wil6210_priv *wil, struct wmi_tt_data *tt_data);
-int wmi_get_tt_cfg(struct wil6210_priv *wil, struct wmi_tt_data *tt_data);
 int wmi_port_allocate(struct wil6210_priv *wil, u8 mid,
 		      const u8 *mac, enum nl80211_iftype iftype);
 int wmi_port_delete(struct wil6210_priv *wil, u8 mid);
 int wmi_link_stats_cfg(struct wil6210_vif *vif, u32 type, u8 cid, u32 interval);
-int wil_addba_rx_request(struct wil6210_priv *wil, u8 mid,
-			 u8 cidxtid, u8 dialog_token, __le16 ba_param_set,
+int wil_addba_rx_request(struct wil6210_priv *wil, u8 mid, u8 cid, u8 tid,
+			 u8 dialog_token, __le16 ba_param_set,
 			 __le16 ba_timeout, __le16 ba_seq_ctrl);
 int wil_addba_tx_request(struct wil6210_priv *wil, u8 ringid, u16 wsize);
 
@@ -1344,8 +1359,6 @@ static inline int wil6210_debugfs_init(struct wil6210_priv *wil) { return 0; }
 static inline void wil6210_debugfs_remove(struct wil6210_priv *wil) {}
 #endif
 
-int wil6210_sysfs_init(struct wil6210_priv *wil);
-void wil6210_sysfs_remove(struct wil6210_priv *wil);
 int wil_cid_fill_sinfo(struct wil6210_vif *vif, int cid,
 		       struct station_info *sinfo);
 
@@ -1355,15 +1368,13 @@ void wil_p2p_wdev_free(struct wil6210_priv *wil);
 
 int wmi_set_mac_address(struct wil6210_priv *wil, void *addr);
 int wmi_pcp_start(struct wil6210_vif *vif, int bi, u8 wmi_nettype, u8 chan,
-		  u8 hidden_ssid, u8 is_go);
+		  u8 edmg_chan, u8 hidden_ssid, u8 is_go);
 int wmi_pcp_stop(struct wil6210_vif *vif);
 int wmi_led_cfg(struct wil6210_priv *wil, bool enable);
 int wmi_abort_scan(struct wil6210_vif *vif);
 void wil_abort_scan(struct wil6210_vif *vif, bool sync);
 void wil_abort_scan_all_vifs(struct wil6210_priv *wil, bool sync);
 void wil6210_bus_request(struct wil6210_priv *wil, u32 kbps);
-int wmi_aoa_meas(struct wil6210_priv *wil, const void *mac_addr, u8 chan,
-		 u8 type);
 void wil6210_disconnect(struct wil6210_vif *vif, const u8 *bssid,
 			u16 reason_code);
 void wil6210_disconnect_complete(struct wil6210_vif *vif, const u8 *bssid,
@@ -1371,11 +1382,9 @@ void wil6210_disconnect_complete(struct wil6210_vif *vif, const u8 *bssid,
 void wil_probe_client_flush(struct wil6210_vif *vif);
 void wil_probe_client_worker(struct work_struct *work);
 void wil_disconnect_worker(struct work_struct *work);
+void wil_enable_tx_key_worker(struct work_struct *work);
 
 void wil_init_txrx_ops(struct wil6210_priv *wil);
-
-void wil_fw_recovery(struct wil6210_priv *wil);
-void wil_pci_linkdown_recovery_worker(struct work_struct *work);
 
 /* TX API */
 int wil_ring_init_tx(struct wil6210_vif *vif, int cid);
@@ -1390,6 +1399,8 @@ void wil_update_net_queues_bh(struct wil6210_priv *wil, struct wil6210_vif *vif,
 			      struct wil_ring *ring, bool check_stop);
 netdev_tx_t wil_start_xmit(struct sk_buff *skb, struct net_device *ndev);
 int wil_tx_complete(struct wil6210_vif *vif, int ringid);
+void wil_tx_complete_handle_eapol(struct wil6210_vif *vif,
+				  struct sk_buff *skb);
 void wil6210_unmask_irq_tx(struct wil6210_priv *wil);
 void wil6210_unmask_irq_tx_edma(struct wil6210_priv *wil);
 
@@ -1430,36 +1441,17 @@ void wil_halp_unvote(struct wil6210_priv *wil);
 void wil6210_set_halp(struct wil6210_priv *wil);
 void wil6210_clear_halp(struct wil6210_priv *wil);
 
-void wil_ftm_init(struct wil6210_vif *vif);
-void wil_ftm_deinit(struct wil6210_vif *vif);
-void wil_ftm_stop_operations(struct wil6210_priv *wil);
-void wil_aoa_cfg80211_meas_result(struct wil6210_vif *vif,
-				  struct wil_aoa_meas_result *result);
-
-void wil_ftm_evt_session_ended(struct wil6210_vif *vif,
-			       struct wmi_tof_session_end_event *evt);
-void wil_ftm_evt_per_dest_res(struct wil6210_vif *vif,
-			      struct wmi_tof_ftm_per_dest_res_event *evt);
-void wil_aoa_evt_meas(struct wil6210_vif *vif,
-		      struct wmi_aoa_meas_event *evt,
-		      int len);
-void wil_nl_60g_receive_wmi_evt(struct wil6210_priv *wil, u8 *cmd, int len);
-/* link loss */
-int wmi_link_maintain_cfg_write(struct wil6210_priv *wil,
-				const u8 *addr,
-				bool fst_link_loss);
-
-int wmi_set_snr_thresh(struct wil6210_priv *wil, short omni, short direct);
-
 int wmi_start_sched_scan(struct wil6210_priv *wil,
 			 struct cfg80211_sched_scan_request *request);
 int wmi_stop_sched_scan(struct wil6210_priv *wil);
 int wmi_mgmt_tx(struct wil6210_vif *vif, const u8 *buf, size_t len);
 int wmi_mgmt_tx_ext(struct wil6210_vif *vif, const u8 *buf, size_t len,
 		    u8 channel, u16 duration_ms);
+int wmi_rbufcap_cfg(struct wil6210_priv *wil, bool enable, u16 threshold);
 
 int wil_wmi2spec_ch(u8 wmi_ch, u8 *spec_ch);
 int wil_spec2wmi_ch(u8 spec_ch, u8 *wmi_ch);
+void wil_update_supported_bands(struct wil6210_priv *wil);
 
 int reverse_memcmp(const void *cs, const void *ct, size_t count);
 
@@ -1477,5 +1469,9 @@ int wmi_addba_rx_resp_edma(struct wil6210_priv *wil, u8 mid, u8 cid,
 			   u16 agg_wsize, u16 timeout);
 
 void update_supported_bands(struct wil6210_priv *wil);
+
+void wil_clear_fw_log_addr(struct wil6210_priv *wil);
+int wmi_set_cqm_rssi_config(struct wil6210_priv *wil,
+			    s32 rssi_thold, u32 rssi_hyst);
 void wil_sta_info_amsdu_init(struct wil_sta_info *sta);
 #endif /* __WIL6210_H__ */

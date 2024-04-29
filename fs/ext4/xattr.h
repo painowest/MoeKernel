@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+// SPDX-License-Identifier: GPL-2.0
 /*
   File: fs/ext4/xattr.h
 
@@ -48,7 +48,7 @@ struct ext4_xattr_entry {
 	__le32	e_value_inum;	/* inode in which the value is stored */
 	__le32	e_value_size;	/* size of attribute value */
 	__le32	e_hash;		/* hash value of name and value */
-	char	e_name[0];	/* attribute name */
+	char	e_name[];	/* attribute name */
 };
 
 #define EXT4_XATTR_PAD_BITS		2
@@ -131,12 +131,13 @@ struct ext4_xattr_ibody_find {
 
 struct ext4_xattr_inode_array {
 	unsigned int count;		/* # of used items in the array */
-	struct inode *inodes[0];
+	struct inode *inodes[];
 };
 
 extern const struct xattr_handler ext4_xattr_user_handler;
 extern const struct xattr_handler ext4_xattr_trusted_handler;
 extern const struct xattr_handler ext4_xattr_security_handler;
+extern const struct xattr_handler ext4_xattr_hurd_handler;
 
 #define EXT4_XATTR_NAME_ENCRYPTION_CONTEXT "c"
 
@@ -190,6 +191,7 @@ extern void ext4_xattr_inode_array_free(struct ext4_xattr_inode_array *array);
 
 extern int ext4_expand_extra_isize_ea(struct inode *inode, int new_extra_isize,
 			    struct ext4_inode *raw_inode, handle_t *handle);
+extern void ext4_evict_ea_inode(struct inode *inode);
 
 extern const struct xattr_handler *ext4_xattr_handlers[];
 

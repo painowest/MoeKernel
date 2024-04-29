@@ -1,15 +1,10 @@
-/* Copyright (c) 2012-2014, 2016-2017 The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+
+/*
+ * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
+
 #include <linux/debugfs.h>
 #include <linux/delay.h>
 #include <linux/errno.h>
@@ -25,21 +20,15 @@
 #include <linux/of.h>
 #include <linux/uaccess.h>
 
-
 #define RPM_MASTERS_BUF_LEN 400
 
 #define SNPRINTF(buf, size, format, ...) \
 	do { \
 		if (size > 0) { \
 			int ret; \
-			ret = snprintf(buf, size, format, ## __VA_ARGS__); \
-			if (ret > size) { \
-				buf += size; \
-				size = 0; \
-			} else { \
-				buf += ret; \
-				size -= ret; \
-			} \
+			ret = scnprintf(buf, size, format, ## __VA_ARGS__); \
+			buf += ret; \
+			size -= ret; \
 		} \
 	} while (0)
 
@@ -48,6 +37,16 @@
 	 prvdata->master_names[a])
 
 #define GET_FIELD(a) ((strnstr(#a, ".", 80) + 1))
+
+#ifdef CONFIG_ARM
+#undef readq_relaxed
+#define readq_relaxed(a) ({			\
+	u64 val = readl_relaxed((a) + 4);	\
+	val <<= 32;				\
+	val |=  readl_relaxed((a));		\
+	val;					\
+})
+#endif
 
 struct msm_rpm_master_stats_platform_data {
 	phys_addr_t phys_addr_base;
@@ -284,25 +283,19 @@ static ssize_t msm_rpm_master_stats_file_read(struct file *file,
 {
 	struct msm_rpm_master_stats_private_data *prvdata;
 	struct msm_rpm_master_stats_platform_data *pdata;
-	ssize_t ret;
+	ssize_t ret = -EINVAL;
 
 	mutex_lock(&msm_rpm_master_stats_mutex);
 	prvdata = file->private_data;
-	if (!prvdata) {
-		ret = -EINVAL;
+	if (!prvdata)
 		goto exit;
-	}
 
 	pdata = prvdata->platform_data;
-	if (!pdata) {
-		ret = -EINVAL;
+	if (!pdata)
 		goto exit;
-	}
 
-	if (!bufu || count == 0) {
-		ret = -EINVAL;
+	if (!bufu || count == 0)
 		goto exit;
-	}
 
 	if (*ppos <= pdata->phys_size) {
 		prvdata->len = msm_rpm_master_copy_stats(prvdata);
@@ -345,7 +338,7 @@ static int msm_rpm_master_stats_file_open(struct inode *inode,
 		pr_err("%s: ERROR could not ioremap start=%pa, len=%u\n",
 			__func__, &pdata->phys_addr_base,
 			pdata->phys_size);
-		ret = -EBUSY;
+		ret = -ENOMEM;
 		goto exit;
 	}
 
@@ -411,12 +404,9 @@ static struct msm_rpm_master_stats_platform_data
 
 		of_property_read_string_index(node, "qcom,masters",
 							i, &master_name);
-		pdata->masters[i] = devm_kzalloc(dev, sizeof(char) *
-				strlen(master_name) + 1, GFP_KERNEL);
+		pdata->masters[i] = devm_kstrdup(dev, master_name, GFP_KERNEL);
 		if (!pdata->masters[i])
 			goto err;
-		strlcpy(pdata->masters[i], master_name,
-					strlen(master_name) + 1);
 	}
 	return pdata;
 err:
@@ -429,24 +419,15 @@ static  int msm_rpm_master_stats_probe(struct platform_device *pdev)
 	struct msm_rpm_master_stats_platform_data *pdata;
 	struct resource *res = NULL;
 
-	if (!pdev)
-		return -EINVAL;
-
-	if (pdev->dev.of_node)
-		pdata = msm_rpm_master_populate_pdata(&pdev->dev);
-	else
-		pdata = pdev->dev.platform_data;
-
-	if (!pdata) {
-		dev_err(&pdev->dev, "%s: Unable to get pdata\n", __func__);
+	pdata = msm_rpm_master_populate_pdata(&pdev->dev);
+	if (!pdata)
 		return -ENOMEM;
-	}
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 
 	if (!res) {
 		dev_err(&pdev->dev,
-			"%s: Failed to get IO resource from platform device",
+			"%s: Failed to get IO resource from platform device\n",
 			__func__);
 		return -ENXIO;
 	}
@@ -487,7 +468,6 @@ static struct platform_driver msm_rpm_master_stats_driver = {
 	.remove = msm_rpm_master_stats_remove,
 	.driver = {
 		.name = "msm_rpm_master_stats",
-		.owner = THIS_MODULE,
 		.of_match_table = rpm_master_table,
 	},
 };

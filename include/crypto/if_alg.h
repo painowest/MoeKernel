@@ -1,13 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * if_alg: User-space algorithm interface
  *
  * Copyright (c) 2010 Herbert Xu <herbert@gondor.apana.org.au>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- *
  */
 
 #ifndef _CRYPTO_IF_ALG_H
@@ -41,11 +36,6 @@ struct alg_sock {
 	void *private;
 };
 
-struct af_alg_completion {
-	struct completion completion;
-	int err;
-};
-
 struct af_alg_control {
 	struct af_alg_iv *iv;
 	int op;
@@ -56,6 +46,7 @@ struct af_alg_type {
 	void *(*bind)(const char *name, u32 type, u32 mask);
 	void (*release)(void *private);
 	int (*setkey)(void *private, const u8 *key, unsigned int keylen);
+	int (*setentropy)(void *private, sockptr_t entropy, unsigned int len);
 	int (*accept)(void *private, struct sock *sk);
 	int (*accept_nokey)(void *private, struct sock *sk);
 	int (*setauthsize)(void *private, unsigned int authsize);
@@ -76,7 +67,7 @@ struct af_alg_sgl {
 struct af_alg_tsgl {
 	struct list_head list;
 	unsigned int cur;		/* Last processed SG entry */
-	struct scatterlist sg[0];	/* Array of SGs forming the SGL */
+	struct scatterlist sg[];	/* Array of SGs forming the SGL */
 };
 
 #define MAX_SGL_ENTS ((4096 - sizeof(struct af_alg_tsgl)) / \
@@ -154,7 +145,7 @@ struct af_alg_ctx {
 	void *iv;
 	size_t aead_assoclen;
 
-	struct af_alg_completion completion;
+	struct crypto_wait wait;
 
 	size_t used;
 	atomic_t rcvused;
@@ -177,17 +168,9 @@ int af_alg_accept(struct sock *sk, struct socket *newsock, bool kern);
 int af_alg_make_sg(struct af_alg_sgl *sgl, struct iov_iter *iter, int len);
 void af_alg_free_sg(struct af_alg_sgl *sgl);
 
-int af_alg_wait_for_completion(int err, struct af_alg_completion *completion);
-void af_alg_complete(struct crypto_async_request *req, int err);
-
 static inline struct alg_sock *alg_sk(struct sock *sk)
 {
 	return (struct alg_sock *)sk;
-}
-
-static inline void af_alg_init_completion(struct af_alg_completion *completion)
-{
-	init_completion(&completion->completion);
 }
 
 /**
@@ -253,7 +236,7 @@ ssize_t af_alg_sendpage(struct socket *sock, struct page *page,
 			int offset, size_t size, int flags);
 void af_alg_free_resources(struct af_alg_async_req *areq);
 void af_alg_async_cb(struct crypto_async_request *_req, int err);
-unsigned int af_alg_poll(struct file *file, struct socket *sock,
+__poll_t af_alg_poll(struct file *file, struct socket *sock,
 			 poll_table *wait);
 struct af_alg_async_req *af_alg_alloc_areq(struct sock *sk,
 					   unsigned int areqlen);

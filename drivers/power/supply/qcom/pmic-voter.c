@@ -1,14 +1,7 @@
-/* Copyright (c) 2015-2017, 2019 The Linux Foundation. All rights reserved.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2015-2017, 2019-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, 2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/debugfs.h>
@@ -184,11 +177,13 @@ void lock_votable(struct votable *votable)
 {
 	mutex_lock(&votable->vote_lock);
 }
+EXPORT_SYMBOL_GPL(lock_votable);
 
 void unlock_votable(struct votable *votable)
 {
 	mutex_unlock(&votable->vote_lock);
 }
+EXPORT_SYMBOL_GPL(unlock_votable);
 
 /**
  * is_override_vote_enabled() -
@@ -207,6 +202,7 @@ bool is_override_vote_enabled_locked(struct votable *votable)
 
 	return votable->override_result != -EINVAL;
 }
+EXPORT_SYMBOL_GPL(is_override_vote_enabled_locked);
 
 bool is_override_vote_enabled(struct votable *votable)
 {
@@ -221,6 +217,7 @@ bool is_override_vote_enabled(struct votable *votable)
 
 	return enable;
 }
+EXPORT_SYMBOL_GPL(is_override_vote_enabled);
 
 /**
  * is_client_vote_enabled() -
@@ -248,6 +245,7 @@ bool is_client_vote_enabled_locked(struct votable *votable,
 
 	return votable->votes[client_id].enabled;
 }
+EXPORT_SYMBOL_GPL(is_client_vote_enabled_locked);
 
 bool is_client_vote_enabled(struct votable *votable, const char *client_str)
 {
@@ -261,6 +259,7 @@ bool is_client_vote_enabled(struct votable *votable, const char *client_str)
 	unlock_votable(votable);
 	return enabled;
 }
+EXPORT_SYMBOL_GPL(is_client_vote_enabled);
 
 /**
  * get_client_vote() -
@@ -291,6 +290,7 @@ int get_client_vote_locked(struct votable *votable, const char *client_str)
 
 	return votable->votes[client_id].value;
 }
+EXPORT_SYMBOL_GPL(get_client_vote_locked);
 
 int get_client_vote(struct votable *votable, const char *client_str)
 {
@@ -304,6 +304,7 @@ int get_client_vote(struct votable *votable, const char *client_str)
 	unlock_votable(votable);
 	return value;
 }
+EXPORT_SYMBOL_GPL(get_client_vote);
 
 /**
  * get_effective_result() -
@@ -335,6 +336,7 @@ int get_effective_result_locked(struct votable *votable)
 
 	return votable->effective_result;
 }
+EXPORT_SYMBOL_GPL(get_effective_result_locked);
 
 int get_effective_result(struct votable *votable)
 {
@@ -348,6 +350,7 @@ int get_effective_result(struct votable *votable)
 	unlock_votable(votable);
 	return value;
 }
+EXPORT_SYMBOL_GPL(get_effective_result);
 
 /**
  * get_effective_client() -
@@ -380,6 +383,7 @@ const char *get_effective_client_locked(struct votable *votable)
 
 	return get_client_str(votable, votable->effective_client_id);
 }
+EXPORT_SYMBOL_GPL(get_effective_client_locked);
 
 const char *get_effective_client(struct votable *votable)
 {
@@ -393,6 +397,7 @@ const char *get_effective_client(struct votable *votable)
 	unlock_votable(votable);
 	return client_str;
 }
+EXPORT_SYMBOL_GPL(get_effective_client);
 
 /**
  * vote() -
@@ -446,7 +451,7 @@ int vote(struct votable *votable, const char *client_str, bool enabled, int val)
 
 	if ((votable->votes[client_id].enabled == enabled) &&
 		(votable->votes[client_id].value == val)) {
-		pr_debug("%s: %s,%d same vote %s of val=%d\n",
+		pr_debug("%s: %s,%d same voting %s of val=%d\n",
 				votable->name,
 				client_str, client_id,
 				enabled ? "on" : "off",
@@ -458,7 +463,7 @@ int vote(struct votable *votable, const char *client_str, bool enabled, int val)
 	votable->votes[client_id].value = val;
 
 	if (similar_vote && votable->voted_on) {
-		pr_debug("%s: %s,%d Ignoring similar vote %s of val=%d\n",
+		pr_debug("%s: %s,%d Ignoring similar voting %s of val=%d\n",
 			votable->name,
 			client_str, client_id, enabled ? "on" : "off", val);
 		goto out;
@@ -490,7 +495,7 @@ int vote(struct votable *votable, const char *client_str, bool enabled, int val)
 			|| (effective_result != votable->effective_result)) {
 		votable->effective_client_id = effective_id;
 		votable->effective_result = effective_result;
-		pr_debug("%s: effective vote is now %d voted by %s,%d\n",
+		pr_debug("%s: effective voting is now %d voted by %s,%d\n",
 			votable->name, effective_result,
 			get_client_str(votable, effective_id),
 			effective_id);
@@ -506,6 +511,7 @@ out:
 	unlock_votable(votable);
 	return rc;
 }
+EXPORT_SYMBOL_GPL(vote);
 
 /**
  * vote_override() -
@@ -560,6 +566,7 @@ out:
 	unlock_votable(votable);
 	return rc;
 }
+EXPORT_SYMBOL_GPL(vote_override);
 
 int rerun_election(struct votable *votable)
 {
@@ -579,6 +586,7 @@ int rerun_election(struct votable *votable)
 	unlock_votable(votable);
 	return rc;
 }
+EXPORT_SYMBOL_GPL(rerun_election);
 
 struct votable *find_votable(const char *name)
 {
@@ -607,6 +615,7 @@ out:
 	else
 		return NULL;
 }
+EXPORT_SYMBOL_GPL(find_votable);
 
 static int force_active_get(void *data, u64 *val)
 {
@@ -650,7 +659,7 @@ out:
 	unlock_votable(votable);
 	return rc;
 }
-DEFINE_SIMPLE_ATTRIBUTE(votable_force_ops, force_active_get, force_active_set,
+DEFINE_DEBUGFS_ATTRIBUTE(votable_force_ops, force_active_get, force_active_set,
 		"%lld\n");
 
 static int show_votable_clients(struct seq_file *m, void *data)
@@ -790,18 +799,10 @@ struct votable *create_votable(const char *name,
 		return ERR_PTR(-EEXIST);
 	}
 
-	votable->force_val_ent = debugfs_create_u32("force_val",
-					S_IFREG | 0644,
-					votable->root,
-					&(votable->force_val));
-
-	if (!votable->force_val_ent) {
-		pr_err("Couldn't create force_val dbg file for %s\n", name);
-		debugfs_remove_recursive(votable->root);
-		kfree(votable->name);
-		kfree(votable);
-		return ERR_PTR(-EEXIST);
-	}
+	debugfs_create_u32("force_val",
+			S_IFREG | 0644,
+			votable->root,
+			&(votable->force_val));
 
 	votable->force_active_ent = debugfs_create_file("force_active",
 					S_IFREG | 0444,
@@ -817,6 +818,7 @@ struct votable *create_votable(const char *name,
 
 	return votable;
 }
+EXPORT_SYMBOL_GPL(create_votable);
 
 void destroy_votable(struct votable *votable)
 {
@@ -838,3 +840,4 @@ void destroy_votable(struct votable *votable)
 	kfree(votable->name);
 	kfree(votable);
 }
+EXPORT_SYMBOL_GPL(destroy_votable);

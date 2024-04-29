@@ -1,19 +1,19 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mach-dove/irq.c
  *
  * Dove IRQ handling.
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 #include <linux/init.h>
 #include <linux/irq.h>
 #include <linux/io.h>
 #include <asm/exception.h>
+
 #include <plat/irq.h>
-#include <mach/bridge-regs.h>
 #include <plat/orion-gpio.h>
+
+#include "pm.h"
+#include "bridge-regs.h"
 #include "common.h"
 
 static int __initdata gpio0_irqs[4] = {

@@ -21,20 +21,16 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/ptrace.h>
-#include <linux/bootmem.h>
+#include <linux/memblock.h>
 #include <linux/swap.h>
 #include <linux/pagemap.h>
+#include <linux/pgtable.h>
 
 #include <asm/bootparam.h>
 #include <asm/mmu_context.h>
 #include <asm/tlb.h>
 #include <asm/tlbflush.h>
 #include <asm/page.h>
-#include <asm/pgalloc.h>
-#include <asm/pgtable.h>
-
-//#define printd(x...) printk(x)
-#define printd(x...) do { } while(0)
 
 /* 
  * Note:
@@ -85,13 +81,8 @@ static inline void kmap_invalidate_coherent(struct page *page,
 static inline void *coherent_kvaddr(struct page *page, unsigned long base,
 				    unsigned long vaddr, unsigned long *paddr)
 {
-	if (PageHighMem(page) || !DCACHE_ALIAS_EQ(page_to_phys(page), vaddr)) {
-		*paddr = page_to_phys(page);
-		return (void *)(base + (vaddr & DCACHE_ALIAS_MASK));
-	} else {
-		*paddr = 0;
-		return page_to_virt(page);
-	}
+	*paddr = page_to_phys(page);
+	return (void *)(base + (vaddr & DCACHE_ALIAS_MASK));
 }
 
 void clear_user_highpage(struct page *page, unsigned long vaddr)
@@ -132,7 +123,7 @@ EXPORT_SYMBOL(copy_user_highpage);
 
 void flush_dcache_page(struct page *page)
 {
-	struct address_space *mapping = page_mapping(page);
+	struct address_space *mapping = page_mapping_file(page);
 
 	/*
 	 * If we have a mapping but the page is not mapped to user-space

@@ -1,15 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2013-2018,2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include "phy-qcom-ufs-qmp-v3-660.h"
@@ -17,29 +9,24 @@
 #define UFS_PHY_NAME "ufs_phy_qmp_v3_660"
 
 static
-int ufs_qcom_phy_qmp_v3_660_phy_calibrate(struct ufs_qcom_phy *ufs_qcom_phy,
-					bool is_rate_B, bool is_g4)
+int ufs_qcom_phy_qmp_v3_660_phy_calibrate(struct phy *generic_phy)
 {
+	struct ufs_qcom_phy *ufs_qcom_phy = get_ufs_qcom_phy(generic_phy);
+	bool is_g4, is_rate_B;
 	int err;
 	int tbl_size_A, tbl_size_B;
 	struct ufs_qcom_phy_calibration *tbl_A, *tbl_B;
-	u8 major = ufs_qcom_phy->host_ctrl_rev_major;
-	u16 minor = ufs_qcom_phy->host_ctrl_rev_minor;
-	u16 step = ufs_qcom_phy->host_ctrl_rev_step;
 
+	/* For UFS PHY's submode, 1 = G4, 0 = non-G4 */
+	is_g4 = !!ufs_qcom_phy->submode;
+
+	is_rate_B = (ufs_qcom_phy->mode == PHY_MODE_UFS_HS_B) ? true : false;
+
+	tbl_size_A = ARRAY_SIZE(phy_cal_table_rate_A_3_1_1);
 	tbl_size_B = ARRAY_SIZE(phy_cal_table_rate_B);
-	tbl_B = phy_cal_table_rate_B;
 
-	if ((major == 0x3) && (minor == 0x001) && (step >= 0x001)) {
-		tbl_A = phy_cal_table_rate_A_3_1_1;
-		tbl_size_A = ARRAY_SIZE(phy_cal_table_rate_A_3_1_1);
-	} else {
-		dev_err(ufs_qcom_phy->dev,
-			"%s: Unknown UFS-PHY version (major 0x%x minor 0x%x step 0x%x), no calibration values\n",
-			__func__, major, minor, step);
-		err = -ENODEV;
-		goto out;
-	}
+	tbl_A = phy_cal_table_rate_A_3_1_1;
+	tbl_B = phy_cal_table_rate_B;
 
 	err = ufs_qcom_phy_calibrate(ufs_qcom_phy,
 				     tbl_A, tbl_size_A,
@@ -51,7 +38,6 @@ int ufs_qcom_phy_qmp_v3_660_phy_calibrate(struct ufs_qcom_phy *ufs_qcom_phy,
 			"%s: ufs_qcom_phy_calibrate() failed %d\n",
 			__func__, err);
 
-out:
 	return err;
 }
 
@@ -75,12 +61,31 @@ static int ufs_qcom_phy_qmp_v3_660_init(struct phy *generic_phy)
 		goto out;
 	}
 
+	/* Optional */
+	ufs_qcom_phy_get_reset(phy_common);
+
 out:
 	return err;
 }
 
 static int ufs_qcom_phy_qmp_v3_660_exit(struct phy *generic_phy)
 {
+	return 0;
+}
+
+static
+int ufs_qcom_phy_qmp_v3_660_set_mode(struct phy *generic_phy,
+				   enum phy_mode mode, int submode)
+{
+	struct ufs_qcom_phy *phy_common = get_ufs_qcom_phy(generic_phy);
+
+	phy_common->mode = PHY_MODE_INVALID;
+
+	if (mode > 0)
+		phy_common->mode = mode;
+
+	phy_common->submode = submode;
+
 	return 0;
 }
 
@@ -176,16 +181,17 @@ static void ufs_qcom_phy_qmp_v3_660_dbg_register_dump(
 					"PHY TX0 Registers ");
 }
 
-struct phy_ops ufs_qcom_phy_qmp_v3_660_phy_ops = {
+static const struct phy_ops ufs_qcom_phy_qmp_v3_660_phy_ops = {
 	.init		= ufs_qcom_phy_qmp_v3_660_init,
 	.exit		= ufs_qcom_phy_qmp_v3_660_exit,
 	.power_on	= ufs_qcom_phy_power_on,
 	.power_off	= ufs_qcom_phy_power_off,
+	.set_mode	= ufs_qcom_phy_qmp_v3_660_set_mode,
+	.calibrate	= ufs_qcom_phy_qmp_v3_660_phy_calibrate,
 	.owner		= THIS_MODULE,
 };
 
-struct ufs_qcom_phy_specific_ops phy_v3_660_ops = {
-	.calibrate_phy		= ufs_qcom_phy_qmp_v3_660_phy_calibrate,
+static struct ufs_qcom_phy_specific_ops phy_v3_660_ops = {
 	.start_serdes		= ufs_qcom_phy_qmp_v3_660_start_serdes,
 	.is_physical_coding_sublayer_ready =
 				ufs_qcom_phy_qmp_v3_660_is_pcs_ready,
@@ -221,7 +227,7 @@ static int ufs_qcom_phy_qmp_v3_660_probe(struct platform_device *pdev)
 
 	phy_set_drvdata(generic_phy, phy);
 
-	strlcpy(phy->common_cfg.name, UFS_PHY_NAME,
+	strscpy(phy->common_cfg.name, UFS_PHY_NAME,
 		sizeof(phy->common_cfg.name));
 
 out:
@@ -239,7 +245,6 @@ static struct platform_driver ufs_qcom_phy_qmp_v3_660_driver = {
 	.driver = {
 		.of_match_table = ufs_qcom_phy_qmp_v3_660_of_match,
 		.name = "ufs_qcom_phy_qmp_v3_660",
-		.owner = THIS_MODULE,
 	},
 };
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
 /*
  * Copyright (C) ST-Ericsson 2010-2012
  * Contact: Alexey Orishko <alexey.orishko@stericsson.com>
@@ -96,6 +97,8 @@ struct cdc_ncm_ctx {
 	struct usb_cdc_ncm_ntb_parameters ncm_parm;
 	struct hrtimer tx_timer;
 	struct tasklet_struct bh;
+
+	struct usbnet *dev;
 
 	const struct usb_cdc_ncm_desc *func_desc;
 	const struct usb_cdc_mbim_desc *mbim_desc;

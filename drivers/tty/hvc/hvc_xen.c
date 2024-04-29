@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * xen console driver interface to hvc_console.c
  *
  * (c) 2007 Gerd Hoffmann <kraxel@suse.de>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
 #include <linux/console.h>
@@ -446,7 +433,7 @@ static int xencons_connect_backend(struct xenbus_device *dev,
 	if (ret)
 		return ret;
 	info->evtchn = evtchn;
-	irq = bind_interdomain_evtchn_to_irq_lateeoi(dev->otherend_id, evtchn);
+	irq = bind_interdomain_evtchn_to_irq_lateeoi(dev, evtchn);
 	if (irq < 0)
 		return irq;
 	info->irq = irq;
@@ -565,7 +552,7 @@ static void xencons_backend_changed(struct xenbus_device *dev,
 	case XenbusStateClosed:
 		if (dev->state == XenbusStateClosed)
 			break;
-		/* Missed the backend's CLOSING state -- fallthrough */
+		fallthrough;	/* Missed the backend's CLOSING state */
 	case XenbusStateClosing:
 		xenbus_frontend_closed(dev);
 		break;
@@ -679,14 +666,12 @@ static void xen_hvm_early_write(uint32_t vtermno, const char *str, int len) { }
 #endif
 
 #ifdef CONFIG_EARLY_PRINTK
-static int __init xenboot_setup_console(struct console *console, char *string)
+static int __init xenboot_console_setup(struct console *console, char *string)
 {
 	static struct xencons_info xenboot;
 
-	if (xen_initial_domain())
+	if (xen_initial_domain() || !xen_pv_domain())
 		return 0;
-	if (!xen_pv_domain())
-		return -ENODEV;
 
 	return xencons_info_pv_init(&xenboot, 0);
 }
@@ -697,17 +682,16 @@ static void xenboot_write_console(struct console *console, const char *string,
 	unsigned int linelen, off = 0;
 	const char *pos;
 
+	if (dom0_write_console(0, string, len) >= 0)
+		return;
+
 	if (!xen_pv_domain()) {
 		xen_hvm_early_write(0, string, len);
 		return;
 	}
 
-	dom0_write_console(0, string, len);
-
-	if (xen_initial_domain())
+	if (domU_write_console(0, "(early) ", 8) < 0)
 		return;
-
-	domU_write_console(0, "(early) ", 8);
 	while (off < len && NULL != (pos = strchr(string+off, '\n'))) {
 		linelen = pos-string+off;
 		if (off + linelen > len)
@@ -723,7 +707,7 @@ static void xenboot_write_console(struct console *console, const char *string,
 struct console xenboot_console = {
 	.name		= "xenboot",
 	.write		= xenboot_write_console,
-	.setup		= xenboot_setup_console,
+	.setup		= xenboot_console_setup,
 	.flags		= CON_PRINTBUFFER | CON_BOOT | CON_ANYTIME,
 	.index		= -1,
 };

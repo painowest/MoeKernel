@@ -16,14 +16,14 @@
 #include <soc/qcom/watchdog.h>
 
 void __raw_spin_lock_init(raw_spinlock_t *lock, const char *name,
-			  struct lock_class_key *key)
+			  struct lock_class_key *key, short inner)
 {
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	/*
 	 * Make sure we are not reinitializing a held lock:
 	 */
 	debug_check_no_locks_freed((void *)lock, sizeof(*lock));
-	lockdep_init_map(&lock->dep_map, name, key, 0);
+	lockdep_init_map_wait(&lock->dep_map, name, key, 0, inner);
 #endif
 	lock->raw_lock = (arch_spinlock_t)__ARCH_SPIN_LOCK_UNLOCKED;
 	lock->magic = SPINLOCK_MAGIC;
@@ -33,6 +33,7 @@ void __raw_spin_lock_init(raw_spinlock_t *lock, const char *name,
 
 EXPORT_SYMBOL(__raw_spin_lock_init);
 
+#ifndef CONFIG_PREEMPT_RT
 void __rwlock_init(rwlock_t *lock, const char *name,
 		   struct lock_class_key *key)
 {
@@ -41,7 +42,7 @@ void __rwlock_init(rwlock_t *lock, const char *name,
 	 * Make sure we are not reinitializing a held lock:
 	 */
 	debug_check_no_locks_freed((void *)lock, sizeof(*lock));
-	lockdep_init_map(&lock->dep_map, name, key, 0);
+	lockdep_init_map_wait(&lock->dep_map, name, key, 0, LD_WAIT_CONFIG);
 #endif
 	lock->raw_lock = (arch_rwlock_t) __ARCH_RW_LOCK_UNLOCKED;
 	lock->magic = RWLOCK_MAGIC;
@@ -50,6 +51,7 @@ void __rwlock_init(rwlock_t *lock, const char *name,
 }
 
 EXPORT_SYMBOL(__rwlock_init);
+#endif
 
 static void spin_dump(raw_spinlock_t *lock, const char *msg)
 {
@@ -66,11 +68,6 @@ static void spin_dump(raw_spinlock_t *lock, const char *msg)
 		owner ? owner->comm : "<none>",
 		owner ? task_pid_nr(owner) : -1,
 		READ_ONCE(lock->owner_cpu));
-#ifdef CONFIG_DEBUG_SPINLOCK_BITE_ON_BUG
-	msm_trigger_wdog_bite();
-#elif defined(CONFIG_DEBUG_SPINLOCK_PANIC_ON_BUG)
-	BUG();
-#endif
 	dump_stack();
 }
 
@@ -118,6 +115,7 @@ void do_raw_spin_lock(raw_spinlock_t *lock)
 {
 	debug_spin_lock_before(lock);
 	arch_spin_lock(&lock->raw_lock);
+	mmiowb_spin_lock();
 	debug_spin_lock_after(lock);
 }
 
@@ -125,8 +123,10 @@ int do_raw_spin_trylock(raw_spinlock_t *lock)
 {
 	int ret = arch_spin_trylock(&lock->raw_lock);
 
-	if (ret)
+	if (ret) {
+		mmiowb_spin_lock();
 		debug_spin_lock_after(lock);
+	}
 #ifndef CONFIG_SMP
 	/*
 	 * Must not happen on UP:
@@ -138,10 +138,12 @@ int do_raw_spin_trylock(raw_spinlock_t *lock)
 
 void do_raw_spin_unlock(raw_spinlock_t *lock)
 {
+	mmiowb_spin_unlock();
 	debug_spin_unlock(lock);
 	arch_spin_unlock(&lock->raw_lock);
 }
 
+#ifndef CONFIG_PREEMPT_RT
 static void rwlock_bug(rwlock_t *lock, const char *msg)
 {
 	if (!debug_locks_off())
@@ -236,3 +238,5 @@ void do_raw_write_unlock(rwlock_t *lock)
 	debug_write_unlock(lock);
 	arch_write_unlock(&lock->raw_lock);
 }
+
+#endif /* !CONFIG_PREEMPT_RT */

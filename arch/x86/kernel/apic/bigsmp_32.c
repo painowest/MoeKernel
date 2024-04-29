@@ -4,18 +4,14 @@
  *
  * Drives the local APIC in "clustered mode".
  */
-#include <linux/threads.h>
 #include <linux/cpumask.h>
-#include <linux/kernel.h>
-#include <linux/init.h>
 #include <linux/dmi.h>
 #include <linux/smp.h>
 
-#include <asm/apicdef.h>
-#include <asm/fixmap.h>
-#include <asm/mpspec.h>
 #include <asm/apic.h>
-#include <asm/ipi.h>
+#include <asm/io_apic.h>
+
+#include "local.h"
 
 static unsigned bigsmp_get_apic_id(unsigned long x)
 {
@@ -27,9 +23,9 @@ static int bigsmp_apic_id_registered(void)
 	return 1;
 }
 
-static unsigned long bigsmp_check_apicid_used(physid_mask_t *map, int apicid)
+static bool bigsmp_check_apicid_used(physid_mask_t *map, int apicid)
 {
-	return 0;
+	return false;
 }
 
 static int bigsmp_early_logical_apicid(int cpu)
@@ -131,18 +127,13 @@ static struct apic apic_bigsmp __ro_after_init = {
 	.apic_id_valid			= default_apic_id_valid,
 	.apic_id_registered		= bigsmp_apic_id_registered,
 
-	.irq_delivery_mode		= dest_Fixed,
-	/* phys delivery to target CPU: */
-	.irq_dest_mode			= 0,
+	.delivery_mode			= APIC_DELIVERY_MODE_FIXED,
+	.dest_mode_logical		= false,
 
-	.target_cpus			= default_target_cpus,
 	.disable_esr			= 1,
-	.dest_logical			= 0,
+
 	.check_apicid_used		= bigsmp_check_apicid_used,
-
-	.vector_allocation_domain	= default_vector_allocation_domain,
 	.init_apic_ldr			= bigsmp_init_apic_ldr,
-
 	.ioapic_phys_id_map		= bigsmp_ioapic_phys_id_map,
 	.setup_apic_routing		= bigsmp_setup_apic_routing,
 	.cpu_present_to_apicid		= bigsmp_cpu_present_to_apicid,
@@ -153,7 +144,7 @@ static struct apic apic_bigsmp __ro_after_init = {
 	.get_apic_id			= bigsmp_get_apic_id,
 	.set_apic_id			= NULL,
 
-	.cpu_mask_to_apicid		= default_cpu_mask_to_apicid,
+	.calc_dest_apicid		= apic_default_calc_apicid,
 
 	.send_IPI			= default_send_IPI_single_phys,
 	.send_IPI_mask			= default_send_IPI_mask_sequence_phys,

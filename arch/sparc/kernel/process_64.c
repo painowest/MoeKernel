@@ -9,9 +9,6 @@
 /*
  * This file handles the architecture-dependent parts of process handling..
  */
-
-#include <stdarg.h>
-
 #include <linux/errno.h>
 #include <linux/export.h>
 #include <linux/sched.h>
@@ -41,7 +38,6 @@
 #include <linux/uaccess.h>
 #include <asm/page.h>
 #include <asm/pgalloc.h>
-#include <asm/pgtable.h>
 #include <asm/processor.h>
 #include <asm/pstate.h>
 #include <asm/elf.h>
@@ -63,11 +59,11 @@ void arch_cpu_idle(void)
 {
 	if (tlb_type != hypervisor) {
 		touch_nmi_watchdog();
-		local_irq_enable();
+		raw_local_irq_enable();
 	} else {
 		unsigned long pstate;
 
-		local_irq_enable();
+		raw_local_irq_enable();
 
                 /* The sun4v sleeping code requires that we have PSTATE.IE cleared over
                  * the cpu sleep hypervisor call.
@@ -195,7 +191,7 @@ void show_regs(struct pt_regs *regs)
 	       regs->u_regs[15]);
 	printk("RPC: <%pS>\n", (void *) regs->u_regs[15]);
 	show_regwindow(regs);
-	show_stack(current, (unsigned long *) regs->u_regs[UREG_FP]);
+	show_stack(current, (unsigned long *)regs->u_regs[UREG_FP], KERN_DEFAULT);
 }
 
 union global_cpu_snapshot global_cpu_snapshot[NR_CPUS];
@@ -313,7 +309,7 @@ static void sysrq_handle_globreg(int key)
 	trigger_all_cpu_backtrace();
 }
 
-static struct sysrq_key_op sparc_globalreg_op = {
+static const struct sysrq_key_op sparc_globalreg_op = {
 	.handler	= sysrq_handle_globreg,
 	.help_msg	= "global-regs(y)",
 	.action_msg	= "Show Global CPU Regs",
@@ -388,7 +384,7 @@ static void sysrq_handle_globpmu(int key)
 	pmu_snapshot_all_cpus();
 }
 
-static struct sysrq_key_op sparc_globalpmu_op = {
+static const struct sysrq_key_op sparc_globalpmu_op = {
 	.handler	= sysrq_handle_globpmu,
 	.help_msg	= "global-pmu(x)",
 	.action_msg	= "Show Global PMU Regs",
@@ -459,7 +455,7 @@ static unsigned long clone_stackframe(unsigned long csp, unsigned long psp)
 
 	distance = fp - psp;
 	rval = (csp - distance);
-	if (copy_in_user((void __user *) rval, (void __user *) psp, distance))
+	if (raw_copy_in_user((void __user *)rval, (void __user *)psp, distance))
 		rval = 0;
 	else if (!stack_64bit) {
 		if (put_user(((u32)csp),
@@ -519,14 +515,7 @@ void synchronize_user_stack(void)
 
 static void stack_unaligned(unsigned long sp)
 {
-	siginfo_t info;
-
-	info.si_signo = SIGBUS;
-	info.si_errno = 0;
-	info.si_code = BUS_ADRALN;
-	info.si_addr = (void __user *) sp;
-	info.si_trapno = 0;
-	force_sig_info(SIGBUS, &info, current);
+	force_sig_fault(SIGBUS, BUS_ADRALN, (void __user *) sp);
 }
 
 static const char uwfault32[] = KERN_INFO \
@@ -577,41 +566,7 @@ void fault_in_user_windows(struct pt_regs *regs)
 
 barf:
 	set_thread_wsaved(window + 1);
-	force_sig(SIGSEGV, current);
-}
-
-asmlinkage long sparc_do_fork(unsigned long clone_flags,
-			      unsigned long stack_start,
-			      struct pt_regs *regs,
-			      unsigned long stack_size)
-{
-	int __user *parent_tid_ptr, *child_tid_ptr;
-	unsigned long orig_i1 = regs->u_regs[UREG_I1];
-	long ret;
-
-#ifdef CONFIG_COMPAT
-	if (test_thread_flag(TIF_32BIT)) {
-		parent_tid_ptr = compat_ptr(regs->u_regs[UREG_I2]);
-		child_tid_ptr = compat_ptr(regs->u_regs[UREG_I4]);
-	} else
-#endif
-	{
-		parent_tid_ptr = (int __user *) regs->u_regs[UREG_I2];
-		child_tid_ptr = (int __user *) regs->u_regs[UREG_I4];
-	}
-
-	ret = do_fork(clone_flags, stack_start, stack_size,
-		      parent_tid_ptr, child_tid_ptr);
-
-	/* If we get an error and potentially restart the system
-	 * call, we're screwed because copy_thread() clobbered
-	 * the parent's %o1.  So detect that case and restore it
-	 * here.
-	 */
-	if ((unsigned long)ret >= -ERESTART_RESTARTBLOCK)
-		regs->u_regs[UREG_I1] = orig_i1;
-
-	return ret;
+	force_sig(SIGSEGV);
 }
 
 /* Copy a Sparc thread.  The fork() return value conventions
@@ -619,8 +574,8 @@ asmlinkage long sparc_do_fork(unsigned long clone_flags,
  * Parent -->  %o0 == childs  pid, %o1 == 0
  * Child  -->  %o0 == parents pid, %o1 == 1
  */
-int copy_thread(unsigned long clone_flags, unsigned long sp,
-		unsigned long arg, struct task_struct *p)
+int copy_thread(unsigned long clone_flags, unsigned long sp, unsigned long arg,
+		struct task_struct *p, unsigned long tls)
 {
 	struct thread_info *t = task_thread_info(p);
 	struct pt_regs *regs = current_pt_regs();
@@ -639,7 +594,7 @@ int copy_thread(unsigned long clone_flags, unsigned long sp,
 				       sizeof(struct sparc_stackf));
 	t->fpsaved[0] = 0;
 
-	if (unlikely(p->flags & PF_KTHREAD)) {
+	if (unlikely(p->flags & (PF_KTHREAD | PF_IO_WORKER))) {
 		memset(child_trap_frame, 0, child_stack_sz);
 		__thread_flag_byte_ptr(t)[TI_FLAG_BYTE_CWP] = 
 			(current_pt_regs()->tstate + 1) & TSTATE_CWP;
@@ -678,76 +633,35 @@ int copy_thread(unsigned long clone_flags, unsigned long sp,
 	regs->u_regs[UREG_I1] = 0;
 
 	if (clone_flags & CLONE_SETTLS)
-		t->kregs->u_regs[UREG_G7] = regs->u_regs[UREG_I3];
+		t->kregs->u_regs[UREG_G7] = tls;
 
 	return 0;
 }
 
-typedef struct {
-	union {
-		unsigned int	pr_regs[32];
-		unsigned long	pr_dregs[16];
-	} pr_fr;
-	unsigned int __unused;
-	unsigned int	pr_fsr;
-	unsigned char	pr_qcnt;
-	unsigned char	pr_q_entrysize;
-	unsigned char	pr_en;
-	unsigned int	pr_q[64];
-} elf_fpregset_t32;
-
-/*
- * fill in the fpu structure for a core dump.
+/* TIF_MCDPER in thread info flags for current task is updated lazily upon
+ * a context switch. Update this flag in current task's thread flags
+ * before dup so the dup'd task will inherit the current TIF_MCDPER flag.
  */
-int dump_fpu (struct pt_regs * regs, elf_fpregset_t * fpregs)
+int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 {
-	unsigned long *kfpregs = current_thread_info()->fpregs;
-	unsigned long fprs = current_thread_info()->fpsaved[0];
+	if (adi_capable()) {
+		register unsigned long tmp_mcdper;
 
-	if (test_thread_flag(TIF_32BIT)) {
-		elf_fpregset_t32 *fpregs32 = (elf_fpregset_t32 *)fpregs;
-
-		if (fprs & FPRS_DL)
-			memcpy(&fpregs32->pr_fr.pr_regs[0], kfpregs,
-			       sizeof(unsigned int) * 32);
+		__asm__ __volatile__(
+			".word 0x83438000\n\t"	/* rd  %mcdper, %g1 */
+			"mov %%g1, %0\n\t"
+			: "=r" (tmp_mcdper)
+			:
+			: "g1");
+		if (tmp_mcdper)
+			set_thread_flag(TIF_MCDPER);
 		else
-			memset(&fpregs32->pr_fr.pr_regs[0], 0,
-			       sizeof(unsigned int) * 32);
-		fpregs32->pr_qcnt = 0;
-		fpregs32->pr_q_entrysize = 8;
-		memset(&fpregs32->pr_q[0], 0,
-		       (sizeof(unsigned int) * 64));
-		if (fprs & FPRS_FEF) {
-			fpregs32->pr_fsr = (unsigned int) current_thread_info()->xfsr[0];
-			fpregs32->pr_en = 1;
-		} else {
-			fpregs32->pr_fsr = 0;
-			fpregs32->pr_en = 0;
-		}
-	} else {
-		if(fprs & FPRS_DL)
-			memcpy(&fpregs->pr_regs[0], kfpregs,
-			       sizeof(unsigned int) * 32);
-		else
-			memset(&fpregs->pr_regs[0], 0,
-			       sizeof(unsigned int) * 32);
-		if(fprs & FPRS_DU)
-			memcpy(&fpregs->pr_regs[16], kfpregs+16,
-			       sizeof(unsigned int) * 32);
-		else
-			memset(&fpregs->pr_regs[16], 0,
-			       sizeof(unsigned int) * 32);
-		if(fprs & FPRS_FEF) {
-			fpregs->pr_fsr = current_thread_info()->xfsr[0];
-			fpregs->pr_gsr = current_thread_info()->gsr[0];
-		} else {
-			fpregs->pr_fsr = fpregs->pr_gsr = 0;
-		}
-		fpregs->pr_fprs = fprs;
+			clear_thread_flag(TIF_MCDPER);
 	}
-	return 1;
+
+	*dst = *src;
+	return 0;
 }
-EXPORT_SYMBOL(dump_fpu);
 
 unsigned long get_wchan(struct task_struct *task)
 {
@@ -757,8 +671,7 @@ unsigned long get_wchan(struct task_struct *task)
         unsigned long ret = 0;
 	int count = 0; 
 
-	if (!task || task == current ||
-            task->state == TASK_RUNNING)
+	if (!task || task == current || task_is_running(task))
 		goto out;
 
 	tp = task_thread_info(task);

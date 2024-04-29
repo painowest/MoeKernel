@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  Native support for the I/O-Warrior USB devices
  *
@@ -9,7 +10,7 @@
 
  *  usb-skeleton.c by Greg Kroah-Hartman  <greg@kroah.com>
  *  brlvger.c by Stephane Dalton  <sdalton@videotron.ca>
- *           and St�hane Doyon   <s.doyon@videotron.ca>
+ *           and Stephane Doyon   <s.doyon@videotron.ca>
  *
  *  Released under the GPLv2.
  */
@@ -62,11 +63,7 @@ MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
 
-/* Module parameters */
-static DEFINE_MUTEX(iowarrior_mutex);
-
 static struct usb_driver iowarrior_driver;
-static DEFINE_MUTEX(iowarrior_open_disc_lock);
 
 /*--------------*/
 /*     data     */
@@ -89,7 +86,6 @@ struct iowarrior {
 	atomic_t write_busy;		/* number of write-urbs submitted */
 	atomic_t read_idx;
 	atomic_t intr_idx;
-	spinlock_t intr_idx_lock;	/* protects intr_idx */
 	atomic_t overflow_flag;		/* signals an index 'rollover' */
 	int present;			/* this is 1 as long as the device is connected */
 	int opened;			/* this is 1 if the device is currently open */
@@ -176,7 +172,6 @@ static void iowarrior_callback(struct urb *urb)
 		goto exit;
 	}
 
-	spin_lock(&dev->intr_idx_lock);
 	intr_idx = atomic_read(&dev->intr_idx);
 	/* aux_idx become previous intr_idx */
 	aux_idx = (intr_idx == 0) ? (MAX_INTERRUPT_BUFFER - 1) : (intr_idx - 1);
@@ -191,7 +186,6 @@ static void iowarrior_callback(struct urb *urb)
 		    (dev->read_queue + offset, urb->transfer_buffer,
 		     dev->report_size)) {
 			/* equal values on interface 0 will be ignored */
-			spin_unlock(&dev->intr_idx_lock);
 			goto exit;
 		}
 	}
@@ -212,7 +206,6 @@ static void iowarrior_callback(struct urb *urb)
 	*(dev->read_queue + offset + (dev->report_size)) = dev->serial_number++;
 
 	atomic_set(&dev->intr_idx, aux_idx);
-	spin_unlock(&dev->intr_idx_lock);
 	/* tell the blocking read about the new data */
 	wake_up_interruptible(&dev->read_wait);
 
@@ -248,7 +241,7 @@ static void iowarrior_write_callback(struct urb *urb)
 	wake_up_interruptible(&dev->write_wait);
 }
 
-/**
+/*
  *	iowarrior_delete
  */
 static inline void iowarrior_delete(struct iowarrior *dev)
@@ -275,7 +268,7 @@ static int read_index(struct iowarrior *dev)
 	return (read_idx == intr_idx ? -1 : read_idx);
 }
 
-/**
+/*
  *  iowarrior_read
  */
 static ssize_t iowarrior_read(struct file *file, char __user *buffer,
@@ -387,7 +380,6 @@ static ssize_t iowarrior_write(struct file *file,
 		retval = usb_set_report(dev->interface, 2, 0, buf, count);
 		kfree(buf);
 		goto exit;
-		break;
 	case USB_DEVICE_ID_CODEMERCS_IOW56:
 	case USB_DEVICE_ID_CODEMERCS_IOW56AM:
 	case USB_DEVICE_ID_CODEMERCS_IOW28:
@@ -457,14 +449,12 @@ static ssize_t iowarrior_write(struct file *file,
 		retval = count;
 		usb_free_urb(int_out_urb);
 		goto exit;
-		break;
 	default:
 		/* what do we have here ? An unsupported Product-ID ? */
 		dev_err(&dev->interface->dev, "%s - not supported for product=0x%x\n",
 			__func__, dev->product_id);
 		retval = -EFAULT;
 		goto exit;
-		break;
 	}
 error:
 	usb_free_coherent(dev->udev, dev->report_size, buf,
@@ -479,7 +469,7 @@ exit:
 	return retval;
 }
 
-/**
+/*
  *	iowarrior_ioctl
  */
 static long iowarrior_ioctl(struct file *file, unsigned int cmd,
@@ -499,8 +489,6 @@ static long iowarrior_ioctl(struct file *file, unsigned int cmd,
 	if (!buffer)
 		return -ENOMEM;
 
-	/* lock this object */
-	mutex_lock(&iowarrior_mutex);
 	mutex_lock(&dev->mutex);
 
 	/* verify that the device wasn't unplugged */
@@ -594,12 +582,11 @@ static long iowarrior_ioctl(struct file *file, unsigned int cmd,
 error_out:
 	/* unlock the device */
 	mutex_unlock(&dev->mutex);
-	mutex_unlock(&iowarrior_mutex);
 	kfree(buffer);
 	return retval;
 }
 
-/**
+/*
  *	iowarrior_open
  */
 static int iowarrior_open(struct inode *inode, struct file *file)
@@ -609,27 +596,20 @@ static int iowarrior_open(struct inode *inode, struct file *file)
 	int subminor;
 	int retval = 0;
 
-	mutex_lock(&iowarrior_mutex);
 	subminor = iminor(inode);
 
 	interface = usb_find_interface(&iowarrior_driver, subminor);
 	if (!interface) {
-		mutex_unlock(&iowarrior_mutex);
-		printk(KERN_ERR "%s - error, can't find device for minor %d\n",
+		pr_err("%s - error, can't find device for minor %d\n",
 		       __func__, subminor);
 		return -ENODEV;
 	}
 
-	mutex_lock(&iowarrior_open_disc_lock);
 	dev = usb_get_intfdata(interface);
-	if (!dev) {
-		mutex_unlock(&iowarrior_open_disc_lock);
-		mutex_unlock(&iowarrior_mutex);
+	if (!dev)
 		return -ENODEV;
-	}
 
 	mutex_lock(&dev->mutex);
-	mutex_unlock(&iowarrior_open_disc_lock);
 
 	/* Only one process can open each device, no sharing. */
 	if (dev->opened) {
@@ -651,11 +631,10 @@ static int iowarrior_open(struct inode *inode, struct file *file)
 
 out:
 	mutex_unlock(&dev->mutex);
-	mutex_unlock(&iowarrior_mutex);
 	return retval;
 }
 
-/**
+/*
  *	iowarrior_release
  */
 static int iowarrior_release(struct inode *inode, struct file *file)
@@ -696,25 +675,25 @@ static int iowarrior_release(struct inode *inode, struct file *file)
 	return retval;
 }
 
-static unsigned iowarrior_poll(struct file *file, poll_table * wait)
+static __poll_t iowarrior_poll(struct file *file, poll_table * wait)
 {
 	struct iowarrior *dev = file->private_data;
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 
 	if (!dev->present)
-		return POLLERR | POLLHUP;
+		return EPOLLERR | EPOLLHUP;
 
 	poll_wait(file, &dev->read_wait, wait);
 	poll_wait(file, &dev->write_wait, wait);
 
 	if (!dev->present)
-		return POLLERR | POLLHUP;
+		return EPOLLERR | EPOLLHUP;
 
 	if (read_index(dev) != -1)
-		mask |= POLLIN | POLLRDNORM;
+		mask |= EPOLLIN | EPOLLRDNORM;
 
 	if (atomic_read(&dev->write_busy) < MAX_WRITES_IN_FLIGHT)
-		mask |= POLLOUT | POLLWRNORM;
+		mask |= EPOLLOUT | EPOLLWRNORM;
 	return mask;
 }
 
@@ -757,7 +736,7 @@ static struct usb_class_driver iowarrior_class = {
 /*---------------------------------*/
 /*  probe and disconnect functions */
 /*---------------------------------*/
-/**
+/*
  *	iowarrior_probe
  *
  *	Called by the usb core when a new device is connected that it thinks
@@ -781,7 +760,6 @@ static int iowarrior_probe(struct usb_interface *interface,
 
 	atomic_set(&dev->intr_idx, 0);
 	atomic_set(&dev->read_idx, 0);
-	spin_lock_init(&dev->intr_idx_lock);
 	atomic_set(&dev->overflow_flag, 0);
 	init_waitqueue_head(&dev->read_wait);
 	atomic_set(&dev->write_busy, 0);
@@ -856,8 +834,8 @@ static int iowarrior_probe(struct usb_interface *interface,
 			 dev->int_in_endpoint->bInterval);
 	/* create an internal buffer for interrupt data from the device */
 	dev->read_queue =
-	    kmalloc(((dev->report_size + 1) * MAX_INTERRUPT_BUFFER),
-		    GFP_KERNEL);
+	    kmalloc_array(dev->report_size + 1, MAX_INTERRUPT_BUFFER,
+			  GFP_KERNEL);
 	if (!dev->read_queue)
 		goto error;
 	/* Get the serial-number of the chip */
@@ -884,7 +862,6 @@ static int iowarrior_probe(struct usb_interface *interface,
 	if (retval) {
 		/* something prevented us from registering this driver */
 		dev_err(&interface->dev, "Not able to get a minor for this device.\n");
-		usb_set_intfdata(interface, NULL);
 		goto error;
 	}
 
@@ -901,23 +878,15 @@ error:
 	return retval;
 }
 
-/**
+/*
  *	iowarrior_disconnect
  *
  *	Called by the usb core when the device is removed from the system.
  */
 static void iowarrior_disconnect(struct usb_interface *interface)
 {
-	struct iowarrior *dev;
-	int minor;
-
-	dev = usb_get_intfdata(interface);
-	mutex_lock(&iowarrior_open_disc_lock);
-	usb_set_intfdata(interface, NULL);
-
-	minor = dev->minor;
-	mutex_unlock(&iowarrior_open_disc_lock);
-	/* give back our minor - this will call close() locks need to be dropped at this point*/
+	struct iowarrior *dev = usb_get_intfdata(interface);
+	int minor = dev->minor;
 
 	usb_deregister_dev(interface, &iowarrior_class);
 

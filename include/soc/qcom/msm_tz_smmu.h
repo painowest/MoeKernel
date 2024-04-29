@@ -1,13 +1,7 @@
-/* Copyright (c) 2015-2018, 2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2015-2018, 2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2016-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __MSM_TZ_SMMU_H__
@@ -50,6 +44,9 @@ enum tz_smmu_device_id {
 };
 
 #ifdef CONFIG_MSM_TZ_SMMU
+#ifdef CONFIG_CC_IS_CLANG
+#pragma clang diagnostic ignored "-Wincompatible-pointer-types"
+#endif
 
 int msm_tz_smmu_atos_start(struct device *dev, int cb_num);
 int msm_tz_smmu_atos_end(struct device *dev, int cb_num);
@@ -60,18 +57,6 @@ int register_iommu_sec_ptbl(void);
 bool arm_smmu_skip_write(void __iomem *addr);
 extern void *get_smmu_from_addr(struct iommu_device *iommu, void __iomem *addr);
 extern void *arm_smmu_get_by_addr(void __iomem *addr);
-/* Donot write to smmu global space with CONFIG_MSM_TZ_SMMU */
-#undef writel_relaxed
-#undef writeq_relaxed
-#define writel_relaxed(v, c)	do {					\
-	if (!arm_smmu_skip_write(c))					\
-		((void)__raw_writel((u32)cpu_to_le32(v), (c)));	\
-	} while (0)
-
-#define writeq_relaxed(v, c) do {                              \
-	if (!arm_smmu_skip_write(c))                            \
-		((void)__raw_writeq((u64)cpu_to_le64(v), (c))); \
-	} while (0)
 #else
 
 static inline int msm_tz_smmu_atos_start(struct device *dev, int cb_num)
@@ -102,31 +87,8 @@ static inline int msm_iommu_sec_pgtbl_init(void)
 
 static inline int register_iommu_sec_ptbl(void)
 {
-	return -EINVAL;
+	return 0;
 }
-
-static inline size_t msm_secure_smmu_unmap(struct iommu_domain *domain,
-					   unsigned long iova,
-					   size_t size)
-{
-	return -EINVAL;
-}
-
-static inline size_t msm_secure_smmu_map_sg(struct iommu_domain *domain,
-					    unsigned long iova,
-					    struct scatterlist *sg,
-					    unsigned int nents, int prot)
-{
-	return -EINVAL;
-}
-
-static inline int msm_secure_smmu_map(struct iommu_domain *domain,
-				      unsigned long iova,
-				      phys_addr_t paddr, size_t size, int prot)
-{
-	return -EINVAL;
-}
-
 #endif /* CONFIG_MSM_TZ_SMMU */
 
 #endif /* __MSM_TZ_SMMU_H__ */

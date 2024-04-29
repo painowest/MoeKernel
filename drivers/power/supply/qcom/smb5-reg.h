@@ -1,14 +1,7 @@
-/* Copyright (c) 2018-2019 The Linux Foundation. All rights reserved.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2018-2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __SMB5_CHARGER_REG_H
@@ -30,6 +23,7 @@
 #define PERPH_SUBTYPE_OFFSET	0x05
 #define SUBTYPE_MASK		GENMASK(7, 0)
 #define INT_RT_STS_OFFSET	0x10
+#define SDAM_TYPE		0x2E
 
 /********************************
  *  CHGR Peripheral Registers  *
@@ -232,7 +226,6 @@ enum {
 #define QC_9V_BIT				BIT(1)
 #define QC_5V_BIT				BIT(0)
 #define QC_2P0_STATUS_MASK			GENMASK(2, 0)
-#define USBIN_9V_AICL_MASK                      GENMASK(2, 0)
 
 /* USBIN Interrupt Bits */
 #define USBIN_ICL_CHANGE_RT_STS_BIT		BIT(7)
@@ -280,8 +273,7 @@ enum {
 	HVDCP_PULSE_COUNT_MAX_QC2_5V = 0,
 	HVDCP_PULSE_COUNT_MAX_QC2_9V = 0x40,
 	HVDCP_PULSE_COUNT_MAX_QC2_12V = 0x80,
-	HVDCP_PULSE_COUNT_MAX_QC2_INVALID = 0xC0,
-	USBIN_9V_AICL_THRESHOLD_CFG = 0x06
+	HVDCP_PULSE_COUNT_MAX_QC2_INVALID = 0xC0
 };
 
 #define USBIN_OPTIONS_1_CFG_REG			(USBIN_BASE + 0x62)
@@ -319,7 +311,6 @@ enum {
 #define ENG_SSUPPLY_12V_OV_OPT_BIT		BIT(1)
 
 #define USBIN_5V_AICL_THRESHOLD_REG		(USBIN_BASE + 0x81)
-#define USBIN_9V_AICL_THRESHOLD_REG		(USBIN_BASE + 0x82)
 #define USBIN_CONT_AICL_THRESHOLD_REG		(USBIN_BASE + 0x84)
 /********************************
  *  DCIN Peripheral Registers   *
@@ -345,11 +336,7 @@ enum {
  ********************************/
 #define TYPE_C_SNK_STATUS_REG			(TYPEC_BASE + 0x06)
 #define DETECTED_SRC_TYPE_MASK			GENMASK(6, 0)
-#define SNK_RP_STD_DAM_BIT 		BIT(6)
-#define SNK_RP_1P5_DAM_BIT 		BIT(5)
-#define SNK_RP_3P0_DAM_BIT 		BIT(4)
-#define SCHG_USB_TYPE_C_CFG		(USBIN_BASE + 0x58)
-#define BC1P2_START_ON_CC			BIT(7)
+#define SNK_DAM_MASK				GENMASK(6, 4)
 #define SNK_DAM_500MA_BIT			BIT(6)
 #define SNK_DAM_1500MA_BIT			BIT(5)
 #define SNK_DAM_3000MA_BIT			BIT(4)
@@ -357,9 +344,6 @@ enum {
 #define SNK_RP_1P5_BIT				BIT(2)
 #define SNK_RP_3P0_BIT				BIT(1)
 #define SNK_RP_SHORT_BIT			BIT(0)
-#define TYPE_C_SNK_DEBUG_ACC_STATUS_REG		(TYPEC_BASE + 0x07)
-#define SNK_DEBUG_ACC_RPSTD_PRSTD_BIT		BIT(0)
-
 
 #define TYPE_C_SRC_STATUS_REG			(TYPEC_BASE + 0x08)
 #define DETECTED_SNK_TYPE_MASK			GENMASK(4, 0)
@@ -411,12 +395,6 @@ enum {
 #define TYPEC_CCOUT_BUFFER_EN_BIT		BIT(2)
 #define TYPEC_CCOUT_VALUE_BIT			BIT(1)
 #define TYPEC_CCOUT_SRC_BIT			BIT(0)
-
-#define TYPE_C_DEBUG_ACC_SNK_CFG		(TYPEC_BASE + 0x4A)
-#define TYPEC_DEBUG_ENABLE_ACC_SNK              BIT(0)
-#define TYPEC_DEBUG_ENABLE_CHG_ON_SNK           BIT(1)
-#define TYPEC_DEBUG_ACC_SNK_SEL_ICL		BIT(2)
-#define TYPEC_DEBUG_ACC_SNK_DIS_AICL		BIT(3)
 
 #define DEBUG_ACCESS_SRC_CFG_REG		(TYPEC_BASE + 0x4C)
 #define EN_UNORIENTED_DEBUG_ACCESS_SRC_BIT	BIT(0)
@@ -574,4 +552,8 @@ enum {
 /* SDAM regs */
 #define MISC_PBS_RT_STS_REG			(MISC_PBS_BASE + 0x10)
 #define PULSE_SKIP_IRQ_BIT			BIT(4)
+
+#define SDAM_QC_DET_STATUS_REG			0x58
+#define SDAM_QC_ADC_LSB_REG			0x54
+
 #endif /* __SMB5_CHARGER_REG_H */

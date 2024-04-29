@@ -1,15 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * sha512-glue.c - accelerated SHA-384/512 for ARM
  *
  * Copyright (C) 2015 Linaro Ltd <ard.biesheuvel@linaro.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <crypto/internal/hash.h>
-#include <crypto/sha.h>
+#include <crypto/sha2.h>
 #include <crypto/sha512_base.h>
 #include <linux/crypto.h>
 #include <linux/module.h>
@@ -37,7 +34,7 @@ int sha512_arm_update(struct shash_desc *desc, const u8 *data,
 	return sha512_base_do_update(desc, data, len, sha512_block_data_order);
 }
 
-int sha512_arm_final(struct shash_desc *desc, u8 *out)
+static int sha512_arm_final(struct shash_desc *desc, u8 *out)
 {
 	sha512_base_do_finalize(desc, sha512_block_data_order);
 	return sha512_base_finish(desc, out);
@@ -61,7 +58,6 @@ static struct shash_alg sha512_arm_algs[] = { {
 		.cra_name		= "sha384",
 		.cra_driver_name	= "sha384-arm",
 		.cra_priority		= 250,
-		.cra_flags		= CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize		= SHA512_BLOCK_SIZE,
 		.cra_module		= THIS_MODULE,
 	}
@@ -76,7 +72,6 @@ static struct shash_alg sha512_arm_algs[] = { {
 		.cra_name		= "sha512",
 		.cra_driver_name	= "sha512-arm",
 		.cra_priority		= 250,
-		.cra_flags		= CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize		= SHA512_BLOCK_SIZE,
 		.cra_module		= THIS_MODULE,
 	}

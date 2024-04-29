@@ -1,14 +1,6 @@
-/* Copyright (c) 2012-2015, 2017-2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2012-2015, 2017-2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/slab.h>
@@ -127,20 +119,14 @@ static ssize_t debug_read_cont(struct file *file, char __user *buff,
 	return debug_read_helper(file, buff, count, ppos, 1);
 }
 
-static int debug_open(struct inode *inode, struct file *file)
-{
-	file->private_data = inode->i_private;
-	return 0;
-}
-
 static const struct file_operations debug_ops = {
 	.read = debug_read,
-	.open = debug_open,
+	.open = simple_open,
 };
 
 static const struct file_operations debug_ops_cont = {
 	.read = debug_read_cont,
-	.open = debug_open,
+	.open = simple_open,
 };
 
 static void debug_create(const char *name, mode_t mode,

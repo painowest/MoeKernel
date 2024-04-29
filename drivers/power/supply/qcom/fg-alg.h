@@ -1,20 +1,13 @@
-/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
- * Copyright (C) 2021 XiaoMi, Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __FG_ALG_H__
 #define __FG_ALG_H__
 
-#include <linux/of_batterydata.h>
+#include "battery-profile-loader.h"
 #include "step-chg-jeita.h"
 
 #define BUCKET_COUNT		8
@@ -96,6 +89,7 @@ enum ttf_param {
 	TTF_CHG_TYPE,
 	TTF_CHG_STATUS,
 	TTF_TTE_VALID,
+	TTF_CHG_DONE,
 };
 
 struct ttf_circ_buf {
@@ -129,6 +123,7 @@ struct ttf {
 	struct range_data	*step_chg_cfg;
 	bool			step_chg_cfg_valid;
 	bool			ocv_step_chg_cfg_valid;
+	bool			clear_ibatt;
 	int			step_chg_num_params;
 	int			mode;
 	int			last_ttf;
@@ -144,6 +139,7 @@ struct ttf {
 struct soh_profile {
 	struct device_node *bp_node;
 	struct power_supply *bms_psy;
+	struct iio_channel *iio_chan_list;
 	struct soh_range *soh_data;
 	int batt_id_kohms;
 	int profile_count;
@@ -157,7 +153,6 @@ void clear_cycle_count(struct cycle_counter *counter);
 void cycle_count_update(struct cycle_counter *counter, int batt_soc,
 		int charge_status, bool charge_done, bool input_present);
 int get_cycle_count(struct cycle_counter *counter, int *count);
-int set_cycle_count(struct cycle_counter *counter, int count);
 int get_cycle_counts(struct cycle_counter *counter, const char **buf);
 int cycle_count_init(struct cycle_counter *counter);
 void cap_learning_abort(struct cap_learning *cl);
@@ -173,5 +168,4 @@ int ttf_get_time_to_full(struct ttf *ttf, int *val);
 int ttf_tte_init(struct ttf *ttf);
 int soh_profile_init(struct device *dev, struct soh_profile *sp);
 int soh_profile_update(struct soh_profile *sp, int soh);
-
 #endif

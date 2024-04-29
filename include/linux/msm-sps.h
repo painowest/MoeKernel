@@ -1,20 +1,13 @@
-/* Copyright (c) 2011-2017, 2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
-
 /* Smart-Peripheral-Switch (SPS) API. */
 
 #ifndef _SPS_H_
 #define _SPS_H_
 
+#include <linux/errno.h>
 #include <linux/types.h>	/* u32 */
 
 #if defined(CONFIG_PHYS_ADDR_T_64BIT) || defined(CONFIG_ARM_LPAE)
@@ -366,7 +359,7 @@ struct sps_command_element {
 };
 
 /*
- * BAM device's security configuation
+ * BAM device's security configuration
  */
 struct sps_bam_pipe_sec_config_props {
 	u32 pipe_mask;
@@ -423,7 +416,7 @@ struct sps_bam_sec_config_props {
  * perform the configuration. The global (top-level) BAM interrupt will be
  * assigned to the EE of the processor that manages the BAM.
  *
- * @p_sec_config_props - BAM device's security configuation
+ * @p_sec_config_props - BAM device's security configuration
  *
  */
 struct sps_bam_props {
@@ -455,7 +448,7 @@ struct sps_bam_props {
 	u32 data_mem_id;
 
 	/* Feedback to BAM user */
-	void (*callback)(enum sps_callback_case, void *);
+	void (*callback)(enum sps_callback_case, void *user);
 	void *user;
 
 	/* Security properties */
@@ -492,7 +485,7 @@ struct sps_bam_props {
  *
  */
 struct sps_mem_buffer {
-	void __iomem *base;
+	void *base;
 	phys_addr_t phys_base;
 	unsigned long iova;
 	u32 size;
@@ -753,7 +746,7 @@ struct sps_timer_result {
  */
 struct sps_pipe;	/* Forward declaration */
 
-#ifdef CONFIG_SPS
+#if IS_ENABLED(CONFIG_SPS)
 /**
  * Register a BAM device
  *
@@ -1415,6 +1408,26 @@ int sps_pipe_pending_desc(unsigned long dev, u32 pipe, bool *pending);
 int sps_bam_process_irq(unsigned long dev);
 
 /*
+ * sps_bam_enable_irqs - enable IRQs of a BAM.
+ * @dev:	BAM device handle
+ *
+ * This function enables all IRQs of a BAM.
+ *
+ * Return: 0 on success, negative value on error
+ */
+int sps_bam_enable_irqs(unsigned long dev);
+
+/*
+ * sps_bam_disable_irqs - disable IRQs of a BAM.
+ * @dev:	BAM device handle
+ *
+ * This function disables all IRQs of a BAM.
+ *
+ * Return: 0 on success, negative value on error
+ */
+int sps_bam_disable_irqs(unsigned long dev);
+
+/*
  * sps_get_bam_addr - get address info of a BAM.
  * @dev:	BAM device handle
  * @base:	beginning address
@@ -1622,6 +1635,16 @@ static inline int sps_pipe_pending_desc(unsigned long dev, u32 pipe,
 }
 
 static inline int sps_bam_process_irq(unsigned long dev)
+{
+	return -EPERM;
+}
+
+static inline int sps_bam_enable_irqs(unsigned long dev)
+{
+	return -EPERM;
+}
+
+static inline int sps_bam_disable_irqs(unsigned long dev)
 {
 	return -EPERM;
 }

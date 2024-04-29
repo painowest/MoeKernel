@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mach-dove/pcie.c
  *
  * PCIe functions for Marvell Dove 88AP510 SoC
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2. This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 
 #include <linux/kernel.h>
@@ -17,9 +14,9 @@
 #include <asm/setup.h>
 #include <asm/delay.h>
 #include <plat/pcie.h>
-#include <mach/irqs.h>
-#include <mach/bridge-regs.h>
 #include <plat/addr-map.h>
+#include "irqs.h"
+#include "bridge-regs.h"
 #include "common.h"
 
 struct pcie_port {

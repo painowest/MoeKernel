@@ -226,8 +226,6 @@ qib_user_sdma_queue_create(struct device *dev, int unit, int ctxt, int sctxt)
 	if (sdma_rb_node) {
 		sdma_rb_node->refcount++;
 	} else {
-		int ret;
-
 		sdma_rb_node = kmalloc(sizeof(
 			struct qib_user_sdma_rb_node), GFP_KERNEL);
 		if (!sdma_rb_node)
@@ -236,9 +234,7 @@ qib_user_sdma_queue_create(struct device *dev, int unit, int ctxt, int sctxt)
 		sdma_rb_node->refcount = 1;
 		sdma_rb_node->pid = current->pid;
 
-		ret = qib_user_sdma_rb_insert(&qib_user_sdma_rb_root,
-					sdma_rb_node);
-		BUG_ON(ret == 0);
+		qib_user_sdma_rb_insert(&qib_user_sdma_rb_root, sdma_rb_node);
 	}
 	pq->sdma_rb_node = sdma_rb_node;
 
@@ -322,7 +318,7 @@ static int qib_user_sdma_page_to_frags(const struct qib_devdata *dd,
 		 * the caller can ignore this page.
 		 */
 		if (put) {
-			put_page(page);
+			unpin_user_page(page);
 		} else {
 			/* coalesce case */
 			kunmap(page);
@@ -636,7 +632,7 @@ static void qib_user_sdma_free_pkt_frag(struct device *dev,
 			kunmap(pkt->addr[i].page);
 
 		if (pkt->addr[i].put_page)
-			put_page(pkt->addr[i].page);
+			unpin_user_page(pkt->addr[i].page);
 		else
 			__free_page(pkt->addr[i].page);
 	} else if (pkt->addr[i].kvaddr) {
@@ -675,7 +671,7 @@ static int qib_user_sdma_pin_pages(const struct qib_devdata *dd,
 		else
 			j = npages;
 
-		ret = get_user_pages_fast(addr, j, 0, pages);
+		ret = pin_user_pages_fast(addr, j, FOLL_LONGTERM, pages);
 		if (ret != j) {
 			i = 0;
 			j = ret;
@@ -711,7 +707,7 @@ static int qib_user_sdma_pin_pages(const struct qib_devdata *dd,
 	/* if error, return all pages not managed by pkt */
 free_pages:
 	while (i < j)
-		put_page(pages[i++]);
+		unpin_user_page(pages[i++]);
 
 done:
 	return ret;

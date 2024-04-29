@@ -1,9 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/include/linux/mmc/card.h
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  *
  *  Card driver specific definitions.
  */
@@ -14,9 +11,7 @@
 #include <linux/mmc/core.h>
 #include <linux/mmc/mmc.h>
 #include <linux/mod_devicetable.h>
-#include <linux/notifier.h>
-
-#define MMC_CARD_CMDQ_BLK_SIZE 512
+#include <linux/android_kabi.h>
 
 struct mmc_cid {
 	unsigned int		manfid;
@@ -119,6 +114,7 @@ struct mmc_ext_csd {
 	u8			raw_hc_erase_gap_size;	/* 221 */
 	u8			raw_erase_timeout_mult;	/* 223 */
 	u8			raw_hc_erase_grp_size;	/* 224 */
+	u8			raw_boot_mult;		/* 226 */
 	u8			raw_sec_trim_mult;	/* 229 */
 	u8			raw_sec_erase_mult;	/* 230 */
 	u8			raw_sec_feature_support;/* 231 */
@@ -146,12 +142,16 @@ struct mmc_ext_csd {
 struct sd_scr {
 	unsigned char		sda_vsn;
 	unsigned char		sda_spec3;
+	unsigned char		sda_spec4;
+	unsigned char		sda_specx;
 	unsigned char		bus_widths;
 #define SD_SCR_BUS_WIDTH_1	(1<<0)
 #define SD_SCR_BUS_WIDTH_4	(1<<2)
 	unsigned char		cmds;
 #define SD_SCR_CMD20_SUPPORT   (1<<0)
 #define SD_SCR_CMD23_SUPPORT   (1<<1)
+#define SD_SCR_CMD48_SUPPORT   (1<<2)
+#define SD_SCR_CMD58_SUPPORT   (1<<3)
 };
 
 struct sd_ssr {
@@ -169,6 +169,7 @@ struct sd_switch_caps {
 #define UHS_DDR50_MAX_DTR	50000000
 #define UHS_SDR25_MAX_DTR	UHS_DDR50_MAX_DTR
 #define UHS_SDR12_MAX_DTR	25000000
+#define DEFAULT_SPEED_MAX_DTR	UHS_SDR12_MAX_DTR
 	unsigned int		sd3_bus_mode;
 #define UHS_SDR12_BUS_SPEED	0
 #define HIGH_SPEED_BUS_SPEED	1
@@ -199,6 +200,25 @@ struct sd_switch_caps {
 #define SD_MAX_CURRENT_400	(1 << SD_SET_CURRENT_LIMIT_400)
 #define SD_MAX_CURRENT_600	(1 << SD_SET_CURRENT_LIMIT_600)
 #define SD_MAX_CURRENT_800	(1 << SD_SET_CURRENT_LIMIT_800)
+};
+
+struct sd_ext_reg {
+	u8			fno;
+	u8			page;
+	u16			offset;
+	u8			rev;
+	u8			feature_enabled;
+	u8			feature_support;
+/* Power Management Function. */
+#define SD_EXT_POWER_OFF_NOTIFY	(1<<0)
+#define SD_EXT_POWER_SUSTENANCE	(1<<1)
+#define SD_EXT_POWER_DOWN_MODE	(1<<2)
+/* Performance Enhancement Function. */
+#define SD_EXT_PERF_FX_EVENT	(1<<0)
+#define SD_EXT_PERF_CARD_MAINT	(1<<1)
+#define SD_EXT_PERF_HOST_MAINT	(1<<2)
+#define SD_EXT_PERF_CACHE	(1<<3)
+#define SD_EXT_PERF_CMD_QUEUE	(1<<4)
 };
 
 struct sdio_cccr {
@@ -250,6 +270,8 @@ struct mmc_part {
 #define MMC_BLK_DATA_AREA_BOOT	(1<<1)
 #define MMC_BLK_DATA_AREA_GP	(1<<2)
 #define MMC_BLK_DATA_AREA_RPMB	(1<<3)
+
+	ANDROID_KABI_RESERVE(1);
 };
 
 enum {
@@ -330,6 +352,7 @@ struct mmc_card {
 	unsigned int		state;		/* (our) card state */
 #define MMC_STATE_CMDQ		(1<<12)         /* card is in cmd queue mode */
 	unsigned int		quirks; 	/* card quirks */
+	unsigned int		quirk_max_rate;	/* max rate set by quirks */
 #define MMC_QUIRK_LENIENT_FN0	(1<<0)		/* allow SDIO FN0 writes outside of the VS CCCR range */
 #define MMC_QUIRK_BLKSZ_FOR_BYTE_MODE (1<<1)	/* use func->cur_blksize */
 						/* for byte mode */
@@ -347,14 +370,7 @@ struct mmc_card {
 #define MMC_QUIRK_BROKEN_IRQ_POLLING	(1<<11)	/* Polling SDIO_CCCR_INTx could create a fake interrupt */
 #define MMC_QUIRK_TRIM_BROKEN	(1<<12)		/* Skip trim */
 #define MMC_QUIRK_BROKEN_HPI	(1<<13)		/* Disable broken HPI support */
-						/* byte mode */
-#define MMC_QUIRK_INAND_DATA_TIMEOUT  (1<<14)   /* For incorrect data timeout */
-#define MMC_QUIRK_CACHE_DISABLE (1 << 15)	/* prevent cache enable */
-#define MMC_QUIRK_QCA6574_SETTINGS (1 << 16)	/* QCA6574 card settings*/
-#define MMC_QUIRK_QCA9377_SETTINGS (1 << 17)	/* QCA9377 card settings*/
-
-/* Make sure CMDQ is empty before queuing DCMD */
-#define MMC_QUIRK_CMDQ_EMPTY_BEFORE_DCMD (1 << 18)
+#define MMC_QUIRK_BROKEN_SD_DISCARD	(1<<14)	/* Disable broken SD discard support */
 
 	bool			reenable_cmdq;	/* Re-enable Command Queue */
 
@@ -362,6 +378,7 @@ struct mmc_card {
  	unsigned int		erase_shift;	/* if erase unit is power 2 */
  	unsigned int		pref_erase;	/* in sectors */
 	unsigned int		eg_boundary;	/* don't cross erase-group boundaries */
+	unsigned int		erase_arg;	/* erase / trim / discard */
  	u8			erased_byte;	/* value of erased bytes */
 
 	u32			raw_cid[4];	/* raw card CID */
@@ -374,12 +391,17 @@ struct mmc_card {
 	struct sd_scr		scr;		/* extra SD information */
 	struct sd_ssr		ssr;		/* yet more SD information */
 	struct sd_switch_caps	sw_caps;	/* switch (CMD6) caps */
+	struct sd_ext_reg	ext_power;	/* SD extension reg for PM */
+	struct sd_ext_reg	ext_perf;	/* SD extension reg for PERF */
 
 	unsigned int		sdio_funcs;	/* number of SDIO functions */
+	atomic_t		sdio_funcs_probed; /* number of probed SDIO funcs */
 	struct sdio_cccr	cccr;		/* common card info */
 	struct sdio_cis		cis;		/* common tuple info */
 	struct sdio_func	*sdio_func[SDIO_MAX_FUNCS]; /* SDIO functions (devices) */
 	struct sdio_func	*sdio_single_irq; /* SDIO function when only one IRQ active */
+	u8			major_rev;	/* major revision number */
+	u8			minor_rev;	/* minor revision number */
 	unsigned		num_info;	/* number of info strings */
 	const char		**info;		/* info strings */
 	struct sdio_func_tuple	*tuples;	/* unknown common tuples */
@@ -393,10 +415,10 @@ struct mmc_card {
 	unsigned int		nr_parts;
 	unsigned int		part_curr;
 
-	struct notifier_block   reboot_notify;
-	enum mmc_pon_type	pon_type;
-	bool cmdq_init;
-	struct mmc_bkops_info bkops;
+	struct workqueue_struct *complete_wq;	/* Private workqueue */
+
+	ANDROID_KABI_RESERVE(1);
+	ANDROID_KABI_RESERVE(2);
 };
 
 static inline bool mmc_large_sector(struct mmc_card *card)

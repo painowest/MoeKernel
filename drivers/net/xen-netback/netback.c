@@ -96,6 +96,13 @@ unsigned int xenvif_hash_cache_size = XENVIF_HASH_CACHE_SIZE_DEFAULT;
 module_param_named(hash_cache_size, xenvif_hash_cache_size, uint, 0644);
 MODULE_PARM_DESC(hash_cache_size, "Number of flows in the hash cache");
 
+/* The module parameter tells that we have to put data
+ * for xen-netfront with the XDP_PACKET_HEADROOM offset
+ * needed for XDP processing
+ */
+bool provides_xdp_headroom = true;
+module_param(provides_xdp_headroom, bool, 0644);
+
 static void xenvif_idx_release(struct xenvif_queue *queue, u16 pending_idx,
 			       u8 status);
 
@@ -138,12 +145,12 @@ static inline struct xenvif_queue *ubuf_to_queue(const struct ubuf_info *ubuf)
 
 static u16 frag_get_pending_idx(skb_frag_t *frag)
 {
-	return (u16)frag->page_offset;
+	return (u16)skb_frag_off(frag);
 }
 
 static void frag_set_pending_idx(skb_frag_t *frag, u16 pending_idx)
 {
-	frag->page_offset = pending_idx;
+	skb_frag_off_set(frag, pending_idx);
 }
 
 static inline pending_ring_idx_t pending_index(unsigned i)
@@ -189,9 +196,9 @@ static void tx_add_credit(struct xenvif_queue *queue)
 	queue->rate_limited = false;
 }
 
-void xenvif_tx_credit_callback(unsigned long data)
+void xenvif_tx_credit_callback(struct timer_list *t)
 {
-	struct xenvif_queue *queue = (struct xenvif_queue *)data;
+	struct xenvif_queue *queue = from_timer(queue, t, credit_timeout);
 	tx_add_credit(queue);
 	xenvif_napi_schedule_or_enable_events(queue);
 }
@@ -649,8 +656,8 @@ check_frags:
 	}
 
 	if (skb_has_frag_list(skb) && !first_shinfo) {
-		first_shinfo = skb_shinfo(skb);
-		shinfo = skb_shinfo(skb_shinfo(skb)->frag_list);
+		first_shinfo = shinfo;
+		shinfo = skb_shinfo(shinfo->frag_list);
 		nr_frags = shinfo->nr_frags;
 
 		goto check_frags;
@@ -803,8 +810,6 @@ static bool tx_credit_exceeded(struct xenvif_queue *queue, unsigned size)
 
 	/* Still too big to send right now? Set a callback. */
 	if (size > queue->remaining_credit) {
-		queue->credit_timeout.data     =
-			(unsigned long)queue;
 		mod_timer(&queue->credit_timeout,
 			  next_credit);
 		queue->credit_window_start = next_credit;
@@ -1125,7 +1130,7 @@ static int xenvif_handle_frag_list(struct xenvif_queue *queue, struct sk_buff *s
 			int j;
 			skb->truesize += skb->data_len;
 			for (j = 0; j < i; j++)
-				put_page(frags[j].page.p);
+				put_page(skb_frag_page(&frags[j]));
 			return -ENOMEM;
 		}
 
@@ -1137,8 +1142,8 @@ static int xenvif_handle_frag_list(struct xenvif_queue *queue, struct sk_buff *s
 			BUG();
 
 		offset += len;
-		frags[i].page.p = page;
-		frags[i].page_offset = 0;
+		__skb_frag_set_page(&frags[i], page);
+		skb_frag_off_set(&frags[i], 0);
 		skb_frag_size_set(&frags[i], len);
 	}
 
@@ -1148,7 +1153,7 @@ static int xenvif_handle_frag_list(struct xenvif_queue *queue, struct sk_buff *s
 	uarg = skb_shinfo(skb)->destructor_arg;
 	/* increase inflight counter to offset decrement in callback */
 	atomic_inc(&queue->inflight_packets);
-	uarg->callback(uarg, true);
+	uarg->callback(NULL, uarg, true);
 	skb_shinfo(skb)->destructor_arg = NULL;
 
 	/* Fill the skb with the new (local) frags. */
@@ -1226,15 +1231,24 @@ static int xenvif_tx_submit(struct xenvif_queue *queue)
 			continue;
 		}
 
-		skb_probe_transport_header(skb, 0);
+		skb_probe_transport_header(skb);
 
 		/* If the packet is GSO then we will have just set up the
 		 * transport header offset in checksum_setup so it's now
 		 * straightforward to calculate gso_segs.
 		 */
 		if (skb_is_gso(skb)) {
-			int mss = skb_shinfo(skb)->gso_size;
-			int hdrlen = skb_transport_header(skb) -
+			int mss, hdrlen;
+
+			/* GSO implies having the L4 header. */
+			WARN_ON_ONCE(!skb_transport_header_was_set(skb));
+			if (unlikely(!skb_transport_header_was_set(skb))) {
+				kfree_skb(skb);
+				continue;
+			}
+
+			mss = skb_shinfo(skb)->gso_size;
+			hdrlen = skb_transport_header(skb) -
 				skb_mac_header(skb) +
 				tcp_hdrlen(skb);
 
@@ -1263,7 +1277,8 @@ static int xenvif_tx_submit(struct xenvif_queue *queue)
 	return work_done;
 }
 
-void xenvif_zerocopy_callback(struct ubuf_info *ubuf, bool zerocopy_success)
+void xenvif_zerocopy_callback(struct sk_buff *skb, struct ubuf_info *ubuf,
+			      bool zerocopy_success)
 {
 	unsigned long flags;
 	pending_ring_idx_t index;
@@ -1507,7 +1522,7 @@ int xenvif_map_frontend_data_rings(struct xenvif_queue *queue,
 	void *addr;
 	struct xen_netif_tx_sring *txs;
 	struct xen_netif_rx_sring *rxs;
-
+	RING_IDX rsp_prod, req_prod;
 	int err = -ENOMEM;
 
 	err = xenbus_map_ring_valloc(xenvif_to_xenbus_device(queue->vif),
@@ -1516,7 +1531,14 @@ int xenvif_map_frontend_data_rings(struct xenvif_queue *queue,
 		goto err;
 
 	txs = (struct xen_netif_tx_sring *)addr;
-	BACK_RING_INIT(&queue->tx, txs, XEN_PAGE_SIZE);
+	rsp_prod = READ_ONCE(txs->rsp_prod);
+	req_prod = READ_ONCE(txs->req_prod);
+
+	BACK_RING_ATTACH(&queue->tx, txs, rsp_prod, XEN_PAGE_SIZE);
+
+	err = -EIO;
+	if (req_prod - rsp_prod > RING_SIZE(&queue->tx))
+		goto err;
 
 	err = xenbus_map_ring_valloc(xenvif_to_xenbus_device(queue->vif),
 				     &rx_ring_ref, 1, &addr);
@@ -1524,7 +1546,14 @@ int xenvif_map_frontend_data_rings(struct xenvif_queue *queue,
 		goto err;
 
 	rxs = (struct xen_netif_rx_sring *)addr;
-	BACK_RING_INIT(&queue->rx, rxs, XEN_PAGE_SIZE);
+	rsp_prod = READ_ONCE(rxs->rsp_prod);
+	req_prod = READ_ONCE(rxs->req_prod);
+
+	BACK_RING_ATTACH(&queue->rx, rxs, rsp_prod, XEN_PAGE_SIZE);
+
+	err = -EIO;
+	if (req_prod - rsp_prod > RING_SIZE(&queue->rx))
+		goto err;
 
 	return 0;
 
@@ -1668,9 +1697,9 @@ static void xenvif_ctrl_action(struct xenvif *vif)
 static bool xenvif_ctrl_work_todo(struct xenvif *vif)
 {
 	if (likely(RING_HAS_UNCONSUMED_REQUESTS(&vif->ctrl)))
-		return 1;
+		return true;
 
-	return 0;
+	return false;
 }
 
 irqreturn_t xenvif_ctrl_irq_fn(int irq, void *data)
@@ -1714,9 +1743,6 @@ static int __init netback_init(void)
 
 #ifdef CONFIG_DEBUG_FS
 	xen_netback_dbg_root = debugfs_create_dir("xen-netback", NULL);
-	if (IS_ERR_OR_NULL(xen_netback_dbg_root))
-		pr_warn("Init of debugfs returned %ld!\n",
-			PTR_ERR(xen_netback_dbg_root));
 #endif /* CONFIG_DEBUG_FS */
 
 	return 0;
@@ -1730,8 +1756,7 @@ module_init(netback_init);
 static void __exit netback_fini(void)
 {
 #ifdef CONFIG_DEBUG_FS
-	if (!IS_ERR_OR_NULL(xen_netback_dbg_root))
-		debugfs_remove_recursive(xen_netback_dbg_root);
+	debugfs_remove_recursive(xen_netback_dbg_root);
 #endif /* CONFIG_DEBUG_FS */
 	xenvif_xenbus_fini();
 }

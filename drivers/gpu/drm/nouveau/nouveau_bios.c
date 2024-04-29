@@ -22,8 +22,6 @@
  * SOFTWARE.
  */
 
-#include <drm/drmP.h>
-
 #include "nouveau_drv.h"
 #include "nouveau_reg.h"
 #include "dispnv04/hw.h"
@@ -112,6 +110,9 @@ static int call_lvds_manufacturer_script(struct drm_device *dev, struct dcb_outp
 	struct nvbios *bios = &drm->vbios;
 	uint8_t sub = bios->data[bios->fp.xlated_entry + script] + (bios->fp.link_c_increment && dcbent->or & DCB_OUTPUT_C ? 1 : 0);
 	uint16_t scriptofs = ROM16(bios->data[bios->init_script_tbls_ptr + sub * 2]);
+#ifdef __powerpc__
+	struct pci_dev *pdev = to_pci_dev(dev->dev);
+#endif
 
 	if (!bios->fp.xlated_entry || !sub || !scriptofs)
 		return -EINVAL;
@@ -125,8 +126,8 @@ static int call_lvds_manufacturer_script(struct drm_device *dev, struct dcb_outp
 #ifdef __powerpc__
 	/* Powerbook specific quirks */
 	if (script == LVDS_RESET &&
-	    (dev->pdev->device == 0x0179 || dev->pdev->device == 0x0189 ||
-	     dev->pdev->device == 0x0329))
+	    (pdev->device == 0x0179 || pdev->device == 0x0189 ||
+	     pdev->device == 0x0329))
 		nv_write_tmds(dev, dcbent->or, 0, 0x02, 0x72);
 #endif
 
@@ -935,7 +936,7 @@ static int parse_bit_tmds_tbl_entry(struct drm_device *dev, struct nvbios *bios,
 
 	tmdstableptr = ROM16(bios->data[bitentry->offset]);
 	if (!tmdstableptr) {
-		NV_ERROR(drm, "Pointer to TMDS table invalid\n");
+		NV_INFO(drm, "Pointer to TMDS table not found\n");
 		return -EINVAL;
 	}
 
@@ -1478,8 +1479,12 @@ parse_dcb20_entry(struct drm_device *dev, struct dcb_table *dcb,
 		case 1:
 			entry->dpconf.link_bw = 270000;
 			break;
-		default:
+		case 2:
 			entry->dpconf.link_bw = 540000;
+			break;
+		case 3:
+		default:
+			entry->dpconf.link_bw = 810000;
 			break;
 		}
 		switch ((conf & 0x0f000000) >> 24) {
@@ -1964,7 +1969,7 @@ static int load_nv17_hw_sequencer_ucode(struct drm_device *dev,
 	 * The microcode entries are found by the "HWSQ" signature.
 	 */
 
-	const uint8_t hwsq_signature[] = { 'H', 'W', 'S', 'Q' };
+	static const uint8_t hwsq_signature[] = { 'H', 'W', 'S', 'Q' };
 	const int sz = sizeof(hwsq_signature);
 	int hwsq_offset;
 
@@ -1980,7 +1985,7 @@ uint8_t *nouveau_bios_embedded_edid(struct drm_device *dev)
 {
 	struct nouveau_drm *drm = nouveau_drm(dev);
 	struct nvbios *bios = &drm->vbios;
-	const uint8_t edid_sig[] = {
+	static const uint8_t edid_sig[] = {
 			0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00 };
 	uint16_t offset = 0;
 	uint16_t newoffset;
@@ -2081,7 +2086,7 @@ nouveau_bios_init(struct drm_device *dev)
 	int ret;
 
 	/* only relevant for PCI devices */
-	if (!dev->pdev)
+	if (!dev_is_pci(dev->dev))
 		return 0;
 
 	if (!NVInitVBIOS(dev))

@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Kernel Connection Multiplexor
  *
  * Copyright (c) 2016 Tom Herbert <tom@herbertland.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2
- * as published by the Free Software Foundation.
  */
 
 #include <linux/bpf.h>
@@ -50,7 +47,7 @@ static inline struct kcm_tx_msg *kcm_tx_msg(struct sk_buff *skb)
 static void report_csk_error(struct sock *csk, int err)
 {
 	csk->sk_err = EPIPE;
-	csk->sk_error_report(csk);
+	sk_error_report(csk);
 }
 
 static void kcm_abort_tx_psock(struct kcm_psock *psock, int err,
@@ -386,8 +383,10 @@ static int kcm_parse_func_strparser(struct strparser *strp, struct sk_buff *skb)
 {
 	struct kcm_psock *psock = container_of(strp, struct kcm_psock, strp);
 	struct bpf_prog *prog = psock->bpf_prog;
+	int res;
 
-	return BPF_PROG_RUN(prog, skb);
+	res = bpf_prog_run_pin_on_cpu(prog, skb);
+	return res;
 }
 
 static int kcm_read_sock_done(struct strparser *strp, int err)
@@ -401,8 +400,8 @@ static int kcm_read_sock_done(struct strparser *strp, int err)
 
 static void psock_state_change(struct sock *sk)
 {
-	/* TCP only does a POLLIN for a half close. Do a POLLHUP here
-	 * since application will normally not poll with POLLIN
+	/* TCP only does a EPOLLIN for a half close. Do a EPOLLHUP here
+	 * since application will normally not poll with EPOLLIN
 	 * on the TCP sockets.
 	 */
 
@@ -643,15 +642,15 @@ do_frag_list:
 			frag_offset = 0;
 do_frag:
 			frag = &skb_shinfo(skb)->frags[fragidx];
-			if (WARN_ON(!frag->size)) {
+			if (WARN_ON(!skb_frag_size(frag))) {
 				ret = -EINVAL;
 				goto out;
 			}
 
 			ret = kernel_sendpage(psock->sk->sk_socket,
-					      frag->page.p,
-					      frag->page_offset + frag_offset,
-					      frag->size - frag_offset,
+					      skb_frag_page(frag),
+					      skb_frag_off(frag) + frag_offset,
+					      skb_frag_size(frag) - frag_offset,
 					      MSG_DONTWAIT);
 			if (ret <= 0) {
 				if (ret == -EAGAIN) {
@@ -669,7 +668,7 @@ do_frag:
 
 				/* Hard failure in sending message, abort this
 				 * psock since it has lost framing
-				 * synchonization and retry sending the
+				 * synchronization and retry sending the
 				 * message from the beginning.
 				 */
 				kcm_abort_tx_psock(psock, ret ? -ret : EPIPE,
@@ -686,7 +685,7 @@ do_frag:
 			sent += ret;
 			frag_offset += ret;
 			KCM_STATS_ADD(psock->stats.tx_bytes, ret);
-			if (frag_offset < frag->size) {
+			if (frag_offset < skb_frag_size(frag)) {
 				/* Not finished with this frag */
 				goto do_frag;
 			}
@@ -792,7 +791,7 @@ static ssize_t kcm_sendpage(struct socket *sock, struct page *page,
 
 		if (skb_can_coalesce(skb, i, page, offset)) {
 			skb_frag_size_add(&skb_shinfo(skb)->frags[i - 1], size);
-			skb_shinfo(skb)->tx_flags |= SKBTX_SHARED_FRAG;
+			skb_shinfo(skb)->flags |= SKBFL_SHARED_FRAG;
 			goto coalesced;
 		}
 
@@ -839,8 +838,8 @@ static ssize_t kcm_sendpage(struct socket *sock, struct page *page,
 	}
 
 	get_page(page);
-	skb_fill_page_desc(skb, i, page, offset, size);
-	skb_shinfo(skb)->tx_flags |= SKBTX_SHARED_FRAG;
+	skb_fill_page_desc_noacc(skb, i, page, offset, size);
+	skb_shinfo(skb)->flags |= SKBFL_SHARED_FRAG;
 
 coalesced:
 	skb->len += size;
@@ -1231,7 +1230,7 @@ static void kcm_recv_enable(struct kcm_sock *kcm)
 }
 
 static int kcm_setsockopt(struct socket *sock, int level, int optname,
-			  char __user *optval, unsigned int optlen)
+			  sockptr_t optval, unsigned int optlen)
 {
 	struct kcm_sock *kcm = kcm_sk(sock->sk);
 	int val, valbool;
@@ -1243,8 +1242,8 @@ static int kcm_setsockopt(struct socket *sock, int level, int optname,
 	if (optlen < sizeof(int))
 		return -EINVAL;
 
-	if (get_user(val, (int __user *)optval))
-		return -EINVAL;
+	if (copy_from_sockptr(&val, optval, sizeof(int)))
+		return -EFAULT;
 
 	valbool = val ? 1 : 0;
 
@@ -1304,7 +1303,7 @@ static void init_kcm_sock(struct kcm_sock *kcm, struct kcm_mux *mux)
 
 	/* For SOCK_SEQPACKET sock type, datagram_poll checks the sk_state, so
 	 * we set sk_state, otherwise epoll_wait always returns right away with
-	 * POLLHUP
+	 * EPOLLHUP
 	 */
 	kcm->sk.sk_state = TCP_ESTABLISHED;
 
@@ -1380,7 +1379,7 @@ static int kcm_attach(struct socket *sock, struct socket *csock,
 
 	write_lock_bh(&csk->sk_callback_lock);
 
-	/* Check if sk_user_data is aready by KCM or someone else.
+	/* Check if sk_user_data is already by KCM or someone else.
 	 * Must be done under lock to prevent race conditions.
 	 */
 	if (csk->sk_user_data) {
@@ -1462,7 +1461,7 @@ static int kcm_attach_ioctl(struct socket *sock, struct kcm_attach *info)
 
 	return 0;
 out:
-	fput(csock->file);
+	sockfd_put(csock);
 	return err;
 }
 
@@ -1610,7 +1609,7 @@ static int kcm_unattach_ioctl(struct socket *sock, struct kcm_unattach *info)
 	spin_unlock_bh(&mux->lock);
 
 out:
-	fput(csock->file);
+	sockfd_put(csock);
 	return err;
 }
 
@@ -1625,7 +1624,6 @@ static struct file *kcm_clone(struct socket *osock)
 {
 	struct socket *newsock;
 	struct sock *newsk;
-	struct file *file;
 
 	newsock = sock_alloc();
 	if (!newsock)
@@ -1645,11 +1643,7 @@ static struct file *kcm_clone(struct socket *osock)
 	sock_init_data(newsock, newsk);
 	init_kcm_sock(kcm_sk(newsk), kcm_sk(osock->sk)->mux);
 
-	file = sock_alloc_file(newsock, 0, osock->sk->sk_prot_creator->name);
-	if (IS_ERR(file))
-		sock_release(newsock);
-
-	return file;
+	return sock_alloc_file(newsock, 0, osock->sk->sk_prot_creator->name);
 }
 
 static int kcm_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
@@ -2009,13 +2003,13 @@ static int __init kcm_init(void)
 
 	kcm_muxp = kmem_cache_create("kcm_mux_cache",
 				     sizeof(struct kcm_mux), 0,
-				     SLAB_HWCACHE_ALIGN | SLAB_PANIC, NULL);
+				     SLAB_HWCACHE_ALIGN, NULL);
 	if (!kcm_muxp)
 		goto fail;
 
 	kcm_psockp = kmem_cache_create("kcm_psock_cache",
 				       sizeof(struct kcm_psock), 0,
-					SLAB_HWCACHE_ALIGN | SLAB_PANIC, NULL);
+					SLAB_HWCACHE_ALIGN, NULL);
 	if (!kcm_psockp)
 		goto fail;
 
@@ -2077,4 +2071,3 @@ module_exit(kcm_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_NETPROTO(PF_KCM);
-

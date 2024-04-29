@@ -1,14 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * Key-agreement Protocol Primitives (KPP)
  *
  * Copyright (c) 2016, Intel Corporation
  * Authors: Salvatore Benedetto <salvatore.benedetto@intel.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
- * any later version.
- *
  */
 #ifndef _CRYPTO_KPP_INT_H
 #define _CRYPTO_KPP_INT_H
@@ -21,6 +16,12 @@
 static inline void *kpp_request_ctx(struct kpp_request *req)
 {
 	return req->__ctx;
+}
+
+static inline void kpp_set_reqsize(struct crypto_kpp *kpp,
+				   unsigned int reqsize)
+{
+	crypto_kpp_alg(kpp)->reqsize = reqsize;
 }
 
 static inline void *kpp_tfm_ctx(struct crypto_kpp *tfm)

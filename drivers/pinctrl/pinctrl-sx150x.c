@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
  *
@@ -10,15 +11,6 @@
  * The handling of the 4-bit chips (SX1501/SX1504/SX1507) is untested.
  *
  * Author: Gregory Bean <gbean@codeaurora.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/regmap.h>
@@ -404,13 +396,16 @@ static int sx150x_gpio_get_direction(struct gpio_chip *chip,
 	int ret;
 
 	if (sx150x_pin_is_oscio(pctl, offset))
-		return false;
+		return GPIO_LINE_DIRECTION_OUT;
 
 	ret = regmap_read(pctl->regmap, pctl->data->reg_dir, &value);
 	if (ret < 0)
 		return ret;
 
-	return !!(value & BIT(offset));
+	if (value & BIT(offset))
+		return GPIO_LINE_DIRECTION_IN;
+
+	return GPIO_LINE_DIRECTION_OUT;
 }
 
 static int sx150x_gpio_get(struct gpio_chip *chip, unsigned int offset)
@@ -453,7 +448,6 @@ static void sx150x_gpio_set(struct gpio_chip *chip, unsigned int offset,
 		sx150x_gpio_oscio_set(pctl, value);
 	else
 		__sx150x_gpio_set(pctl, offset, value);
-
 }
 
 static void sx150x_gpio_set_multiple(struct gpio_chip *chip,
@@ -566,7 +560,7 @@ static irqreturn_t sx150x_irq_thread_fn(int irq, void *dev_id)
 
 	status = val;
 	for_each_set_bit(n, &status, pctl->data->ngpios)
-		handle_nested_irq(irq_find_mapping(pctl->gpio.irqdomain, n));
+		handle_nested_irq(irq_find_mapping(pctl->gpio.irq.domain, n));
 
 	return IRQ_HANDLED;
 }
@@ -708,7 +702,7 @@ static int sx150x_pinconf_get(struct pinctrl_dev *pctldev, unsigned int pin,
 		if (ret < 0)
 			return ret;
 
-		if (ret)
+		if (ret == GPIO_LINE_DIRECTION_IN)
 			return -EINVAL;
 
 		ret = sx150x_gpio_get(&pctl->gpio, pin);
@@ -1006,7 +1000,7 @@ static unsigned int sx150x_maybe_swizzle(struct sx150x_pinctrl *pctl,
 /*
  * In order to mask the differences between 16 and 8 bit expander
  * devices we set up a sligthly ficticious regmap that pretends to be
- * a set of 32-bit (to accomodate RegSenseLow/RegSenseHigh
+ * a set of 32-bit (to accommodate RegSenseLow/RegSenseHigh
  * pair/quartet) registers and transparently reconstructs those
  * registers via multiple I2C/SMBus reads
  *
@@ -1100,7 +1094,7 @@ static bool sx150x_reg_volatile(struct device *dev, unsigned int reg)
 	return reg == pctl->data->reg_irq_src || reg == pctl->data->reg_data;
 }
 
-const struct regmap_config sx150x_regmap_config = {
+static const struct regmap_config sx150x_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 32,
 
@@ -1180,12 +1174,6 @@ static int sx150x_probe(struct i2c_client *client,
 		return ret;
 	}
 
-	ret = pinctrl_enable(pctl->pctldev);
-	if (ret) {
-		dev_err(dev, "Failed to enable pinctrl device\n");
-		return ret;
-	}
-
 	/* Register GPIO controller */
 	pctl->gpio.base = -1;
 	pctl->gpio.ngpio = pctl->data->npins;
@@ -1213,17 +1201,10 @@ static int sx150x_probe(struct i2c_client *client,
 	if (pctl->data->model != SX150X_789)
 		pctl->gpio.set_multiple = sx150x_gpio_set_multiple;
 
-	ret = devm_gpiochip_add_data(dev, &pctl->gpio, pctl);
-	if (ret)
-		return ret;
-
-	ret = gpiochip_add_pin_range(&pctl->gpio, dev_name(dev),
-				     0, 0, pctl->data->npins);
-	if (ret)
-		return ret;
-
 	/* Add Interrupt support if an irq is specified */
 	if (client->irq > 0) {
+		struct gpio_irq_chip *girq;
+
 		pctl->irq_chip.irq_mask = sx150x_irq_mask;
 		pctl->irq_chip.irq_unmask = sx150x_irq_unmask;
 		pctl->irq_chip.irq_set_type = sx150x_irq_set_type;
@@ -1239,8 +1220,8 @@ static int sx150x_probe(struct i2c_client *client,
 
 		/*
 		 * Because sx150x_irq_threaded_fn invokes all of the
-		 * nested interrrupt handlers via handle_nested_irq,
-		 * any "handler" passed to gpiochip_irqchip_add()
+		 * nested interrupt handlers via handle_nested_irq,
+		 * any "handler" assigned to struct gpio_irq_chip
 		 * below is going to be ignored, so the choice of the
 		 * function does not matter that much.
 		 *
@@ -1248,13 +1229,15 @@ static int sx150x_probe(struct i2c_client *client,
 		 * plus it will be instantly noticeable if it is ever
 		 * called (should not happen)
 		 */
-		ret = gpiochip_irqchip_add_nested(&pctl->gpio,
-					&pctl->irq_chip, 0,
-					handle_bad_irq, IRQ_TYPE_NONE);
-		if (ret) {
-			dev_err(dev, "could not connect irqchip to gpiochip\n");
-			return ret;
-		}
+		girq = &pctl->gpio.irq;
+		girq->chip = &pctl->irq_chip;
+		/* This will let us handle the parent IRQ in the driver */
+		girq->parent_handler = NULL;
+		girq->num_parents = 0;
+		girq->parents = NULL;
+		girq->default_type = IRQ_TYPE_NONE;
+		girq->handler = handle_bad_irq;
+		girq->threaded = true;
 
 		ret = devm_request_threaded_irq(dev, client->irq, NULL,
 						sx150x_irq_thread_fn,
@@ -1263,40 +1246,27 @@ static int sx150x_probe(struct i2c_client *client,
 						pctl->irq_chip.name, pctl);
 		if (ret < 0)
 			return ret;
-
-		gpiochip_set_nested_irqchip(&pctl->gpio,
-					    &pctl->irq_chip,
-					    client->irq);
 	}
 
-	return 0;
-}
-
-#ifdef CONFIG_PM_SLEEP
-static int sx150x_restore(struct device *dev)
-{
-	struct i2c_client *client = to_i2c_client(dev);
-	struct sx150x_pinctrl *pctl = i2c_get_clientdata(client);
-	int ret;
-
-	ret = sx150x_init_hw(pctl);
+	ret = devm_gpiochip_add_data(dev, &pctl->gpio, pctl);
 	if (ret)
 		return ret;
 
-	ret = pinctrl_force_default(pctl->pctldev);
+	/*
+	 * Pin control functions need to be enabled AFTER registering the
+	 * GPIO chip because sx150x_pinconf_set() calls
+	 * sx150x_gpio_direction_output().
+	 */
+	ret = pinctrl_enable(pctl->pctldev);
 	if (ret) {
 		dev_err(dev, "Failed to enable pinctrl device\n");
 		return ret;
 	}
 
-	if (client->irq > 0) {
-		mutex_lock(&pctl->lock);
-		regmap_write(pctl->regmap,
-				pctl->data->reg_irq_mask, pctl->irq.masked);
-		regmap_write(pctl->regmap,
-				pctl->data->reg_sense, pctl->irq.sense);
-		mutex_unlock(&pctl->lock);
-	}
+	ret = gpiochip_add_pin_range(&pctl->gpio, dev_name(dev),
+				     0, 0, pctl->data->npins);
+	if (ret)
+		return ret;
 
 	return 0;
 }
@@ -1329,3 +1299,4 @@ static int __init sx150x_init(void)
 	return i2c_add_driver(&sx150x_driver);
 }
 subsys_initcall(sx150x_init);
+MODULE_LICENSE("GPL v2");

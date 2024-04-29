@@ -18,7 +18,7 @@
 
 #include "card.h"
 
-static const struct mmc_fixup mmc_blk_fixups[] = {
+static const struct mmc_fixup __maybe_unused mmc_blk_fixups[] = {
 #define INAND_CMD38_ARG_EXT_CSD  113
 #define INAND_CMD38_ARG_ERASE    0x00
 #define INAND_CMD38_ARG_TRIM     0x01
@@ -57,6 +57,14 @@ static const struct mmc_fixup mmc_blk_fixups[] = {
 		  MMC_QUIRK_BLK_NO_CMD23),
 	MMC_FIXUP(CID_NAME_ANY, CID_MANFID_TOSHIBA, CID_OEMID_ANY,
 		  add_quirk_mmc, MMC_QUIRK_CMDQ_EMPTY_BEFORE_DCMD),
+
+	/*
+	 * Some SD cards lockup while using CMD23 multiblock transfers.
+	 */
+	MMC_FIXUP("AF SD", CID_MANFID_ATP, CID_OEMID_ANY, add_quirk_sd,
+		  MMC_QUIRK_BLK_NO_CMD23),
+	MMC_FIXUP("APUSD", CID_MANFID_APACER, 0x5048, add_quirk_sd,
+		  MMC_QUIRK_BLK_NO_CMD23),
 
 	/*
 	 * Some SD cards lockup while using CMD23 multiblock transfers.
@@ -141,14 +149,30 @@ static const struct mmc_fixup mmc_blk_fixups[] = {
 	MMC_FIXUP("V10016", CID_MANFID_KINGSTON, CID_OEMID_ANY, add_quirk_mmc,
 		  MMC_QUIRK_TRIM_BROKEN),
 
-	/* Some INAND MCP devices advertise incorrect timeout values */
-	MMC_FIXUP("SEM04G", 0x45, CID_OEMID_ANY, add_quirk_mmc,
-		MMC_QUIRK_INAND_DATA_TIMEOUT),
+	/*
+	 * Kingston EMMC04G-M627 advertises TRIM but it does not seems to
+	 * support being used to offload WRITE_ZEROES.
+	 */
+	MMC_FIXUP("M62704", CID_MANFID_KINGSTON, 0x0100, add_quirk_mmc,
+		  MMC_QUIRK_TRIM_BROKEN),
+
+	/*
+	 * Micron MTFC4GACAJCN-1M advertises TRIM but it does not seems to
+	 * support being used to offload WRITE_ZEROES.
+	 */
+	MMC_FIXUP("Q2J54A", CID_MANFID_MICRON, 0x014e, add_quirk_mmc,
+		  MMC_QUIRK_TRIM_BROKEN),
+
+	/*
+	 * Some SD cards reports discard support while they don't
+	 */
+	MMC_FIXUP(CID_NAME_ANY, CID_MANFID_SANDISK_SD, 0x5344, add_quirk_sd,
+		  MMC_QUIRK_BROKEN_SD_DISCARD),
 
 	END_FIXUP
 };
 
-static const struct mmc_fixup mmc_ext_csd_fixups[] = {
+static const struct mmc_fixup __maybe_unused mmc_ext_csd_fixups[] = {
 	/*
 	 * Certain Hynix eMMC 4.41 cards might get broken when HPI feature
 	 * is used so disable the HPI feature for such buggy cards.
@@ -165,104 +189,8 @@ static const struct mmc_fixup mmc_ext_csd_fixups[] = {
 	END_FIXUP
 };
 
-#ifndef SDIO_VENDOR_ID_TI
-#define SDIO_VENDOR_ID_TI		0x0097
-#endif
 
-#ifndef SDIO_DEVICE_ID_TI_WL1271
-#define SDIO_DEVICE_ID_TI_WL1271	0x4076
-#endif
-
-#ifndef SDIO_VENDOR_ID_STE
-#define SDIO_VENDOR_ID_STE		0x0020
-#endif
-
-#ifndef SDIO_DEVICE_ID_STE_CW1200
-#define SDIO_DEVICE_ID_STE_CW1200	0x2280
-#endif
-
-#ifndef SDIO_DEVICE_ID_MARVELL_8797_F0
-#define SDIO_DEVICE_ID_MARVELL_8797_F0	0x9128
-#endif
-
-#ifndef SDIO_VENDOR_ID_MSM
-#define SDIO_VENDOR_ID_MSM		0x0070
-#endif
-
-#ifndef SDIO_DEVICE_ID_MSM_WCN1314
-#define SDIO_DEVICE_ID_MSM_WCN1314	0x2881
-#endif
-
-#ifndef SDIO_VENDOR_ID_MSM_QCA
-#define SDIO_VENDOR_ID_MSM_QCA		0x271
-#endif
-
-#ifndef SDIO_DEVICE_ID_MSM_QCA_AR6003_1
-#define SDIO_DEVICE_ID_MSM_QCA_AR6003_1	0x300
-#endif
-
-#ifndef SDIO_DEVICE_ID_MSM_QCA_AR6003_2
-#define SDIO_DEVICE_ID_MSM_QCA_AR6003_2	0x301
-#endif
-
-#ifndef SDIO_DEVICE_ID_MSM_QCA_AR6004_1
-#define SDIO_DEVICE_ID_MSM_QCA_AR6004_1	0x400
-#endif
-
-#ifndef SDIO_DEVICE_ID_MSM_QCA_AR6004_2
-#define SDIO_DEVICE_ID_MSM_QCA_AR6004_2	0x401
-#endif
-
-#ifndef SDIO_VENDOR_ID_QCA6574
-#define SDIO_VENDOR_ID_QCA6574		0x271
-#endif
-
-#ifndef SDIO_DEVICE_ID_QCA6574
-#define SDIO_DEVICE_ID_QCA6574		0x50a
-#endif
-
-#ifndef SDIO_VENDOR_ID_QCA9377
-#define SDIO_VENDOR_ID_QCA9377		0x271
-#endif
-
-#ifndef SDIO_DEVICE_ID_QCA9377
-#define SDIO_DEVICE_ID_QCA9377		0x701
-#endif
-
-/*
- * This hook just adds a quirk for all sdio devices
- */
-static void add_quirk_for_sdio_devices(struct mmc_card *card, int data)
-{
-	if (mmc_card_sdio(card))
-		card->quirks |= data;
-}
-
-static const struct mmc_fixup sdio_fixup_methods[] = {
-	/* by default sdio devices are considered CLK_GATING broken */
-	/* good cards will be whitelisted as they are tested */
-	SDIO_FIXUP(SDIO_ANY_ID, SDIO_ANY_ID,
-		   add_quirk_for_sdio_devices,
-		   MMC_QUIRK_BROKEN_CLK_GATING),
-
-	SDIO_FIXUP(SDIO_VENDOR_ID_TI, SDIO_DEVICE_ID_TI_WL1271,
-		   remove_quirk, MMC_QUIRK_BROKEN_CLK_GATING),
-
-	SDIO_FIXUP(SDIO_VENDOR_ID_MSM, SDIO_DEVICE_ID_MSM_WCN1314,
-		   remove_quirk, MMC_QUIRK_BROKEN_CLK_GATING),
-
-	SDIO_FIXUP(SDIO_VENDOR_ID_MSM_QCA, SDIO_DEVICE_ID_MSM_QCA_AR6003_1,
-		   remove_quirk, MMC_QUIRK_BROKEN_CLK_GATING),
-
-	SDIO_FIXUP(SDIO_VENDOR_ID_MSM_QCA, SDIO_DEVICE_ID_MSM_QCA_AR6003_2,
-		   remove_quirk, MMC_QUIRK_BROKEN_CLK_GATING),
-
-	SDIO_FIXUP(SDIO_VENDOR_ID_MSM_QCA, SDIO_DEVICE_ID_MSM_QCA_AR6004_1,
-		   remove_quirk, MMC_QUIRK_BROKEN_CLK_GATING),
-
-	SDIO_FIXUP(SDIO_VENDOR_ID_MSM_QCA, SDIO_DEVICE_ID_MSM_QCA_AR6004_2,
-		   remove_quirk, MMC_QUIRK_BROKEN_CLK_GATING),
-
+static const struct mmc_fixup __maybe_unused sdio_fixup_methods[] = {
 	SDIO_FIXUP(SDIO_VENDOR_ID_TI_WL1251, SDIO_DEVICE_ID_TI_WL1251,
 		   add_quirk, MMC_QUIRK_NONSTD_FUNC_IF),
 
@@ -281,11 +209,9 @@ static const struct mmc_fixup sdio_fixup_methods[] = {
 	SDIO_FIXUP(SDIO_VENDOR_ID_MARVELL, SDIO_DEVICE_ID_MARVELL_8797_F0,
 		   add_quirk, MMC_QUIRK_BROKEN_IRQ_POLLING),
 
-	SDIO_FIXUP(SDIO_VENDOR_ID_QCA6574, SDIO_DEVICE_ID_QCA6574,
-		   add_quirk, MMC_QUIRK_QCA6574_SETTINGS),
+	SDIO_FIXUP(SDIO_VENDOR_ID_MARVELL, SDIO_DEVICE_ID_MARVELL_8887_F0,
+		   add_limit_rate_quirk, 150000000),
 
-	SDIO_FIXUP(SDIO_VENDOR_ID_QCA9377, SDIO_DEVICE_ID_QCA9377,
-		add_quirk, MMC_QUIRK_QCA9377_SETTINGS),
 	END_FIXUP
 };
 
@@ -312,7 +238,7 @@ static inline void mmc_fixup_device(struct mmc_card *card,
 		    (f->ext_csd_rev == EXT_CSD_REV_ANY ||
 		     f->ext_csd_rev == card->ext_csd.rev) &&
 		    rev >= f->rev_start && rev <= f->rev_end) {
-			dev_dbg(&card->dev, "calling %pf\n", f->vendor_fixup);
+			dev_dbg(&card->dev, "calling %ps\n", f->vendor_fixup);
 			f->vendor_fixup(card, f->data);
 		}
 	}

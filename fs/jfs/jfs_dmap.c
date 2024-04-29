@@ -1,20 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *   Copyright (C) International Business Machines Corp., 2000-2004
  *   Portions Copyright (C) Tino Reichardt, 2012
- *
- *   This program is free software;  you can redistribute it and/or modify
- *   it under the terms of the GNU General Public License as published by
- *   the Free Software Foundation; either version 2 of the License, or
- *   (at your option) any later version.
- *
- *   This program is distributed in the hope that it will be useful,
- *   but WITHOUT ANY WARRANTY;  without even the implied warranty of
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See
- *   the GNU General Public License for more details.
- *
- *   You should have received a copy of the GNU General Public License
- *   along with this program;  if not, write to the Free Software
- *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/fs.h>
@@ -193,8 +180,7 @@ int dbMount(struct inode *ipbmap)
 	bmp->db_nfree = le64_to_cpu(dbmp_le->dn_nfree);
 
 	bmp->db_l2nbperpage = le32_to_cpu(dbmp_le->dn_l2nbperpage);
-	if (bmp->db_l2nbperpage > L2PSIZE - L2MINBLOCKSIZE ||
-		bmp->db_l2nbperpage < 0) {
+	if (bmp->db_l2nbperpage > L2PSIZE - L2MINBLOCKSIZE) {
 		err = -EINVAL;
 		goto err_release_metapage;
 	}
@@ -719,7 +705,7 @@ unlock:
  *		this does not succeed, we finally try to allocate anywhere
  *		within the aggregate.
  *
- *		we also try to allocate anywhere within the aggregate for
+ *		we also try to allocate anywhere within the aggregate
  *		for allocation requests larger than the allocation group
  *		size or requests that specify no hint value.
  *
@@ -1679,7 +1665,7 @@ s64 dbDiscardAG(struct inode *ip, int agno, s64 minlen)
 	max_ranges = nblocks;
 	do_div(max_ranges, minlen);
 	range_cnt = min_t(u64, max_ranges + 1, 32 * 1024);
-	totrim = kmalloc(sizeof(struct range2trim) * range_cnt, GFP_NOFS);
+	totrim = kmalloc_array(range_cnt, sizeof(struct range2trim), GFP_NOFS);
 	if (totrim == NULL) {
 		jfs_error(bmp->db_ipbmap->i_sb, "no memory for trim array\n");
 		IWRITE_UNLOCK(ipbmap);
@@ -2603,15 +2589,19 @@ dbAdjCtl(struct bmap * bmp, s64 blkno, int newval, int alloc, int level)
 		 */
 		if (oldval == NOFREE) {
 			rc = dbBackSplit((dmtree_t *) dcp, leafno);
-			if (rc)
+			if (rc) {
+				release_metapage(mp);
 				return rc;
+			}
 			oldval = dcp->stree[ti];
 		}
 		dbSplit((dmtree_t *) dcp, leafno, dcp->budmin, newval);
 	} else {
 		rc = dbJoin((dmtree_t *) dcp, leafno, newval);
-		if (rc)
+		if (rc) {
+			release_metapage(mp);
 			return rc;
+		}
 	}
 
 	/* check if the root of the current dmap control page changed due
@@ -3716,7 +3706,7 @@ void dbFinalizeBmap(struct inode *ipbmap)
 	 * (the leftmost ag with average free space in it);
 	 */
 //agpref:
-	/* get the number of active ags and inacitve ags */
+	/* get the number of active ags and inactive ags */
 	actags = bmp->db_maxag + 1;
 	inactags = bmp->db_numag - actags;
 	ag_rem = bmp->db_mapsize & (bmp->db_agsize - 1);	/* ??? */
@@ -4087,7 +4077,6 @@ static int dbGetL2AGSize(s64 nblocks)
  */
 #define MAXL0PAGES	(1 + LPERCTL)
 #define MAXL1PAGES	(1 + LPERCTL * MAXL0PAGES)
-#define MAXL2PAGES	(1 + LPERCTL * MAXL1PAGES)
 
 /*
  * convert number of map pages to the zero origin top dmapctl level

@@ -1,16 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (C) 2007 Google, Inc.
- * Copyright (c) 2012-2020 The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * Copyright (c) 2012-2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __QPIC_NAND_H
@@ -26,6 +18,7 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/rawnand.h>
 #include <linux/mtd/partitions.h>
+#include <linux/panic_notifier.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
 #include <linux/io.h>
@@ -35,10 +28,8 @@
 #include <linux/of.h>
 #include <linux/ctype.h>
 #include <linux/msm-sps.h>
-#include <linux/msm-bus.h>
 #include <linux/soc/qcom/smem.h>
-#include <linux/spinlock.h>
-#include <linux/ktime.h>
+#include <linux/interconnect.h>
 
 #define PAGE_SIZE_2K 2048
 #define PAGE_SIZE_4K 4096
@@ -104,9 +95,8 @@
 #define MSM_NAND_RESET_READ_STS 0x000000C0
 
 /* QPIC NANDc (NAND Controller) Register Set */
-#define MSM_NAND_REG(info, off)		    (info->nand_phys + off)
-#define MSM_NAND_REG_ADJUSTED(info, off)    (info->nand_phys_adjusted + off)
-#define MSM_NAND_QPIC_VERSION(info)	    MSM_NAND_REG_ADJUSTED(info, 0x20100)
+#define MSM_NAND_REG(info, off)		    (off)
+#define MSM_NAND_QPIC_VERSION(info)	    MSM_NAND_REG(info, 0x24100)
 #define MSM_NAND_FLASH_CMD(info)	    MSM_NAND_REG(info, 0x30000)
 #define MSM_NAND_ADDR0(info)                MSM_NAND_REG(info, 0x30004)
 #define MSM_NAND_ADDR1(info)                MSM_NAND_REG(info, 0x30008)
@@ -165,10 +155,7 @@
 #define RESET_ERASED_DET	(1 << AUTO_DETECT_RES)
 #define ACTIVE_ERASED_DET	(0 << AUTO_DETECT_RES)
 #define CLR_ERASED_PAGE_DET	(RESET_ERASED_DET | MASK_ECC)
-#define SET_ERASED_PAGE_DET	(ACTIVE_ERASED_DET | MASK_ECC | SET_N_MAX_ZEROS)
-#define N_MAX_ZEROS		2
-#define MAX_ECC_BIT_FLIPS       4
-#define SET_N_MAX_ZEROS		(MAX_ECC_BIT_FLIPS << N_MAX_ZEROS)
+#define SET_ERASED_PAGE_DET	(ACTIVE_ERASED_DET | MASK_ECC)
 
 #define MSM_NAND_ERASED_CW_DETECT_STATUS(info)  MSM_NAND_REG(info, 0x300EC)
 #define PAGE_ALL_ERASED		7
@@ -177,11 +164,10 @@
 #define CODEWORD_ERASED		4
 #define ERASED_PAGE	((1 << PAGE_ALL_ERASED) | (1 << PAGE_ERASED))
 #define ERASED_CW	((1 << CODEWORD_ALL_ERASED) | (1 << CODEWORD_ERASED))
-#define NUM_ERRORS		0x1f
 
 #define MSM_NAND_CTRL(info)		    MSM_NAND_REG(info, 0x30F00)
 #define BAM_MODE_EN	0
-#define MSM_NAND_VERSION(info)         MSM_NAND_REG_ADJUSTED(info, 0x30F08)
+#define MSM_NAND_VERSION(info)         MSM_NAND_REG(info, 0x34F08)
 #define MSM_NAND_READ_LOCATION_0(info)      MSM_NAND_REG(info, 0x30F20)
 #define MSM_NAND_READ_LOCATION_1(info)      MSM_NAND_REG(info, 0x30F24)
 #define MSM_NAND_READ_LOCATION_LAST_CW_0(info) MSM_NAND_REG(info, 0x30F40)
@@ -285,7 +271,8 @@ struct msm_nand_chip {
 	uint32_t ecc_buf_cfg;
 	uint32_t ecc_bch_cfg;
 	uint32_t ecc_cfg_raw;
-	uint32_t qpic_version; /* To store the qpic controller version */
+	uint32_t qpic_version; /* To store the qpic controller major version */
+	uint16_t qpic_min_version; /* To store the qpic controller minor version */
 	uint32_t caps; /* General host capabilities */
 #define MSM_NAND_CAP_PAGE_SCOPE_READ   BIT(0)
 #define MSM_NAND_CAP_MULTI_PAGE_READ   BIT(1)
@@ -325,33 +312,37 @@ struct flash_identification {
 	uint32_t oobsize;
 	uint32_t ecc_correctability;
 	uint32_t ecc_capability; /* Set based on the ECC capability selected. */
+	/* Flag to distinguish b/w ONFI and NON-ONFI properties */
+	bool is_onfi_compliant;
+};
+
+struct msm_bus_vectors {
+	u64 ab;
+	u64 ib;
+};
+
+struct msm_bus_path {
+	unsigned int num_paths;
+	struct msm_bus_vectors *vec;
+};
+
+struct msm_nand_bus_vote_data {
+	const char *name;
+	unsigned int num_usecase;
+	struct msm_bus_path *usecase;
+
+	struct icc_path *nand_ddr;
+
+	u32 curr_vote;
 };
 
 struct msm_nand_clk_data {
 	struct clk *qpic_clk;
-	struct msm_bus_scale_pdata *use_cases;
-	uint32_t client_handle;
+	struct msm_nand_bus_vote_data *bus_vote_data;
 	atomic_t clk_enabled;
 	atomic_t curr_vote;
 	bool rpmh_clk;
 };
-
-struct msm_nand_perf_stats {
-	u64 total_read_size;
-	u64 total_write_size;
-	u64 total_erase_blks;
-	ktime_t total_read_time;
-	ktime_t total_write_time;
-	ktime_t total_erase_time;
-	ktime_t min_read_time;
-	ktime_t min_write_time;
-	ktime_t min_erase_time;
-	ktime_t max_read_time;
-	ktime_t max_write_time;
-	ktime_t max_erase_time;
-	spinlock_t lock;
-};
-
 
 /* Structure that defines NANDc private data. */
 struct msm_nand_info {
@@ -377,9 +368,12 @@ struct msm_nand_info {
 	struct mutex lock;
 	struct flash_identification flash_dev;
 	struct msm_nand_clk_data clk_data;
-	struct msm_nand_perf_stats perf;
 	u64 dma_mask;
 };
+
+extern struct nand_flash_dev nand_flash_ids[];
+
+const struct nand_manufacturer_desc *nand_get_manufacturer_desc(u8 id);
 
 /* Structure that defines an ONFI parameter page (512B) */
 struct onfi_param_page {
@@ -423,7 +417,7 @@ struct onfi_param_page {
 	uint16_t vendor_specific_revision_number;
 	uint8_t  vendor_specific[88];
 	uint16_t integrity_crc;
-} __attribute__((__packed__));
+} __packed;
 
 #define FLASH_PART_MAGIC1	0x55EE73AA
 #define FLASH_PART_MAGIC2	0xE35EBDDB

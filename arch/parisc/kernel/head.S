@@ -17,10 +17,10 @@
 #include <asm/pdc.h>
 	
 #include <asm/assembly.h>
-#include <asm/pgtable.h>
 
 #include <linux/linkage.h>
 #include <linux/init.h>
+#include <linux/pgtable.h>
 
 	.level	1.1
 
@@ -69,8 +69,9 @@ $bss_loop:
 	stw,ma          %arg2,4(%r1)
 	stw,ma          %arg3,4(%r1)
 
-#if defined(CONFIG_PA20)
-	/* check for 64-bit capable CPU as required by current kernel */
+#if !defined(CONFIG_64BIT) && defined(CONFIG_PA20)
+	/* This 32-bit kernel was compiled for PA2.0 CPUs. Check current CPU
+	 * and halt kernel if we detect a PA1.x CPU. */
 	ldi		32,%r10
 	mtctl		%r10,%cr11
 	.level 2.0
@@ -83,7 +84,7 @@ $bss_loop:
 $iodc_panic:
 	copy		%arg0, %r10
 	copy		%arg1, %r11
-	load32		PA(__bss_stop),%sp
+	load32		PA(init_stack),%sp
 #define MEM_CONS 0x3A0
 	ldw		MEM_CONS+32(%r0),%arg0	// HPA
 	ldi		ENTRY_IO_COUT,%arg1
@@ -178,6 +179,16 @@ $pgt_fill_loop:
 	std		%dp,0x18(%r10)
 #endif
 
+#ifdef CONFIG_64BIT
+	/* Get PDCE_PROC for monarch CPU. */
+#define MEM_PDC_LO 0x388
+#define MEM_PDC_HI 0x35C
+	ldw             MEM_PDC_LO(%r0),%r3
+	ldw             MEM_PDC_HI(%r0),%r10
+	depd            %r10, 31, 32, %r3        /* move to upper word */
+#endif
+
+
 #ifdef CONFIG_SMP
 	/* Set the smp rendezvous address into page zero.
 	** It would be safer to do this in init_smp_config() but
@@ -236,12 +247,6 @@ common_stext:
         ** Someday, palo might not do this for the Monarch either.
         */
 2:
-#define MEM_PDC_LO 0x388
-#define MEM_PDC_HI 0x35C
-	ldw             MEM_PDC_LO(%r0),%r3
-	ldw             MEM_PDC_HI(%r0),%r6
-	depd            %r6, 31, 32, %r3        /* move to upper word */
-
 	mfctl		%cr30,%r6		/* PCX-W2 firmware bug */
 
 	ldo             PDC_PSW(%r0),%arg0              /* 21 */
@@ -308,6 +313,8 @@ $install_iva:
 aligned_rfi:
 	pcxt_ssm_bug
 
+	copy		%r3, %arg0	/* PDCE_PROC for smp_callin() */
+
 	rsm		PSW_SM_QUIET,%r0	/* off troublesome PSW bits */
 	/* Don't need NOPs, have 8 compliant insn before rfi */
 
@@ -363,6 +370,19 @@ smp_slave_stext:
 	mtsp	   %r0,%sr6
 	mtsp	   %r0,%sr7
 
+#ifdef CONFIG_64BIT
+	/*
+	 *  Enable Wide mode early, in case the task_struct for the idle
+	 *  task in smp_init_current_idle_task was allocated above 4GB.
+	 */
+1:	mfia            %rp             /* clear upper part of pcoq */
+	ldo             2f-1b(%rp),%rp
+	depdi           0,31,32,%rp
+	bv              (%rp)
+	ssm             PSW_SM_W,%r0
+2:
+#endif
+
 	/*  Initialize the SP - monarch sets up smp_init_current_idle_task */
 	load32		PA(smp_init_current_idle_task),%sp
 	LDREG		0(%sp),%sp	/* load task address */
@@ -397,7 +417,7 @@ smp_slave_stext:
 ENDPROC(parisc_kernel_start)
 
 #ifndef CONFIG_64BIT
-	.section .data..read_mostly
+	.section .data..ro_after_init
 
 	.align	4
 	.export	$global$,data

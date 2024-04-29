@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  *	DDP:	An implementation of the AppleTalk DDP protocol for
  *		Ethernet 'ELAP'.
@@ -43,12 +44,6 @@
  *						shared skb support 8)
  *		Arnaldo C. de Melo	:	Move proc stuff to atalk_proc.c,
  *						use seq_file
- *
- *		This program is free software; you can redistribute it and/or
- *		modify it under the terms of the GNU General Public License
- *		as published by the Free Software Foundation; either version
- *		2 of the License, or (at your option) any later version.
- *
  */
 
 #include <linux/capability.h>
@@ -62,6 +57,7 @@
 #include <net/sock.h>
 #include <net/tcp_states.h>
 #include <net/route.h>
+#include <net/compat.h>
 #include <linux/atalk.h>
 #include <linux/highmem.h>
 
@@ -158,9 +154,9 @@ found:
 	return s;
 }
 
-static void atalk_destroy_timer(unsigned long data)
+static void atalk_destroy_timer(struct timer_list *t)
 {
-	struct sock *sk = (struct sock *)data;
+	struct sock *sk = from_timer(sk, t, sk_timer);
 
 	if (sk_has_allocations(sk)) {
 		sk->sk_timer.expires = jiffies + SOCK_DESTROY_TIME;
@@ -175,8 +171,7 @@ static inline void atalk_destroy_socket(struct sock *sk)
 	skb_queue_purge(&sk->sk_receive_queue);
 
 	if (sk_has_allocations(sk)) {
-		setup_timer(&sk->sk_timer, atalk_destroy_timer,
-				(unsigned long)sk);
+		timer_setup(&sk->sk_timer, atalk_destroy_timer, 0);
 		sk->sk_timer.expires	= jiffies + SOCK_DESTROY_TIME;
 		add_timer(&sk->sk_timer);
 	} else
@@ -671,7 +666,7 @@ static int atif_ioctl(int cmd, void __user *arg)
 	struct rtentry rtdef;
 	int add_route;
 
-	if (copy_from_user(&atreq, arg, sizeof(atreq)))
+	if (get_user_ifreq(&atreq, NULL, arg))
 		return -EFAULT;
 
 	dev = __dev_get_by_name(&init_net, atreq.ifr_name);
@@ -712,7 +707,7 @@ static int atif_ioctl(int cmd, void __user *arg)
 
 		/*
 		 * Phase 1 is fine on LocalTalk but we don't do
-		 * EtherTalk phase 1. Anyone wanting to add it go ahead.
+		 * EtherTalk phase 1. Anyone wanting to add it, go ahead.
 		 */
 		if (dev->type == ARPHRD_ETHER && nr->nr_phase != 2)
 			return -EPROTONOSUPPORT;
@@ -833,7 +828,7 @@ static int atif_ioctl(int cmd, void __user *arg)
 		nr = (struct atalk_netrange *)&(atif->nets);
 		/*
 		 * Phase 1 is fine on Localtalk but we don't do
-		 * Ethertalk phase 1. Anyone wanting to add it go ahead.
+		 * Ethertalk phase 1. Anyone wanting to add it, go ahead.
 		 */
 		if (dev->type == ARPHRD_ETHER && nr->nr_phase != 2)
 			return -EPROTONOSUPPORT;
@@ -870,7 +865,25 @@ static int atif_ioctl(int cmd, void __user *arg)
 		return 0;
 	}
 
-	return copy_to_user(arg, &atreq, sizeof(atreq)) ? -EFAULT : 0;
+	return put_user_ifreq(&atreq, arg);
+}
+
+static int atrtr_ioctl_addrt(struct rtentry *rt)
+{
+	struct net_device *dev = NULL;
+
+	if (rt->rt_dev) {
+		char name[IFNAMSIZ];
+
+		if (copy_from_user(name, rt->rt_dev, IFNAMSIZ-1))
+			return -EFAULT;
+		name[IFNAMSIZ-1] = '\0';
+
+		dev = __dev_get_by_name(&init_net, name);
+		if (!dev)
+			return -ENODEV;
+	}
+	return atrtr_create(rt, dev);
 }
 
 /* Routing ioctl() calls */
@@ -888,19 +901,8 @@ static int atrtr_ioctl(unsigned int cmd, void __user *arg)
 		return atrtr_delete(&((struct sockaddr_at *)
 				      &rt.rt_dst)->sat_addr);
 
-	case SIOCADDRT: {
-		struct net_device *dev = NULL;
-		if (rt.rt_dev) {
-			char name[IFNAMSIZ];
-			if (copy_from_user(name, rt.rt_dev, IFNAMSIZ-1))
-				return -EFAULT;
-			name[IFNAMSIZ-1] = '\0';
-			dev = __dev_get_by_name(&init_net, name);
-			if (!dev)
-				return -ENODEV;
-		}
-		return atrtr_create(&rt, dev);
-	}
+	case SIOCADDRT:
+		return atrtr_ioctl_addrt(&rt);
 	}
 	return -EINVAL;
 }
@@ -959,8 +961,8 @@ static unsigned long atalk_sum_skb(const struct sk_buff *skb, int offset,
 			if (copy > len)
 				copy = len;
 			vaddr = kmap_atomic(skb_frag_page(frag));
-			sum = atalk_sum_partial(vaddr + frag->page_offset +
-						  offset - start, copy, sum);
+			sum = atalk_sum_partial(vaddr + skb_frag_off(frag) +
+						offset - start, copy, sum);
 			kunmap_atomic(vaddr);
 
 			if (!(len -= copy))
@@ -1244,7 +1246,7 @@ out:
  * fields into the sockaddr.
  */
 static int atalk_getname(struct socket *sock, struct sockaddr *uaddr,
-			 int *uaddr_len, int peer)
+			 int peer)
 {
 	struct sockaddr_at sat;
 	struct sock *sk = sock->sk;
@@ -1257,7 +1259,6 @@ static int atalk_getname(struct socket *sock, struct sockaddr *uaddr,
 		if (atalk_autobind(sk) < 0)
 			goto out;
 
-	*uaddr_len = sizeof(struct sockaddr_at);
 	memset(&sat, 0, sizeof(sat));
 
 	if (peer) {
@@ -1274,9 +1275,9 @@ static int atalk_getname(struct socket *sock, struct sockaddr *uaddr,
 		sat.sat_port	    = at->src_port;
 	}
 
-	err = 0;
 	sat.sat_family = AF_APPLETALK;
 	memcpy(uaddr, &sat, sizeof(sat));
+	err = sizeof(struct sockaddr_at);
 
 out:
 	release_sock(sk);
@@ -1406,9 +1407,10 @@ drop:
 
 /**
  *	atalk_rcv - Receive a packet (in skb) from device dev
- *	@skb - packet received
- *	@dev - network device where the packet comes from
- *	@pt - packet type
+ *	@skb: packet received
+ *	@dev: network device where the packet comes from
+ *	@pt: packet type
+ *	@orig_dev: the original receive net device
  *
  *	Receive a packet (in skb) from device dev. This has come from the SNAP
  *	decoder, and on entry skb->transport_header is the DDP header, skb->len
@@ -1821,12 +1823,6 @@ static int atalk_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 		rc = put_user(amount, (int __user *)argp);
 		break;
 	}
-	case SIOCGSTAMP:
-		rc = sock_get_timestamp(sk, argp);
-		break;
-	case SIOCGSTAMPNS:
-		rc = sock_get_timestampns(sk, argp);
-		break;
 	/* Routing */
 	case SIOCADDRT:
 	case SIOCDELRT:
@@ -1853,20 +1849,58 @@ static int atalk_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 
 
 #ifdef CONFIG_COMPAT
+static int atalk_compat_routing_ioctl(struct sock *sk, unsigned int cmd,
+		struct compat_rtentry __user *ur)
+{
+	compat_uptr_t rtdev;
+	struct rtentry rt;
+
+	if (copy_from_user(&rt.rt_dst, &ur->rt_dst,
+			3 * sizeof(struct sockaddr)) ||
+	    get_user(rt.rt_flags, &ur->rt_flags) ||
+	    get_user(rt.rt_metric, &ur->rt_metric) ||
+	    get_user(rt.rt_mtu, &ur->rt_mtu) ||
+	    get_user(rt.rt_window, &ur->rt_window) ||
+	    get_user(rt.rt_irtt, &ur->rt_irtt) ||
+	    get_user(rtdev, &ur->rt_dev))
+		return -EFAULT;
+
+	switch (cmd) {
+	case SIOCDELRT:
+		if (rt.rt_dst.sa_family != AF_APPLETALK)
+			return -EINVAL;
+		return atrtr_delete(&((struct sockaddr_at *)
+				      &rt.rt_dst)->sat_addr);
+
+	case SIOCADDRT:
+		rt.rt_dev = compat_ptr(rtdev);
+		return atrtr_ioctl_addrt(&rt);
+	default:
+		return -EINVAL;
+	}
+}
 static int atalk_compat_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 {
+	void __user *argp = compat_ptr(arg);
+	struct sock *sk = sock->sk;
+
+	switch (cmd) {
+	case SIOCADDRT:
+	case SIOCDELRT:
+		return atalk_compat_routing_ioctl(sk, cmd, argp);
 	/*
 	 * SIOCATALKDIFADDR is a SIOCPROTOPRIVATE ioctl number, so we
 	 * cannot handle it in common code. The data we access if ifreq
 	 * here is compatible, so we can simply call the native
 	 * handler.
 	 */
-	if (cmd == SIOCATALKDIFADDR)
-		return atalk_ioctl(sock, cmd, (unsigned long)compat_ptr(arg));
-
-	return -ENOIOCTLCMD;
+	case SIOCATALKDIFADDR:
+		return atalk_ioctl(sock, cmd, (unsigned long)argp);
+	default:
+		return -ENOIOCTLCMD;
+	}
 }
-#endif
+#endif /* CONFIG_COMPAT */
 
 
 static const struct net_proto_family atalk_family_ops = {
@@ -1886,13 +1920,12 @@ static const struct proto_ops atalk_dgram_ops = {
 	.getname	= atalk_getname,
 	.poll		= datagram_poll,
 	.ioctl		= atalk_ioctl,
+	.gettstamp	= sock_gettstamp,
 #ifdef CONFIG_COMPAT
 	.compat_ioctl	= atalk_compat_ioctl,
 #endif
 	.listen		= sock_no_listen,
 	.shutdown	= sock_no_shutdown,
-	.setsockopt	= sock_no_setsockopt,
-	.getsockopt	= sock_no_getsockopt,
 	.sendmsg	= atalk_sendmsg,
 	.recvmsg	= atalk_recvmsg,
 	.mmap		= sock_no_mmap,
@@ -1984,7 +2017,7 @@ module_init(atalk_init);
  * by the network device layer.
  *
  * Ergo, before the AppleTalk module can be removed, all AppleTalk
- * sockets be closed from user space.
+ * sockets should be closed from user space.
  */
 static void __exit atalk_exit(void)
 {

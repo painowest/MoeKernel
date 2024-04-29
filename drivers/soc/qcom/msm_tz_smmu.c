@@ -1,19 +1,13 @@
-/* Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2015-2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/of.h>
-#include <soc/qcom/scm.h>
+#include <linux/qcom_scm.h>
 #include <soc/qcom/msm_tz_smmu.h>
 
 static const char * const device_id_mappings[] = {
@@ -73,52 +67,31 @@ enum tz_smmu_device_id msm_dev_to_device_id(struct device *dev)
 	return TZ_DEVICE_MAX;
 }
 
-static int __msm_tz_smmu_atos(struct device *dev, int cb_num, int operation)
+int msm_tz_smmu_atos_start(struct device *dev, int cb_num)
 {
-	int ret;
-	struct scm_desc desc = {0};
 	enum tz_smmu_device_id devid = msm_dev_to_device_id(dev);
 
 	if (devid == TZ_DEVICE_MAX)
 		return -ENODEV;
 
-	desc.args[0] = devid;
-	desc.args[1] = cb_num;
-	desc.args[2] = operation;
-	desc.arginfo = SCM_ARGS(3, SCM_VAL, SCM_VAL, SCM_VAL);
-
-	ret = scm_call2(SCM_SIP_FNID(SCM_SVC_MP, TZ_SMMU_PREPARE_ATOS_ID),
-			&desc);
-	if (ret)
-		pr_info("%s: TZ SMMU ATOS %s failed, ret = %d\n",
-			__func__,
-			operation == TZ_SMMU_ATOS_START ? "start" : "end",
-			ret);
-	return ret;
-}
-
-int msm_tz_smmu_atos_start(struct device *dev, int cb_num)
-{
-	return __msm_tz_smmu_atos(dev, cb_num, TZ_SMMU_ATOS_START);
+	return qcom_scm_smmu_prepare_atos_id(devid, cb_num, TZ_SMMU_ATOS_START);
 }
 
 int msm_tz_smmu_atos_end(struct device *dev, int cb_num)
 {
-	return __msm_tz_smmu_atos(dev, cb_num, TZ_SMMU_ATOS_END);
+	enum tz_smmu_device_id devid = msm_dev_to_device_id(dev);
+
+	if (devid == TZ_DEVICE_MAX)
+		return -ENODEV;
+
+	return qcom_scm_smmu_prepare_atos_id(devid, cb_num, TZ_SMMU_ATOS_END);
 }
 
 int msm_tz_set_cb_format(enum tz_smmu_device_id sec_id, int cbndx)
 {
-	struct scm_desc desc = {0};
-	int ret = 0;
+	int ret;
 
-	desc.args[0] = sec_id;
-	desc.args[1] = cbndx;
-	desc.args[2] = 1;	/* Enable */
-	desc.arginfo = SCM_ARGS(3, SCM_VAL, SCM_VAL, SCM_VAL);
-
-	ret = scm_call2(SCM_SIP_FNID(SCM_SVC_SMMU_PROGRAM,
-			SMMU_CHANGE_PAGETABLE_FORMAT), &desc);
+	ret = qcom_scm_smmu_change_pgtbl_format(sec_id, cbndx);
 
 	if (ret) {
 		WARN(1, "Format change failed for CB %d with ret %d\n",

@@ -1,13 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * u_uac1_legacy.h -- interface to USB gadget "ALSA AUDIO" utilities
  *
  * Copyright (c) 2020, The Linux Foundation. All rights reserved.
  * Copyright (C) 2008 Bryan Wu <cooloney@kernel.org>
  * Copyright (C) 2008 Analog Devices, Inc
- *
- * Enter bugs at http://blackfin.uclinux.org/
- *
- * Licensed under the GPL-2 or later.
  */
 #ifndef __U_UAC1_LEGACY_H
 #define __U_UAC1_LEGACY_H

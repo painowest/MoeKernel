@@ -1,6 +1,5 @@
-/* -*- mode: c; c-basic-offset: 8; -*-
- * vim: noexpandtab sw=8 ts=8 sts=0:
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
  * xattr.c
  *
  * Copyright (C) 2004, 2008 Oracle.  All rights reserved.
@@ -8,15 +7,6 @@
  * CREDITS:
  * Lots of code in this file is copy from linux/fs/ext3/xattr.c.
  * Copyright (C) 2001-2003 Andreas Gruenbacher, <agruen@suse.de>
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public
- * License version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
  */
 
 #include <linux/capability.h>
@@ -648,6 +638,7 @@ int ocfs2_calc_xattr_init(struct inode *dir,
 			if (S_ISDIR(mode))
 				a_size <<= 1;
 		} else if (acl_len != 0 && acl_len != -ENODATA) {
+			ret = acl_len;
 			mlog_errno(ret);
 			return ret;
 		}
@@ -903,7 +894,7 @@ static int ocfs2_xattr_list_entry(struct super_block *sb,
 
 	case OCFS2_XATTR_INDEX_POSIX_ACL_ACCESS:
 	case OCFS2_XATTR_INDEX_POSIX_ACL_DEFAULT:
-		if (!(sb->s_flags & MS_POSIXACL))
+		if (!(sb->s_flags & SB_POSIXACL))
 			return 0;
 		break;
 
@@ -3563,7 +3554,7 @@ int ocfs2_xattr_set(struct inode *inode,
 		.not_found = -ENODATA,
 	};
 
-	if (!ocfs2_supports_xattr(OCFS2_SB(inode->i_sb)))
+	if (!ocfs2_supports_xattr(osb))
 		return -EOPNOTSUPP;
 
 	/*
@@ -6414,7 +6405,7 @@ static int ocfs2_reflink_xattr_header(handle_t *handle,
 		 * and then insert the extents one by one.
 		 */
 		if (xv->xr_list.l_tree_depth) {
-			memcpy(new_xv, &def_xv, sizeof(def_xv));
+			memcpy(new_xv, &def_xv, OCFS2_XATTR_ROOT_SIZE);
 			vb->vb_xv = new_xv;
 			vb->vb_bh = value_bh;
 			ocfs2_init_xattr_value_extent_tree(&data_et,
@@ -7256,6 +7247,7 @@ static int ocfs2_xattr_security_get(const struct xattr_handler *handler,
 }
 
 static int ocfs2_xattr_security_set(const struct xattr_handler *handler,
+				    struct user_namespace *mnt_userns,
 				    struct dentry *unused, struct inode *inode,
 				    const char *name, const void *value,
 				    size_t size, int flags)
@@ -7267,8 +7259,20 @@ static int ocfs2_xattr_security_set(const struct xattr_handler *handler,
 static int ocfs2_initxattrs(struct inode *inode, const struct xattr *xattr_array,
 		     void *fs_info)
 {
+	struct ocfs2_security_xattr_info *si = fs_info;
 	const struct xattr *xattr;
 	int err = 0;
+
+	if (si) {
+		si->value = kmemdup(xattr_array->value, xattr_array->value_len,
+				    GFP_KERNEL);
+		if (!si->value)
+			return -ENOMEM;
+
+		si->name = xattr_array->name;
+		si->value_len = xattr_array->value_len;
+		return 0;
+	}
 
 	for (xattr = xattr_array; xattr->name != NULL; xattr++) {
 		err = ocfs2_xattr_set(inode, OCFS2_XATTR_INDEX_SECURITY,
@@ -7285,13 +7289,23 @@ int ocfs2_init_security_get(struct inode *inode,
 			    const struct qstr *qstr,
 			    struct ocfs2_security_xattr_info *si)
 {
+	int ret;
+
 	/* check whether ocfs2 support feature xattr */
 	if (!ocfs2_supports_xattr(OCFS2_SB(dir->i_sb)))
 		return -EOPNOTSUPP;
-	if (si)
-		return security_old_inode_init_security(inode, dir, qstr,
-							&si->name, &si->value,
-							&si->value_len);
+	if (si) {
+		ret = security_inode_init_security(inode, dir, qstr,
+						   &ocfs2_initxattrs, si);
+		/*
+		 * security_inode_init_security() does not return -EOPNOTSUPP,
+		 * we have to check the xattr ourselves.
+		 */
+		if (!ret && !si->name)
+			si->enable = 0;
+
+		return ret;
+	}
 
 	return security_inode_init_security(inode, dir, qstr,
 					    &ocfs2_initxattrs, NULL);
@@ -7328,6 +7342,7 @@ static int ocfs2_xattr_trusted_get(const struct xattr_handler *handler,
 }
 
 static int ocfs2_xattr_trusted_set(const struct xattr_handler *handler,
+				   struct user_namespace *mnt_userns,
 				   struct dentry *unused, struct inode *inode,
 				   const char *name, const void *value,
 				   size_t size, int flags)
@@ -7358,6 +7373,7 @@ static int ocfs2_xattr_user_get(const struct xattr_handler *handler,
 }
 
 static int ocfs2_xattr_user_set(const struct xattr_handler *handler,
+				struct user_namespace *mnt_userns,
 				struct dentry *unused, struct inode *inode,
 				const char *name, const void *value,
 				size_t size, int flags)

@@ -53,6 +53,12 @@ static inline void sync_initial_page_table(void) { }
 
 struct mm_struct;
 
+#define mm_p4d_folded mm_p4d_folded
+static inline bool mm_p4d_folded(struct mm_struct *mm)
+{
+	return !pgtable_l5_enabled();
+}
+
 void set_pte_vaddr_p4d(p4d_t *p4d_page, unsigned long vaddr, pte_t new_pte);
 void set_pte_vaddr_pud(pud_t *pud_page, unsigned long vaddr, pte_t new_pte);
 
@@ -219,29 +225,26 @@ static inline pgd_t pti_set_user_pgd(pgd_t *pgdp, pgd_t pgd)
 
 static inline void native_set_p4d(p4d_t *p4dp, p4d_t p4d)
 {
-#if defined(CONFIG_PAGE_TABLE_ISOLATION) && !defined(CONFIG_X86_5LEVEL)
-	WRITE_ONCE(p4dp->pgd, pti_set_user_pgd(&p4dp->pgd, p4d.pgd));
-#else
-	WRITE_ONCE(*p4dp, p4d);
-#endif
+	pgd_t pgd;
+
+	if (pgtable_l5_enabled() || !IS_ENABLED(CONFIG_PAGE_TABLE_ISOLATION)) {
+		WRITE_ONCE(*p4dp, p4d);
+		return;
+	}
+
+	pgd = native_make_pgd(native_p4d_val(p4d));
+	pgd = pti_set_user_pgtbl((pgd_t *)p4dp, pgd);
+	WRITE_ONCE(*p4dp, native_make_p4d(native_pgd_val(pgd)));
 }
 
 static inline void native_p4d_clear(p4d_t *p4d)
 {
-#ifdef CONFIG_X86_5LEVEL
 	native_set_p4d(p4d, native_make_p4d(0));
-#else
-	native_set_p4d(p4d, (p4d_t) { .pgd = native_make_pgd(0)});
-#endif
 }
 
 static inline void native_set_pgd(pgd_t *pgdp, pgd_t pgd)
 {
-#ifdef CONFIG_PAGE_TABLE_ISOLATION
-	WRITE_ONCE(*pgdp, pti_set_user_pgd(pgdp, pgd));
-#else
-	WRITE_ONCE(*pgdp, pgd);
-#endif
+	WRITE_ONCE(*pgdp, pti_set_user_pgtbl(pgdp, pgd));
 }
 
 static inline void native_pgd_clear(pgd_t *pgd)
@@ -249,35 +252,25 @@ static inline void native_pgd_clear(pgd_t *pgd)
 	native_set_pgd(pgd, native_make_pgd(0));
 }
 
-extern void sync_global_pgds(unsigned long start, unsigned long end);
-
 /*
  * Conversion functions: convert a page and protection to a page entry,
  * and a page entry and page directory to the page they refer to.
  */
 
-/*
- * Level 4 access.
- */
-static inline int pgd_large(pgd_t pgd) { return 0; }
-#define mk_kernel_pgd(address) __pgd((address) | _KERNPG_TABLE)
+/* PGD - Level 4 access */
 
-/* PUD - Level3 access */
+/* PUD - Level 3 access */
 
-/* PMD  - Level 2 access */
+/* PMD - Level 2 access */
 
-/* PTE - Level 1 access. */
-
-/* x86-64 always has all page tables mapped. */
-#define pte_offset_map(dir, address) pte_offset_kernel((dir), (address))
-#define pte_unmap(pte) ((void)(pte))/* NOP */
+/* PTE - Level 1 access */
 
 /*
  * Encode and de-code a swap entry
  *
  * |     ...            | 11| 10|  9|8|7|6|5| 4| 3|2| 1|0| <- bit number
  * |     ...            |SW3|SW2|SW1|G|L|D|A|CD|WT|U| W|P| <- bit names
- * | TYPE (59-63) | ~OFFSET (9-58)  |0|0|X|X| X| X|X|SD|0| <- swp entry
+ * | TYPE (59-63) | ~OFFSET (9-58)  |0|0|X|X| X| X|F|SD|0| <- swp entry
  *
  * G (8) is aliased and used as a PROT_NONE indicator for
  * !present ptes.  We need to start storing swap entries above
@@ -285,8 +278,14 @@ static inline int pgd_large(pgd_t pgd) { return 0; }
  * erratum where they can be incorrectly set by hardware on
  * non-present PTEs.
  *
+ * SD Bits 1-4 are not used in non-present format and available for
+ * special use described below:
+ *
  * SD (1) in swp entry is used to store soft dirty bit, which helps us
  * remember soft dirty over page migration
+ *
+ * F (2) in swp entry is used to record when a pagetable is
+ * writeprotected by userfaultfd WP support.
  *
  * Bit 7 in swp entry should be 0 because pmd_present checks not only P,
  * but also L and G.
@@ -320,17 +319,14 @@ static inline int pgd_large(pgd_t pgd) { return 0; }
 
 #define __pte_to_swp_entry(pte)		((swp_entry_t) { pte_val((pte)) })
 #define __pmd_to_swp_entry(pmd)		((swp_entry_t) { pmd_val((pmd)) })
-#define __swp_entry_to_pte(x)		((pte_t) { .pte = (x).val })
-#define __swp_entry_to_pmd(x)		((pmd_t) { .pmd = (x).val })
+#define __swp_entry_to_pte(x)		(__pte((x).val))
+#define __swp_entry_to_pmd(x)		(__pmd((x).val))
 
 extern int kern_addr_valid(unsigned long addr);
 extern void cleanup_highmap(void);
 
 #define HAVE_ARCH_UNMAPPED_AREA
 #define HAVE_ARCH_UNMAPPED_AREA_TOPDOWN
-
-#define pgtable_cache_init()   do { } while (0)
-#define check_pgt_cache()      do { } while (0)
 
 #define PAGE_AGP    PAGE_KERNEL_NOCACHE
 #define HAVE_PAGE_AGP 1
@@ -347,15 +343,8 @@ extern void init_extra_mapping_uc(unsigned long phys, unsigned long size);
 extern void init_extra_mapping_wb(unsigned long phys, unsigned long size);
 
 #define gup_fast_permitted gup_fast_permitted
-static inline bool gup_fast_permitted(unsigned long start, int nr_pages,
-		int write)
+static inline bool gup_fast_permitted(unsigned long start, unsigned long end)
 {
-	unsigned long len, end;
-
-	len = (unsigned long)nr_pages << PAGE_SHIFT;
-	end = start + len;
-	if (end < start)
-		return false;
 	if (end >> __VIRTUAL_MASK_SHIFT)
 		return false;
 	return true;

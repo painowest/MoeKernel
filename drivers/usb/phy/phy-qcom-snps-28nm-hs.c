@@ -1,14 +1,7 @@
-/* Copyright (c) 2009-2018, Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2009-2018, 2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -25,8 +18,8 @@
 #include <linux/regulator/machine.h>
 #include <linux/usb/phy.h>
 #include <linux/reset.h>
-
 #include <linux/usb/msm_hsusb_hw.h>
+#include <linux/usb/dwc3-msm.h>
 
 #define MSM_USB_PHY_CSR_BASE			phy->phy_csr_regs
 #define USB_HSPHY_3P3_VOL_MIN			3050000 /* uV */
@@ -70,12 +63,8 @@ struct msm_snps_hsphy {
 	struct regulator_bulk_data	regulator[USB_HSPHY_MAX_REGULATORS];
 
 	struct mutex		phy_lock;
+	bool			reg_enabled;
 };
-
-static char *override_phy_init;
-module_param(override_phy_init, charp, 0644);
-MODULE_PARM_DESC(override_phy_init,
-		"Override SNPS HS PHY Init Settings");
 
 struct hsphy_reg_val {
 	u32 offset;
@@ -140,6 +129,8 @@ static int msm_snps_hsphy_disable_regulators(struct msm_snps_hsphy *phy)
 	int ret = 0;
 
 	dev_dbg(phy->phy.dev, "%s turn off regulators\n", __func__);
+	if (!phy->reg_enabled)
+		return 0;
 
 	mutex_lock(&phy->phy_lock);
 	ret = regulator_bulk_disable(USB_HSPHY_MAX_REGULATORS, phy->regulator);
@@ -157,6 +148,7 @@ static int msm_snps_hsphy_disable_regulators(struct msm_snps_hsphy *phy)
 	ret = msm_snps_hsphy_config_regulators(phy, 0);
 
 	mutex_unlock(&phy->phy_lock);
+	phy->reg_enabled = false;
 
 	return ret;
 }
@@ -166,6 +158,9 @@ static int msm_snps_hsphy_enable_regulators(struct msm_snps_hsphy *phy)
 	int ret = 0;
 
 	dev_dbg(phy->phy.dev, "%s turn on regulators.\n", __func__);
+
+	if (phy->reg_enabled)
+		return 0;
 
 	mutex_lock(&phy->phy_lock);
 	ret = msm_snps_hsphy_config_regulators(phy, 1);
@@ -195,6 +190,7 @@ static int msm_snps_hsphy_enable_regulators(struct msm_snps_hsphy *phy)
 		goto unset_3p3_load;
 
 	mutex_unlock(&phy->phy_lock);
+	phy->reg_enabled = true;
 
 	dev_dbg(phy->phy.dev, "%s(): HSUSB PHY's regulators are turned ON.\n",
 								__func__);
@@ -265,18 +261,9 @@ static int msm_snps_phy_block_reset(struct msm_snps_hsphy *phy)
 static void msm_snps_hsphy_por(struct msm_snps_hsphy *phy)
 {
 	struct hsphy_reg_val *reg = NULL;
-	u32 aseq[20];
 	u32 *seq, tmp;
 
-	if (override_phy_init) {
-		dev_dbg(phy->phy.dev, "Override HS PHY Init:%s\n",
-							override_phy_init);
-		get_options(override_phy_init, ARRAY_SIZE(aseq), aseq);
-		seq = &aseq[1];
-	} else {
-		seq = phy->phy_init_seq;
-	}
-
+	seq = phy->phy_init_seq;
 	reg = (struct hsphy_reg_val *)seq;
 	if (!reg)
 		return;
@@ -348,6 +335,7 @@ static int msm_snps_hsphy_init(struct usb_phy *uphy)
 	int ret;
 
 	dev_dbg(phy->phy.dev, "%s: Initialize HS PHY\n", __func__);
+	msm_snps_hsphy_enable_regulators(phy);
 	ret = msm_snps_phy_block_reset(phy);
 	if (ret)
 		return ret;
@@ -438,6 +426,7 @@ static int msm_snps_hsphy_set_suspend(struct usb_phy *uphy, int suspend)
 		if (phy->cable_connected) {
 			msm_snps_hsphy_enable_clocks(phy);
 			msm_snps_hsphy_disable_hv_interrupts(phy);
+			msm_snps_hsphy_init(uphy);
 		} else {
 			msm_snps_hsphy_enable_regulators(phy);
 			msm_snps_hsphy_enable_clocks(phy);
@@ -491,7 +480,7 @@ static int msm_snps_dpdm_regulator_is_enabled(struct regulator_dev *rdev)
 	return phy->dpdm_enable;
 }
 
-static struct regulator_ops msm_snps_dpdm_regulator_ops = {
+static const struct regulator_ops msm_snps_dpdm_regulator_ops = {
 	.enable		= msm_snps_dpdm_regulator_enable,
 	.disable	= msm_snps_dpdm_regulator_disable,
 	.is_enabled	= msm_snps_dpdm_regulator_is_enabled,
@@ -519,10 +508,7 @@ static int msm_snps_dpdm_regulator_register(struct msm_snps_hsphy *phy)
 	cfg.of_node = dev->of_node;
 
 	phy->dpdm_rdev = devm_regulator_register(dev, &phy->dpdm_rdesc, &cfg);
-	if (IS_ERR(phy->dpdm_rdev))
-		return PTR_ERR(phy->dpdm_rdev);
-
-	return 0;
+	return PTR_ERR_OR_ZERO(phy->dpdm_rdev);
 }
 
 static int msm_snps_hsphy_notify_connect(struct usb_phy *uphy,
@@ -580,7 +566,7 @@ static int msm_snps_hsphy_probe(struct platform_device *pdev)
 
 	phy->sleep_clk = devm_clk_get(dev, "sleep_clk");
 	if (IS_ERR(phy->sleep_clk)) {
-		dev_err(dev, "%s failed to get sleep_clk %d",
+		dev_err(dev, "%s failed to get sleep_clk %d\n",
 					__func__, PTR_ERR(phy->sleep_clk));
 		return PTR_ERR(phy->sleep_clk);
 	}
@@ -653,6 +639,7 @@ static int msm_snps_hsphy_probe(struct platform_device *pdev)
 	phy->phy.set_suspend		= msm_snps_hsphy_set_suspend;
 	phy->phy.notify_connect		= msm_snps_hsphy_notify_connect;
 	phy->phy.notify_disconnect	= msm_snps_hsphy_notify_disconnect;
+	phy->phy.type			= USB_PHY_TYPE_USB2;
 
 	mutex_init(&phy->phy_lock);
 	ret = msm_snps_dpdm_regulator_register(phy);

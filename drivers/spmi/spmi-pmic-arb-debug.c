@@ -1,15 +1,5 @@
-/*
- * Copyright (c) 2012-2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0-only
+/* Copyright (c) 2012-2018, 2020, The Linux Foundation. All rights reserved. */
 
 #include <linux/clk.h>
 #include <linux/delay.h>
@@ -133,13 +123,13 @@ static int pmic_arb_debug_issue_command(struct spmi_controller *ctrl, u8 opc,
 	u8 byte_count = len - 1;
 
 	if (byte_count >= PMIC_ARB_MAX_TRANS_BYTES) {
-		dev_err(&ctrl->dev, "pmic-arb supports 1 to %d bytes per transaction, but %zu requested",
+		dev_err(&ctrl->dev, "pmic-arb supports 1 to %d bytes per transaction, but %zu requested\n",
 			PMIC_ARB_MAX_TRANS_BYTES, len);
 		return  -EINVAL;
 	}
 
 	if (sid > PMIC_ARB_MAX_SID) {
-		dev_err(&ctrl->dev, "pmic-arb supports sid 0 to %u, but %u requested",
+		dev_err(&ctrl->dev, "pmic-arb supports sid 0 to %u, but %u requested\n",
 			PMIC_ARB_MAX_SID, sid);
 		return  -EINVAL;
 	}
@@ -213,7 +203,7 @@ static int pmic_arb_debug_write_cmd(struct spmi_controller *ctrl, u8 opc,
 	int i, rc;
 
 	if (len > PMIC_ARB_MAX_TRANS_BYTES) {
-		dev_err(&ctrl->dev, "pmic-arb supports 1 to %d bytes per transaction, but %zu requested",
+		dev_err(&ctrl->dev, "pmic-arb supports 1 to %d bytes per transaction, but %zu requested\n",
 			PMIC_ARB_MAX_TRANS_BYTES, len);
 		return  -EINVAL;
 	}
@@ -258,13 +248,21 @@ static int spmi_pmic_arb_debug_probe(struct platform_device *pdev)
 	int rc;
 	u32 fuse_val, fuse_bit;
 	void __iomem *fuse_addr;
+	bool is_disable_fuse = true;
 
-	/* Check if the debug bus is disabled by a fuse. */
+	/* Check if the debug bus is enabled or disabled by a fuse. */
 	rc = of_property_read_u32(pdev->dev.of_node, "qcom,fuse-disable-bit",
 				  &fuse_bit);
+	if (rc) {
+		is_disable_fuse = false;
+		rc = of_property_read_u32(pdev->dev.of_node,
+					  "qcom,fuse-enable-bit",
+					  &fuse_bit);
+	}
 	if (!rc) {
 		if (fuse_bit > 31) {
-			dev_err(&pdev->dev, "qcom,fuse-disable-bit supports values 0 to 31, but %u specified\n",
+			dev_err(&pdev->dev, "qcom,fuse-%s-bit supports values 0 to 31, but %u specified\n",
+				is_disable_fuse ? "disable" : "enable",
 				fuse_bit);
 			return -EINVAL;
 		}
@@ -276,14 +274,14 @@ static int spmi_pmic_arb_debug_probe(struct platform_device *pdev)
 			return -EINVAL;
 		}
 
-		fuse_addr = devm_ioremap_resource(&pdev->dev, res);
-		if (IS_ERR(fuse_addr))
-			return PTR_ERR(fuse_addr);
+		fuse_addr = ioremap(res->start, resource_size(res));
+		if (!fuse_addr)
+			return -EINVAL;
 
 		fuse_val = readl_relaxed(fuse_addr);
-		devm_iounmap(&pdev->dev, fuse_addr);
+		iounmap(fuse_addr);
 
-		if (fuse_val & BIT(fuse_bit)) {
+		if (!!(fuse_val & BIT(fuse_bit)) == is_disable_fuse) {
 			dev_err(&pdev->dev, "SPMI PMIC arbiter debug bus disabled by fuse\n");
 			return -ENODEV;
 		}

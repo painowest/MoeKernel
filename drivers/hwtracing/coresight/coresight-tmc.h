@@ -1,18 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Copyright(C) 2015 Linaro Limited. All rights reserved.
  * Author: Mathieu Poirier <mathieu.poirier@linaro.org>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program.  If not, see <http://www.gnu.org/licenses/>.
+ * Copyright (c) 2022-2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _CORESIGHT_TMC_H
@@ -21,19 +11,13 @@
 #include <linux/dma-mapping.h>
 #include <linux/idr.h>
 #include <linux/miscdevice.h>
-#include <linux/delay.h>
-#include <asm/cacheflush.h>
-#include <linux/of_address.h>
-#include <linux/amba/bus.h>
-#include <linux/usb_bam.h>
-#include <linux/msm-sps.h>
-#include <linux/usb/usb_qdss.h>
-#include <linux/coresight-cti.h>
 #include <linux/mutex.h>
 #include <linux/refcount.h>
-#include <linux/ipa_qdss.h>
-
+#include "coresight-priv.h"
 #include "coresight-byte-cntr.h"
+#include "coresight-tmc-eth.h"
+#include "coresight-tmc-usb.h"
+#include "coresight-tmc-pcie.h"
 
 #define TMC_RSZ			0x004
 #define TMC_STS			0x00c
@@ -92,11 +76,9 @@
 #define TMC_AXICTL_PROT_CTL_B0	BIT(0)
 #define TMC_AXICTL_PROT_CTL_B1	BIT(1)
 #define TMC_AXICTL_CACHE_CTL_B0	BIT(2)
-#define TMC_AXICTL_CACHE_CTL_B1	BIT(3)
-#define TMC_AXICTL_CACHE_CTL_B2	BIT(4)
-#define TMC_AXICTL_CACHE_CTL_B3	BIT(5)
 #define TMC_AXICTL_SCT_GAT_MODE	BIT(7)
-#define TMC_AXICTL_WR_BURST_16	0xF00
+#define TMC_AXICTL_WR_BURST(v)	(((v) & 0xf) << 8)
+#define TMC_AXICTL_WR_BURST_16	0xf
 /* Write-back Read and Write-allocate */
 #define TMC_AXICTL_AXCACHE_OS	(0xf << 2)
 #define TMC_AXICTL_ARCACHE_OS	(0xf << 16)
@@ -105,6 +87,7 @@
 #define TMC_FFCR_FLUSHMAN_BIT	6
 #define TMC_FFCR_EN_FMT		BIT(0)
 #define TMC_FFCR_EN_TI		BIT(1)
+#define TMC_FFCR_FONFLIN_BIT	BIT(2)
 #define TMC_FFCR_FON_FLIN	BIT(4)
 #define TMC_FFCR_FON_TRIG_EVT	BIT(5)
 #define TMC_FFCR_TRIGON_TRIGIN	BIT(8)
@@ -119,6 +102,8 @@
 #define TMC_ETR_BAM_NR_PIPES	2
 
 #define TMC_ETR_PCIE_MEM_SIZE	0x400000
+
+#define TMC_AUTH_NSID_MASK	GENMASK(1, 0)
 
 #define TMC_AUTH_NSID_MASK	GENMASK(1, 0)
 
@@ -159,48 +144,8 @@ enum tmc_mem_intf_width {
 #define CORESIGHT_SOC_600_ETR_CAPS	\
 	(TMC_ETR_SAVE_RESTORE | TMC_ETR_AXI_ARCACHE)
 
-enum tmc_etr_pcie_path {
-	TMC_ETR_PCIE_SW_PATH,
-	TMC_ETR_PCIE_HW_PATH,
-};
-
-static const char * const str_tmc_etr_pcie_path[] = {
-	[TMC_ETR_PCIE_SW_PATH]	= "sw",
-	[TMC_ETR_PCIE_HW_PATH]	= "hw",
-};
-
-enum tmc_etr_out_mode {
-	TMC_ETR_OUT_MODE_NONE,
-	TMC_ETR_OUT_MODE_MEM,
-	TMC_ETR_OUT_MODE_USB,
-	TMC_ETR_OUT_MODE_PCIE,
-};
-
-static const char * const str_tmc_etr_out_mode[] = {
-	[TMC_ETR_OUT_MODE_NONE]		= "none",
-	[TMC_ETR_OUT_MODE_MEM]		= "mem",
-	[TMC_ETR_OUT_MODE_USB]		= "usb",
-	[TMC_ETR_OUT_MODE_PCIE]		= "pcie",
-};
-
-struct tmc_etr_ipa_data {
-	struct ipa_qdss_conn_out_params ipa_qdss_out;
-	struct ipa_qdss_conn_in_params  ipa_qdss_in;
-};
-
-struct tmc_etr_bam_data {
-	struct sps_bam_props	props;
-	unsigned long		handle;
-	struct sps_pipe		*pipe;
-	struct sps_connect	connect;
-	uint32_t		src_pipe_idx;
-	unsigned long		dest;
-	uint32_t		dest_pipe_idx;
-	struct sps_mem_buffer	desc_fifo;
-	struct sps_mem_buffer	data_fifo;
-	bool			enable;
-	enum usb_pipe_mem_type	mem_type;
-};
+/* SW USB reserved memory size */
+#define TMC_ETR_SW_USB_BUF_SIZE SZ_64M
 
 enum etr_mode {
 	ETR_MODE_FLAT,		/* Uses contiguous flat buffer */
@@ -209,6 +154,22 @@ enum etr_mode {
 };
 
 struct etr_buf_operations;
+
+enum tmc_etr_out_mode {
+	TMC_ETR_OUT_MODE_NONE,
+	TMC_ETR_OUT_MODE_MEM,
+	TMC_ETR_OUT_MODE_USB,
+	TMC_ETR_OUT_MODE_PCIE,
+	TMC_ETR_OUT_MODE_ETH,
+};
+
+static const char * const str_tmc_etr_out_mode[] = {
+	[TMC_ETR_OUT_MODE_NONE]		= "none",
+	[TMC_ETR_OUT_MODE_MEM]		= "mem",
+	[TMC_ETR_OUT_MODE_USB]		= "usb",
+	[TMC_ETR_OUT_MODE_ETH]		= "eth",
+	[TMC_ETR_OUT_MODE_PCIE]		= "pcie",
+};
 
 /**
  * struct etr_buf - Details of the buffer used by ETR
@@ -237,7 +198,6 @@ struct etr_buf {
 /**
  * struct tmc_drvdata - specifics associated to an TMC component
  * @base:	memory mapped base address for this component.
- * @dev:	the device entity associated to this component.
  * @csdev:	component vitals needed by the framework.
  * @miscdev:	specifics to handle "/dev/xyz.tmc" entry.
  * @spinlock:	only one at a time pls.
@@ -247,6 +207,8 @@ struct etr_buf {
  * @etr_buf:	details of buffer used in TMC-ETR
  * @len:	size of the available trace for ETF/ETB.
  * @size:	trace buffer size for this TMC (common for all modes).
+ * @max_burst_size: The maximum burst size that can be initiated by
+ *		TMC-ETR on AXI bus.
  * @mode:	how this TMC is being used.
  * @config_type: TMC variant, must be of type @tmc_config_type.
  * @memwidth:	width of the memory interface databus, in bytes.
@@ -257,47 +219,62 @@ struct etr_buf {
  * @idr_mutex:	Access serialisation for idr.
  * @sysfs_buf:	SYSFS buffer for ETR.
  * @perf_buf:	PERF buffer for ETR.
+ * @byte_cntr:	Byte-cntr data for ETR.
+ * @csr:	CSR data for ETR.
+ * @csr_name:	The name of ETR's CSR.
+ * @atid_offset: The atid csr register's offset from csr base address.
+ * @mode_support: The out_modes that ETR supports.
+ * @out_mode:	Current out mode of ETR.
+ * @usb_data:	USB data for ETR when out mode is USB.
+ * @eth_data:	ETH data for ETR when out mode is ETH.
  */
 struct tmc_drvdata {
 	void __iomem		*base;
-	struct device		*dev;
 	struct coresight_device	*csdev;
 	struct miscdevice	miscdev;
 	spinlock_t		spinlock;
 	pid_t			pid;
 	bool			reading;
-	bool			enable;
 	union {
 		char		*buf;		/* TMC ETB */
 		struct etr_buf	*etr_buf;	/* TMC ETR */
 	};
 	u32			len;
 	u32			size;
+	u32			max_burst_size;
 	u32			mode;
 	enum tmc_config_type	config_type;
 	enum tmc_mem_intf_width	memwidth;
 	struct mutex		mem_lock;
 	u32			trigger_cntr;
 	u32			etr_caps;
-	u32			delta_bottom;
-	enum tmc_etr_out_mode	out_mode;
-	enum tmc_etr_pcie_path	pcie_path;
-	struct usb_qdss_ch	*usbch;
-	struct tmc_etr_bam_data	*bamdata;
-	bool			sticky_enable;
-	bool			enable_to_bam;
-	struct coresight_cti	*cti_flush;
-	struct coresight_cti	*cti_reset;
-	struct coresight_csr	*csr;
-	const char		*csr_name;
-	struct byte_cntr	*byte_cntr;
-	struct dma_iommu_mapping *iommu_mapping;
-	bool			force_reg_dump;
 	struct idr		idr;
 	struct mutex		idr_mutex;
 	struct etr_buf		*sysfs_buf;
 	struct etr_buf		*perf_buf;
-	struct tmc_etr_ipa_data *ipa_data;
+	struct byte_cntr	*byte_cntr;
+	struct coresight_csr	*csr;
+	const char		*csr_name;
+	u32			atid_offset;
+	u8			mode_support;
+	enum tmc_etr_out_mode	out_mode;
+	struct tmc_usb_data	*usb_data;
+	struct tmc_eth_data	*eth_data;
+	bool			stop_on_flush;
+	struct tmc_pcie_data	*pcie_data;
+};
+
+struct tmc_usb_bam_data {
+	struct sps_bam_props	props;
+	unsigned long		handle;
+	struct sps_pipe		*pipe;
+	struct sps_connect	connect;
+	uint32_t		src_pipe_idx;
+	unsigned long		dest;
+	uint32_t		dest_pipe_idx;
+	struct sps_mem_buffer	desc_fifo;
+	struct sps_mem_buffer	data_fifo;
+	bool			enable;
 };
 
 struct etr_buf_operations {
@@ -342,9 +319,14 @@ struct tmc_sg_table {
 };
 
 /* Generic functions */
-void tmc_wait_for_tmcready(struct tmc_drvdata *drvdata);
+int tmc_wait_for_tmcready(struct tmc_drvdata *drvdata);
 void tmc_flush_and_stop(struct tmc_drvdata *drvdata);
+void tmc_disable_stop_on_flush(struct tmc_drvdata *drvdata);
 void tmc_enable_hw(struct tmc_drvdata *drvdata);
+extern int tmc_etr_usb_init(struct amba_device *adev,
+		struct tmc_drvdata *drvdata);
+extern int tmc_etr_eth_init(struct amba_device *adev,
+		struct tmc_drvdata *drvdata);
 void tmc_disable_hw(struct tmc_drvdata *drvdata);
 u32 tmc_get_memwidth_mask(struct tmc_drvdata *drvdata);
 
@@ -356,26 +338,20 @@ extern const struct coresight_ops tmc_etf_cs_ops;
 
 ssize_t tmc_etb_get_sysfs_trace(struct tmc_drvdata *drvdata,
 				loff_t pos, size_t len, char **bufpp);
+ssize_t tmc_etr_buf_get_data(struct etr_buf *etr_buf,
+				u64 offset, size_t len, char **bufpp);
 /* ETR functions */
 int tmc_read_prepare_etr(struct tmc_drvdata *drvdata);
 int tmc_read_unprepare_etr(struct tmc_drvdata *drvdata);
-void __tmc_etr_disable_to_bam(struct tmc_drvdata *drvdata);
-void tmc_etr_bam_disable(struct tmc_drvdata *drvdata);
-void usb_notifier(void *priv, unsigned int event, struct qdss_request *d_req,
-		  struct usb_qdss_ch *ch);
-int tmc_etr_bam_init(struct amba_device *adev,
-		     struct tmc_drvdata *drvdata);
-int tmc_etr_ipa_init(struct amba_device *adev,
-			struct tmc_drvdata *drvdata);
-extern struct byte_cntr *byte_cntr_init(struct amba_device *adev,
+void tmc_etr_disable_hw(struct tmc_drvdata *drvdata, bool flush);
+struct byte_cntr *byte_cntr_init(struct amba_device *adev,
 					struct tmc_drvdata *drvdata);
-extern void tmc_etr_free_mem(struct tmc_drvdata *drvdata);
+void byte_cntr_remove(struct byte_cntr *byte_cntr);
+extern const struct coresight_ops tmc_etr_cs_ops;
+extern const struct csr_set_atid_op csr_atid_ops;
 ssize_t tmc_etr_get_sysfs_trace(struct tmc_drvdata *drvdata,
 				loff_t pos, size_t len, char **bufpp);
-
-ssize_t tmc_etr_buf_get_data(struct etr_buf *etr_buf,
-			u64 offset, size_t len, char **bufpp);
-extern const struct coresight_ops tmc_etr_cs_ops;
+long tmc_get_rwp_offset(struct tmc_drvdata *drvdata);
 int tmc_etr_switch_mode(struct tmc_drvdata *drvdata, const char *out_mode);
 
 #define TMC_REG_PAIR(name, lo_off, hi_off)				\
@@ -425,9 +401,12 @@ ssize_t tmc_sg_table_get_data(struct tmc_sg_table *sg_table,
 static inline unsigned long
 tmc_sg_table_buf_size(struct tmc_sg_table *sg_table)
 {
-	return sg_table->data_pages.nr_pages << PAGE_SHIFT;
+	return (unsigned long)sg_table->data_pages.nr_pages << PAGE_SHIFT;
 }
 
 struct coresight_device *tmc_etr_get_catu_device(struct tmc_drvdata *drvdata);
+
+void tmc_etr_set_catu_ops(const struct etr_buf_operations *catu);
+void tmc_etr_remove_catu_ops(void);
 
 #endif

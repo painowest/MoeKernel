@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * IPv4 over IEEE 1394, per RFC 2734
  * IPv6 over IEEE 1394, per RFC 3146
@@ -487,9 +488,7 @@ static int fwnet_finish_incoming_packet(struct net_device *net,
 					struct sk_buff *skb, u16 source_node_id,
 					bool is_broadcast, u16 ether_type)
 {
-	struct fwnet_device *dev;
-	int status;
-	__be64 guid;
+	int status, len;
 
 	switch (ether_type) {
 	case ETH_P_ARP:
@@ -502,7 +501,6 @@ static int fwnet_finish_incoming_packet(struct net_device *net,
 		goto err;
 	}
 
-	dev = netdev_priv(net);
 	/* Write metadata, and then pass to the receive level */
 	skb->dev = net;
 	skb->ip_summed = CHECKSUM_NONE;
@@ -511,7 +509,6 @@ static int fwnet_finish_incoming_packet(struct net_device *net,
 	 * Parse the encapsulation header. This actually does the job of
 	 * converting to an ethernet-like pseudo frame header.
 	 */
-	guid = cpu_to_be64(dev->card->guid);
 	if (dev_hard_header(skb, net, ether_type,
 			   is_broadcast ? net->broadcast : net->dev_addr,
 			   NULL, skb->len) >= 0) {
@@ -545,13 +542,15 @@ static int fwnet_finish_incoming_packet(struct net_device *net,
 		}
 		skb->protocol = protocol;
 	}
+
+	len = skb->len;
 	status = netif_rx(skb);
 	if (status == NET_RX_DROP) {
 		net->stats.rx_errors++;
 		net->stats.rx_dropped++;
 	} else {
 		net->stats.rx_packets++;
-		net->stats.rx_bytes += skb->len;
+		net->stats.rx_bytes += len;
 	}
 
 	return 0;
@@ -1125,7 +1124,7 @@ static int fwnet_broadcast_start(struct fwnet_device *dev)
 	max_receive = 1U << (dev->card->max_receive + 1);
 	num_packets = (FWNET_ISO_PAGE_COUNT * PAGE_SIZE) / max_receive;
 
-	ptrptr = kmalloc(sizeof(void *) * num_packets, GFP_KERNEL);
+	ptrptr = kmalloc_array(num_packets, sizeof(void *), GFP_KERNEL);
 	if (!ptrptr) {
 		retval = -ENOMEM;
 		goto failed;
@@ -1484,9 +1483,14 @@ static int fwnet_probe(struct fw_unit *unit,
 		goto out;
 	dev->local_fifo = dev->handler.offset;
 
+	/*
+	 * default MTU: RFC 2734 cl. 4, RFC 3146 cl. 4
+	 * maximum MTU: RFC 2734 cl. 4.2, fragment encapsulation header's
+	 *              maximum possible datagram_size + 1 = 0xfff + 1
+	 */
 	net->mtu = 1500U;
 	net->min_mtu = ETH_MIN_MTU;
-	net->max_mtu = 0xfff;
+	net->max_mtu = 4096U;
 
 	/* Set our hardware address while we're at it */
 	ha = (union fwnet_hwaddr *)net->dev_addr;

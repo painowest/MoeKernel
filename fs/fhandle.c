@@ -69,8 +69,7 @@ static long do_sys_name_to_handle(struct path *path,
 	} else
 		retval = 0;
 	/* copy the mount id */
-	if (copy_to_user(mnt_id, &real_mount(path->mnt)->mnt_id,
-			 sizeof(*mnt_id)) ||
+	if (put_user(real_mount(path->mnt)->mnt_id, mnt_id) ||
 	    copy_to_user(ufh, handle,
 			 sizeof(struct file_handle) + handle_bytes))
 		retval = -EFAULT;
@@ -174,7 +173,7 @@ static int handle_to_path(int mountdirfd, struct file_handle __user *ufh,
 
 	/*
 	 * With handle we don't look at the execute bit on the
-	 * the directory. Ideally we would like CAP_DAC_SEARCH.
+	 * directory. Ideally we would like CAP_DAC_SEARCH.
 	 * But we don't have that
 	 */
 	if (!capable(CAP_DAC_READ_SEARCH)) {
@@ -213,8 +212,8 @@ out_err:
 	return retval;
 }
 
-long do_handle_open(int mountdirfd,
-		    struct file_handle __user *ufh, int open_flag)
+static long do_handle_open(int mountdirfd, struct file_handle __user *ufh,
+			   int open_flag)
 {
 	long retval = 0;
 	struct path path;
@@ -230,7 +229,7 @@ long do_handle_open(int mountdirfd,
 		path_put(&path);
 		return fd;
 	}
-	file = file_open_root(path.dentry, path.mnt, "", open_flag, 0);
+	file = file_open_root(&path, "", open_flag, 0);
 	if (IS_ERR(file)) {
 		put_unused_fd(fd);
 		retval =  PTR_ERR(file);
@@ -247,7 +246,7 @@ long do_handle_open(int mountdirfd,
  * sys_open_by_handle_at: Open the file handle
  * @mountdirfd: directory file descriptor
  * @handle: file handle to be opened
- * @flag: open flags.
+ * @flags: open flags.
  *
  * @mountdirfd indicate the directory file descriptor
  * of the mount point. file handle is decoded relative

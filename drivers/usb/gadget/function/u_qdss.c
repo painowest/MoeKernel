@@ -1,28 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2012-2017, 2020 The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details
+ * Copyright (c) 2012-2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/usb_bam.h>
 #include <linux/dma-mapping.h>
+#include <linux/usb/dwc3-msm.h>
 
 #include "f_qdss.h"
-static int alloc_sps_req(struct usb_ep *data_ep)
+
+#define NUM_EBC_IN_BUF	2
+
+int alloc_hw_req(struct usb_ep *data_ep)
 {
 	struct usb_request *req = NULL;
 	struct f_qdss *qdss = data_ep->driver_data;
-	struct usb_gadget *gadget = qdss->gadget;
-	u32 sps_params = 0;
 
 	pr_debug("send_sps_req\n");
 
@@ -32,40 +26,34 @@ static int alloc_sps_req(struct usb_ep *data_ep)
 		return -ENOMEM;
 	}
 
-	if (!gadget->is_chipidea) {
+	if (qdss->ch.ch_type == USB_EP_BAM)
 		req->length = 32*1024;
-		sps_params = MSM_SPS_MODE | MSM_DISABLE_WB |
-				qdss->bam_info.usb_bam_pipe_idx;
-	} else {
-		/* non DWC3 BAM requires req->length to be 0 */
-		req->length = 0;
-		sps_params = (MSM_SPS_MODE | qdss->bam_info.usb_bam_pipe_idx |
-				MSM_VENDOR_ID) & ~MSM_IS_FINITE_TRANSFER;
-	}
-
-	req->udc_priv = sps_params;
+	else
+		req->length = NUM_EBC_IN_BUF * EBC_TRB_SIZE;
 	qdss->endless_req = req;
 
 	return 0;
 }
 
-static int init_data(struct usb_ep *ep);
-int set_qdss_data_connection(struct f_qdss *qdss, int enable)
+static int enable_qdss_ebc_data_connection(struct f_qdss *qdss)
+{
+	int ret;
+
+	ret = msm_ep_config(qdss->port.data, qdss->endless_req, 1);
+	if (ret)
+		pr_err("msm_ep_config failed\n");
+
+	return ret;
+}
+
+static int enable_qdss_bam_data_connection(struct f_qdss *qdss)
 {
 	enum usb_ctrl		usb_bam_type;
-	int			res = 0;
 	int			idx;
 	struct usb_qdss_bam_connect_info bam_info;
 	struct usb_gadget *gadget;
 	struct device *dev;
 	int ret;
-
-	pr_debug("%s\n", __func__);
-
-	if (!qdss) {
-		pr_err("%s: qdss ptr is NULL\n", __func__);
-		return -EINVAL;
-	}
 
 	gadget = qdss->gadget;
 	usb_bam_type = usb_bam_get_bam_type(gadget->name);
@@ -80,99 +68,115 @@ int set_qdss_data_connection(struct f_qdss *qdss, int enable)
 		return idx;
 	}
 
-	if (enable) {
-		ret = get_qdss_bam_info(usb_bam_type, idx,
-				&bam_info.qdss_bam_phys,
-				&bam_info.qdss_bam_size);
-		if (ret) {
-			pr_err("%s(): failed to get qdss bam info err(%d)\n",
-								__func__, ret);
-			return ret;
-		}
 
-		bam_info.qdss_bam_iova = dma_map_resource(dev->parent,
-				bam_info.qdss_bam_phys, bam_info.qdss_bam_size,
-				DMA_BIDIRECTIONAL, 0);
-		if (!bam_info.qdss_bam_iova) {
-			pr_err("dma_map_resource failed\n");
-			return -ENOMEM;
-		}
+	ret = get_qdss_bam_info(usb_bam_type, idx,
+			&bam_info.qdss_bam_phys,
+			&bam_info.qdss_bam_size);
+	if (ret) {
+		pr_err("%s(): failed to get qdss bam info err(%d)\n",
+							__func__, ret);
+		return ret;
+	}
 
-		usb_bam_alloc_fifos(usb_bam_type, idx);
-		bam_info.data_fifo =
-			kzalloc(sizeof(struct sps_mem_buffer), GFP_KERNEL);
-		if (!bam_info.data_fifo) {
-			usb_bam_free_fifos(usb_bam_type, idx);
-			return -ENOMEM;
-		}
+	bam_info.qdss_bam_iova = dma_map_resource(dev->parent,
+			bam_info.qdss_bam_phys, bam_info.qdss_bam_size,
+			DMA_BIDIRECTIONAL, 0);
+	if (!bam_info.qdss_bam_iova) {
+		pr_err("dma_map_resource failed\n");
+		return -ENOMEM;
+	}
 
-		pr_debug("%s(): qdss_bam: iova:%lx p_addr:%lx size:%x\n",
-				__func__, bam_info.qdss_bam_iova,
-				(unsigned long)bam_info.qdss_bam_phys,
-				bam_info.qdss_bam_size);
-
-		get_bam2bam_connection_info(usb_bam_type, idx,
-				&bam_info.usb_bam_pipe_idx,
-				NULL, bam_info.data_fifo, NULL);
-
-		alloc_sps_req(qdss->port.data);
-		if (!gadget->is_chipidea)
-			msm_data_fifo_config(qdss->port.data,
-				bam_info.data_fifo->iova,
-				bam_info.data_fifo->size,
-				bam_info.usb_bam_pipe_idx);
-		init_data(qdss->port.data);
-
-		res = usb_bam_connect(usb_bam_type, idx,
-					&(bam_info.usb_bam_pipe_idx),
-					bam_info.qdss_bam_iova);
-	} else {
-		res = usb_bam_disconnect_pipe(usb_bam_type, idx);
-		if (res)
-			pr_err("usb_bam_disconnection error\n");
-		dma_unmap_resource(dev->parent, bam_info.qdss_bam_iova,
-				bam_info.qdss_bam_size, DMA_BIDIRECTIONAL, 0);
+	usb_bam_alloc_fifos(usb_bam_type, idx);
+	bam_info.data_fifo =
+		kzalloc(sizeof(struct sps_mem_buffer), GFP_KERNEL);
+	if (!bam_info.data_fifo) {
 		usb_bam_free_fifos(usb_bam_type, idx);
-		kfree(bam_info.data_fifo);
+		return -ENOMEM;
 	}
 
-	return res;
-}
+	pr_debug("%s(): qdss_bam: iova:%lx p_addr:%lx size:%x\n",
+			__func__, bam_info.qdss_bam_iova,
+			(unsigned long)bam_info.qdss_bam_phys,
+			bam_info.qdss_bam_size);
 
-static int init_data(struct usb_ep *ep)
-{
-	struct f_qdss *qdss = ep->driver_data;
-	struct usb_gadget *gadget = qdss->gadget;
-	int res = 0;
+	get_bam2bam_connection_info(usb_bam_type, idx,
+			&bam_info.usb_bam_pipe_idx,
+			NULL, bam_info.data_fifo, NULL);
 
-	if (gadget->is_chipidea) {
-		pr_debug("QDSS is used with non DWC3 core\n");
-		return res;
-	}
+	msm_data_fifo_config(qdss->port.data,
+		bam_info.data_fifo->iova,
+		bam_info.data_fifo->size,
+		bam_info.usb_bam_pipe_idx);
 
-	pr_debug("%s\n", __func__);
-
-	res = msm_ep_config(ep, qdss->endless_req);
-	if (res)
+	ret = msm_ep_config(qdss->port.data, qdss->endless_req,
+				MSM_SPS_MODE | MSM_DISABLE_WB |
+				qdss->bam_info.usb_bam_pipe_idx);
+	if (ret)
 		pr_err("msm_ep_config failed\n");
 
-	return res;
+	ret = usb_bam_connect(usb_bam_type, idx,
+				&(bam_info.usb_bam_pipe_idx),
+				bam_info.qdss_bam_iova);
+
+	return ret;
 }
 
-int uninit_data(struct usb_ep *ep)
+static int disable_qdss_bam_data_connection(struct f_qdss *qdss)
 {
-	struct f_qdss *qdss = ep->driver_data;
-	struct usb_gadget *gadget = qdss->gadget;
-	int res = 0;
+	enum usb_ctrl		usb_bam_type;
+	int			idx;
+	struct usb_qdss_bam_connect_info bam_info;
+	struct device *dev;
+	struct usb_gadget *gadget;
+	int ret;
 
-	if (gadget->is_chipidea)
-		return res;
+	gadget = qdss->gadget;
+	dev = gadget->dev.parent;
 
-	pr_debug("%s\n", __func__);
+	usb_bam_type = usb_bam_get_bam_type(gadget->name);
+	bam_info = qdss->bam_info;
+	/* There is only one qdss pipe, so the pipe number can be set to 0 */
+	idx = usb_bam_get_connection_idx(usb_bam_type, QDSS_P_BAM,
+		PEER_PERIPHERAL_TO_USB, 0);
+	ret = usb_bam_disconnect_pipe(usb_bam_type, idx);
+	if (ret)
+		pr_err("usb_bam_disconnection error\n");
+	dma_unmap_resource(dev->parent, bam_info.qdss_bam_iova,
+			bam_info.qdss_bam_size, DMA_BIDIRECTIONAL, 0);
+	usb_bam_free_fifos(usb_bam_type, idx);
+	kfree(bam_info.data_fifo);
 
-	res = msm_ep_unconfig(ep);
-	if (res)
-		pr_err("msm_ep_unconfig failed\n");
+	return ret;
+}
 
-	return res;
+int set_qdss_data_connection(struct f_qdss *qdss, int enable)
+{
+	struct usb_gadget *gadget;
+	struct device *dev;
+	int ret = 0;
+
+	if (!qdss) {
+		pr_err("%s: qdss ptr is NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	gadget = qdss->gadget;
+	dev = gadget->dev.parent;
+
+	pr_debug("%s ch_type:%d\n", __func__, qdss->ch.ch_type);
+	if (enable) {
+		if (qdss->ch.ch_type == USB_EP_BAM)
+			ret = enable_qdss_bam_data_connection(qdss);
+		else
+			ret = enable_qdss_ebc_data_connection(qdss);
+	} else {
+		ret = msm_ep_unconfig(qdss->port.data);
+		if (ret)
+			pr_err("msm_ep_unconfig failed\n");
+
+		if (qdss->ch.ch_type == USB_EP_BAM)
+			ret = disable_qdss_bam_data_connection(qdss);
+	}
+
+	return ret;
 }

@@ -1,15 +1,9 @@
-/* Copyright (c) 2011, 2013 - 2014, 2018 The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- *
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2011, 2013-2014, 2018-2019, 2021 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
+ */
+/*
  * Subsystem restart notifier API header
  *
  */
@@ -24,20 +18,28 @@ enum subsys_notif_type {
 	SUBSYS_AFTER_SHUTDOWN,
 	SUBSYS_BEFORE_POWERUP,
 	SUBSYS_AFTER_POWERUP,
+	SUBSYS_BEFORE_AUTH_AND_RESET,
 	SUBSYS_RAMDUMP_NOTIFICATION,
 	SUBSYS_POWERUP_FAILURE,
 	SUBSYS_PROXY_VOTE,
 	SUBSYS_PROXY_UNVOTE,
 	SUBSYS_SOC_RESET,
+	SUBSYS_BEFORE_DS_ENTRY,
+	SUBSYS_AFTER_DS_ENTRY,
+	SUBSYS_DS_ENTRY_FAIL,
+	SUBSYS_BEFORE_DS_EXIT,
+	SUBSYS_AFTER_DS_EXIT,
+	SUBSYS_DS_EXIT_FAIL,
 	SUBSYS_NOTIF_TYPE_COUNT
 };
 
 enum early_subsys_notif_type {
 	XPORT_LAYER_NOTIF,
+	PCIE_DRV_LAYER_NOTIF,
 	NUM_EARLY_NOTIFS
 };
 
-#if defined(CONFIG_MSM_SUBSYSTEM_RESTART)
+#if IS_ENABLED(CONFIG_MSM_SUBSYSTEM_RESTART)
 /* Use the subsys_notif_register_notifier API to register for notifications for
  * a particular subsystem. This API will return a handle that can be used to
  * un-reg for notifications using the subsys_notif_unregister_notifier API by
@@ -69,7 +71,7 @@ int subsys_register_early_notifier(const char *subsys_name,
 				   void *data);
 int subsys_unregister_early_notifier(const char *subsys_name, enum
 				     early_subsys_notif_type notif_type);
-void send_early_notifications(void *early_notif_handle);
+void subsys_send_early_notifications(void *early_notif_handle);
 #else
 
 static inline void *subsys_notif_register_notifier(
@@ -116,7 +118,7 @@ static inline int subsys_unregister_early_notifier(const char *subsys_name,
 	return -ENOTSUPP;
 }
 
-static inline void send_early_notifications(void *early_notif_handle)
+static inline void subsys_send_early_notifications(void *early_notif_handle)
 {
 }
 #endif /* CONFIG_MSM_SUBSYSTEM_RESTART */

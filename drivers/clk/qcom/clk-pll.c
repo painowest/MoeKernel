@@ -1,14 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2013, 2018, The Linux Foundation. All rights reserved.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2013, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/kernel.h>
@@ -22,6 +15,7 @@
 
 #include <asm/div64.h>
 
+#include "clk-debug.h"
 #include "clk-pll.h"
 #include "common.h"
 
@@ -140,8 +134,7 @@ clk_pll_determine_rate(struct clk_hw *hw, struct clk_rate_request *req)
 	f = find_freq(pll->freq_tbl, req->rate);
 	if (!f)
 		req->rate = DIV_ROUND_UP_ULL(req->rate, req->best_parent_rate)
-							* req->best_parent_rate;
-
+						* req->best_parent_rate;
 	else
 		req->rate = f->freq;
 
@@ -354,7 +347,7 @@ clk_pll_hf_set_rate(struct clk_hw *hw, unsigned long rate, unsigned long prate)
 	u32 mode, l_val;
 	u32 enable_mask = PLL_OUTCTRL | PLL_BYPASSNL | PLL_RESET_N;
 
-	l_val = rate / XO_RATE;
+	l_val = rate / prate;
 
 	regmap_read(pll->clkr.regmap, pll->mode_reg, &mode);
 	enabled = (mode & enable_mask) == enable_mask;
@@ -392,9 +385,22 @@ static void clk_pll_hf_list_registers(struct seq_file *f, struct clk_hw *hw)
 	for (i = 0; i < size; i++) {
 		regmap_read(pll->clkr.regmap, pll->mode_reg + data[i].offset,
 									&val);
-		clock_debug_output(f, false,
-				"%20s: 0x%.8x\n", data[i].name, val);
+		clock_debug_output(f, "%20s: 0x%.8x\n", data[i].name, val);
 	}
+}
+
+static struct clk_regmap_ops clk_pll_hf_regmap_ops = {
+	.list_registers = &clk_pll_hf_list_registers,
+};
+
+static int clk_pll_hf_init(struct clk_hw *hw)
+{
+	struct clk_regmap *rclk = to_clk_regmap(hw);
+
+	if (!rclk->ops)
+		rclk->ops = &clk_pll_hf_regmap_ops;
+
+	return 0;
 }
 
 const struct clk_ops clk_pll_hf_ops = {
@@ -403,6 +409,7 @@ const struct clk_ops clk_pll_hf_ops = {
 	.set_rate = clk_pll_hf_set_rate,
 	.recalc_rate = clk_pll_recalc_rate,
 	.determine_rate = clk_pll_determine_rate,
-	.list_registers = clk_pll_hf_list_registers,
+	.debug_init = clk_common_debug_init,
+	.init = clk_pll_hf_init,
 };
 EXPORT_SYMBOL(clk_pll_hf_ops);

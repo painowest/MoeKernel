@@ -17,6 +17,7 @@
 #include <linux/refcount.h>
 #include <linux/percpu-refcount.h>
 #include <linux/percpu-rwsem.h>
+#include <linux/u64_stats_sync.h>
 #include <linux/workqueue.h>
 #include <linux/bpf-cgroup.h>
 #include <linux/psi_types.h>
@@ -70,6 +71,9 @@ enum {
 
 	/* Cgroup is frozen. */
 	CGRP_FROZEN,
+
+	/* Control group has to be killed. */
+	CGRP_KILL,
 };
 
 /* cgroup_root->flags */
@@ -88,6 +92,16 @@ enum {
 	 * Enable cpuset controller in v1 cgroup to use v2 behavior.
 	 */
 	CGRP_ROOT_CPUSET_V2_MODE = (1 << 4),
+
+	/*
+	 * Enable legacy local memory.events.
+	 */
+	CGRP_ROOT_MEMORY_LOCAL_EVENTS = (1 << 5),
+
+	/*
+	 * Enable recursive subtree protection
+	 */
+	CGRP_ROOT_MEMORY_RECURSIVE_PROT = (1 << 6),
 };
 
 /* cftype->flags */
@@ -98,6 +112,7 @@ enum {
 
 	CFTYPE_NO_PREFIX	= (1 << 3),	/* (DON'T USE FOR NEW FILES) no subsys prefix */
 	CFTYPE_WORLD_WRITABLE	= (1 << 4),	/* (DON'T USE FOR NEW FILES) S_IWUGO */
+	CFTYPE_DEBUG		= (1 << 5),	/* create when cgroup_debug */
 	CFTYPE_PRESSURE		= (1 << 6),	/* only if pressure feature is enabled */
 
 	/* internal flags, do not use outside cgroup core proper */
@@ -113,6 +128,8 @@ enum {
 struct cgroup_file {
 	/* do not access any fields from outside cgroup core */
 	struct kernfs_node *kn;
+	unsigned long notified_at;
+	struct timer_list notify_timer;
 };
 
 /*
@@ -135,6 +152,9 @@ struct cgroup_subsys_state {
 	/* siblings list anchored at the parent's ->children */
 	struct list_head sibling;
 	struct list_head children;
+
+	/* flush target list anchored at cgrp->rstat_css_list */
+	struct list_head rstat_css_node;
 
 	/*
 	 * PI: Subsys-unique ID.  0 is unused and root is always 1.  The
@@ -216,7 +236,7 @@ struct css_set {
 	struct list_head task_iters;
 
 	/*
-	 * On the default hierarhcy, ->subsys[ssid] may point to a css
+	 * On the default hierarchy, ->subsys[ssid] may point to a css
 	 * attached to an ancestor instead of the cgroup this css_set is
 	 * associated with.  The following node is anchored at
 	 * ->subsys[ssid]->cgroup->e_csets[ssid] and provides a way to
@@ -266,6 +286,59 @@ struct css_set {
 	struct rcu_head rcu_head;
 };
 
+struct cgroup_base_stat {
+	struct task_cputime cputime;
+};
+
+/*
+ * rstat - cgroup scalable recursive statistics.  Accounting is done
+ * per-cpu in cgroup_rstat_cpu which is then lazily propagated up the
+ * hierarchy on reads.
+ *
+ * When a stat gets updated, the cgroup_rstat_cpu and its ancestors are
+ * linked into the updated tree.  On the following read, propagation only
+ * considers and consumes the updated tree.  This makes reading O(the
+ * number of descendants which have been active since last read) instead of
+ * O(the total number of descendants).
+ *
+ * This is important because there can be a lot of (draining) cgroups which
+ * aren't active and stat may be read frequently.  The combination can
+ * become very expensive.  By propagating selectively, increasing reading
+ * frequency decreases the cost of each read.
+ *
+ * This struct hosts both the fields which implement the above -
+ * updated_children and updated_next - and the fields which track basic
+ * resource statistics on top of it - bsync, bstat and last_bstat.
+ */
+struct cgroup_rstat_cpu {
+	/*
+	 * ->bsync protects ->bstat.  These are the only fields which get
+	 * updated in the hot path.
+	 */
+	struct u64_stats_sync bsync;
+	struct cgroup_base_stat bstat;
+
+	/*
+	 * Snapshots at the last reading.  These are used to calculate the
+	 * deltas to propagate to the global counters.
+	 */
+	struct cgroup_base_stat last_bstat;
+
+	/*
+	 * Child cgroups with stat updates on this cpu since the last read
+	 * are linked on the parent's ->updated_children through
+	 * ->updated_next.
+	 *
+	 * In addition to being more compact, singly-linked list pointing
+	 * to the cgroup makes it unnecessary for each per-cpu struct to
+	 * point back to the associated cgroup.
+	 *
+	 * Protected by per-cpu cgroup_rstat_cpu_lock.
+	 */
+	struct cgroup *updated_children;	/* terminated by self cgroup */
+	struct cgroup *updated_next;		/* NULL iff not on the list */
+};
+
 struct cgroup_freezer_state {
 	/* Should the cgroup and its descendants be frozen. */
 	bool freeze;
@@ -290,16 +363,6 @@ struct cgroup {
 	struct cgroup_subsys_state self;
 
 	unsigned long flags;		/* "unsigned long" so bitops work */
-
-	/*
-	 * idr allocated in-hierarchy ID.
-	 *
-	 * ID 0 is not used, the ID of the root cgroup is always 1, and a
-	 * new cgroup will be assigned with a smallest available ID.
-	 *
-	 * Allocating/Removing ID must be protected by cgroup_mutex.
-	 */
-	int id;
 
 	/*
 	 * The depth this cgroup is at.  The root is at depth zero and each
@@ -390,6 +453,15 @@ struct cgroup {
 	struct cgroup *dom_cgrp;
 	struct cgroup *old_dom_cgrp;		/* used while enabling threaded */
 
+	/* per-cpu recursive resource statistics */
+	struct cgroup_rstat_cpu __percpu *rstat_cpu;
+	struct list_head rstat_css_list;
+
+	/* cgroup basic resource statistics */
+	struct cgroup_base_stat last_bstat;
+	struct cgroup_base_stat bstat;
+	struct prev_cputime prev_cputime;	/* for printing out cputime */
+
 	/*
 	 * list of pidlists, up to two for each namespace (one for procs, one
 	 * for tasks); created on demand.
@@ -409,11 +481,14 @@ struct cgroup {
 	/* used to store eBPF programs */
 	struct cgroup_bpf bpf;
 
+	/* If there is block congestion on this cgroup. */
+	atomic_t congestion_count;
+
 	/* Used to store internal freezer state */
 	struct cgroup_freezer_state freezer;
 
 	/* ids of the ancestors at each level including self */
-	int ancestor_ids[];
+	u64 ancestor_ids[];
 };
 
 /*
@@ -434,7 +509,7 @@ struct cgroup_root {
 	struct cgroup cgrp;
 
 	/* for cgrp->ancestor_ids[0] */
-	int cgrp_ancestor_id_storage;
+	u64 cgrp_ancestor_id_storage;
 
 	/* Number of cgroups in the hierarchy, used only for /proc/cgroups */
 	atomic_t nr_cgrps;
@@ -444,9 +519,6 @@ struct cgroup_root {
 
 	/* Hierarchy-specific flags */
 	unsigned int flags;
-
-	/* IDs for cgroups in this hierarchy */
-	struct idr cgroup_idr;
 
 	/* The path to use for release notifications. */
 	char release_agent_path[PATH_MAX];
@@ -539,8 +611,8 @@ struct cftype {
 	ssize_t (*write)(struct kernfs_open_file *of,
 			 char *buf, size_t nbytes, loff_t off);
 
-	unsigned int (*poll)(struct kernfs_open_file *of,
-			     struct poll_table_struct *pt);
+	__poll_t (*poll)(struct kernfs_open_file *of,
+			 struct poll_table_struct *pt);
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	struct lock_class_key	lockdep_key;
@@ -549,7 +621,7 @@ struct cftype {
 
 /*
  * Control Group subsystem type.
- * See Documentation/cgroup-v1/cgroups.txt for details
+ * See Documentation/admin-guide/cgroup-v1/cgroups.rst for details
  */
 struct cgroup_subsys {
 	struct cgroup_subsys_state *(*css_alloc)(struct cgroup_subsys_state *parent_css);
@@ -558,13 +630,17 @@ struct cgroup_subsys {
 	void (*css_released)(struct cgroup_subsys_state *css);
 	void (*css_free)(struct cgroup_subsys_state *css);
 	void (*css_reset)(struct cgroup_subsys_state *css);
+	void (*css_rstat_flush)(struct cgroup_subsys_state *css, int cpu);
+	int (*css_extra_stat_show)(struct seq_file *seq,
+				   struct cgroup_subsys_state *css);
 
 	int (*can_attach)(struct cgroup_taskset *tset);
 	void (*cancel_attach)(struct cgroup_taskset *tset);
 	void (*attach)(struct cgroup_taskset *tset);
 	void (*post_attach)(void);
-	int (*can_fork)(struct task_struct *task);
-	void (*cancel_fork)(struct task_struct *task);
+	int (*can_fork)(struct task_struct *task,
+			struct css_set *cset);
+	void (*cancel_fork)(struct task_struct *task, struct css_set *cset);
 	void (*fork)(struct task_struct *task);
 	void (*exit)(struct task_struct *task);
 	void (*release)(struct task_struct *task);
@@ -597,22 +673,7 @@ struct cgroup_subsys {
 	 */
 	bool threaded:1;
 
-	/*
-	 * If %false, this subsystem is properly hierarchical -
-	 * configuration, resource accounting and restriction on a parent
-	 * cgroup cover those of its children.  If %true, hierarchy support
-	 * is broken in some ways - some subsystems ignore hierarchy
-	 * completely while others are only implemented half-way.
-	 *
-	 * It's now disallowed to create nested cgroups if the subsystem is
-	 * broken and cgroup core will emit a warning message on such
-	 * cases.  Eventually, all subsystems will be made properly
-	 * hierarchical and this will go away.
-	 */
-	bool broken_hierarchy:1;
-	bool warned_broken_hierarchy:1;
-
-	/* the following two fields are initialized automtically during boot */
+	/* the following two fields are initialized automatically during boot */
 	int id;
 	const char *name;
 
@@ -692,107 +753,54 @@ static inline void cgroup_threadgroup_change_end(struct task_struct *tsk) {}
  * sock_cgroup_data is embedded at sock->sk_cgrp_data and contains
  * per-socket cgroup information except for memcg association.
  *
- * On legacy hierarchies, net_prio and net_cls controllers directly set
- * attributes on each sock which can then be tested by the network layer.
- * On the default hierarchy, each sock is associated with the cgroup it was
- * created in and the networking layer can match the cgroup directly.
- *
- * To avoid carrying all three cgroup related fields separately in sock,
- * sock_cgroup_data overloads (prioidx, classid) and the cgroup pointer.
- * On boot, sock_cgroup_data records the cgroup that the sock was created
- * in so that cgroup2 matches can be made; however, once either net_prio or
- * net_cls starts being used, the area is overriden to carry prioidx and/or
- * classid.  The two modes are distinguished by whether the lowest bit is
- * set.  Clear bit indicates cgroup pointer while set bit prioidx and
- * classid.
- *
- * While userland may start using net_prio or net_cls at any time, once
- * either is used, cgroup2 matching no longer works.  There is no reason to
- * mix the two and this is in line with how legacy and v2 compatibility is
- * handled.  On mode switch, cgroup references which are already being
- * pointed to by socks may be leaked.  While this can be remedied by adding
- * synchronization around sock_cgroup_data, given that the number of leaked
- * cgroups is bound and highly unlikely to be high, this seems to be the
- * better trade-off.
+ * On legacy hierarchies, net_prio and net_cls controllers directly
+ * set attributes on each sock which can then be tested by the network
+ * layer. On the default hierarchy, each sock is associated with the
+ * cgroup it was created in and the networking layer can match the
+ * cgroup directly.
  */
 struct sock_cgroup_data {
-	union {
-#ifdef __LITTLE_ENDIAN
-		struct {
-			u8	is_data : 1;
-			u8	no_refcnt : 1;
-			u8	unused : 6;
-			u8	padding;
-			u16	prioidx;
-			u32	classid;
-		} __packed;
-#else
-		struct {
-			u32	classid;
-			u16	prioidx;
-			u8	padding;
-			u8	unused : 6;
-			u8	no_refcnt : 1;
-			u8	is_data : 1;
-		} __packed;
+	struct cgroup	*cgroup; /* v2 */
+#ifdef CONFIG_CGROUP_NET_CLASSID
+	u32		classid; /* v1 */
 #endif
-		u64		val;
-	};
+#ifdef CONFIG_CGROUP_NET_PRIO
+	u16		prioidx; /* v1 */
+#endif
 };
 
-/*
- * There's a theoretical window where the following accessors race with
- * updaters and return part of the previous pointer as the prioidx or
- * classid.  Such races are short-lived and the result isn't critical.
- */
 static inline u16 sock_cgroup_prioidx(const struct sock_cgroup_data *skcd)
 {
-	/* fallback to 1 which is always the ID of the root cgroup */
-	return (skcd->is_data & 1) ? skcd->prioidx : 1;
+#ifdef CONFIG_CGROUP_NET_PRIO
+	return READ_ONCE(skcd->prioidx);
+#else
+	return 1;
+#endif
 }
 
 static inline u32 sock_cgroup_classid(const struct sock_cgroup_data *skcd)
 {
-	/* fallback to 0 which is the unconfigured default classid */
-	return (skcd->is_data & 1) ? skcd->classid : 0;
+#ifdef CONFIG_CGROUP_NET_CLASSID
+	return READ_ONCE(skcd->classid);
+#else
+	return 0;
+#endif
 }
 
-/*
- * If invoked concurrently, the updaters may clobber each other.  The
- * caller is responsible for synchronization.
- */
 static inline void sock_cgroup_set_prioidx(struct sock_cgroup_data *skcd,
 					   u16 prioidx)
 {
-	struct sock_cgroup_data skcd_buf = {{ .val = READ_ONCE(skcd->val) }};
-
-	if (sock_cgroup_prioidx(&skcd_buf) == prioidx)
-		return;
-
-	if (!(skcd_buf.is_data & 1)) {
-		skcd_buf.val = 0;
-		skcd_buf.is_data = 1;
-	}
-
-	skcd_buf.prioidx = prioidx;
-	WRITE_ONCE(skcd->val, skcd_buf.val);	/* see sock_cgroup_ptr() */
+#ifdef CONFIG_CGROUP_NET_PRIO
+	WRITE_ONCE(skcd->prioidx, prioidx);
+#endif
 }
 
 static inline void sock_cgroup_set_classid(struct sock_cgroup_data *skcd,
 					   u32 classid)
 {
-	struct sock_cgroup_data skcd_buf = {{ .val = READ_ONCE(skcd->val) }};
-
-	if (sock_cgroup_classid(&skcd_buf) == classid)
-		return;
-
-	if (!(skcd_buf.is_data & 1)) {
-		skcd_buf.val = 0;
-		skcd_buf.is_data = 1;
-	}
-
-	skcd_buf.classid = classid;
-	WRITE_ONCE(skcd->val, skcd_buf.val);	/* see sock_cgroup_ptr() */
+#ifdef CONFIG_CGROUP_NET_CLASSID
+	WRITE_ONCE(skcd->classid, classid);
+#endif
 }
 
 #else	/* CONFIG_SOCK_CGROUP_DATA */

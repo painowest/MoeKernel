@@ -1,16 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2018, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+ * Copyright (c) 2020, The Linux Foundation. All rights reserved.
  */
-
 #ifndef _DT_BINDINGS_PHY_QCOM_SM8150_QMP_USB_H
 #define _DT_BINDINGS_PHY_QCOM_SM8150_QMP_USB_H
 
@@ -749,6 +740,8 @@
 #define USB3_DP_PCS_USB3_ALFPS_DEGLITCH_VAL			0x1F50
 #define USB3_DP_PCS_USB3_SIGDET_STARTUP_TIMER_VAL		0x1F54
 #define USB3_DP_PCS_USB3_TEST_CONTROL				0x1F58
+#define USB3_DP_QSERDES_RXA_AUX_DATA_TCOURSE_TFINE		0x1F5C
+#define USB3_DP_QSERDES_RXB_AUX_DATA_TCOURSE_TFINE		0x1F60
 
 /* USB3 Uni PHY register offsets */
 #define USB3_UNI_QSERDES_COM_ATB_SEL1				0x0000

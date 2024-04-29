@@ -1,13 +1,7 @@
-/* Copyright (c) 2018 The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2018, 2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef __SCHGM_FLASH_H__
@@ -55,7 +49,7 @@ void schgm_flash_torch_priority(struct smb_charger *chg, enum torch_mode mode);
 int schgm_flash_init(struct smb_charger *chg);
 bool is_flash_active(struct smb_charger *chg);
 
-irqreturn_t schgm_flash_default_irq_handler(int irq, void *data);
-irqreturn_t schgm_flash_ilim2_irq_handler(int irq, void *data);
-irqreturn_t schgm_flash_state_change_irq_handler(int irq, void *data);
+irqreturn_t smb5_schgm_flash_default_irq_handler(int irq, void *data);
+irqreturn_t smb5_schgm_flash_ilim2_irq_handler(int irq, void *data);
+irqreturn_t smb5_schgm_flash_state_change_irq_handler(int irq, void *data);
 #endif /* __SCHGM_FLASH_H__ */

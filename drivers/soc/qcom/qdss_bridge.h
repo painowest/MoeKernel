@@ -1,13 +1,6 @@
-/* Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _QDSS_BRIDGE_H
@@ -18,6 +11,7 @@ struct qdss_buf_tbl_lst {
 	unsigned char *buf;
 	struct qdss_request *usb_req;
 	atomic_t available;
+	atomic_t used;
 };
 
 struct qdss_mhi_buf_tbl_t {
@@ -37,6 +31,12 @@ enum open_status {
 	SSR,
 };
 
+enum mhi_ch {
+	QDSS,
+	QDSS_HW,
+	EMPTY,
+};
+
 struct qdss_bridge_drvdata {
 	int alias;
 	int nr_trbs;
@@ -46,7 +46,7 @@ struct qdss_bridge_drvdata {
 	enum mhi_transfer_mode mode;
 	spinlock_t lock;
 	struct device *dev;
-	struct cdev cdev;
+	struct cdev *cdev;
 	struct mhi_device *mhi_dev;
 	struct work_struct read_work;
 	struct work_struct read_done_work;

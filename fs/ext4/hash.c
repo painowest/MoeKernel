@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/ext4/hash.c
  *
  * Copyright (C) 2002 by Theodore Ts'o
- *
- * This file is released under the GPL v2.
- *
- * This file may be redistributed under the terms of the GNU Public
- * License.
  */
 
 #include <linux/fs.h>
@@ -237,6 +233,7 @@ static int __ext4fs_dirhash(const struct inode *dir, const char *name, int len,
 		break;
 	case DX_HASH_HALF_MD4_UNSIGNED:
 		str2hashbuf = str2hashbuf_unsigned;
+		fallthrough;
 	case DX_HASH_HALF_MD4:
 		p = name;
 		while (len > 0) {
@@ -250,6 +247,7 @@ static int __ext4fs_dirhash(const struct inode *dir, const char *name, int len,
 		break;
 	case DX_HASH_TEA_UNSIGNED:
 		str2hashbuf = str2hashbuf_unsigned;
+		fallthrough;
 	case DX_HASH_TEA:
 		p = name;
 		while (len > 0) {
@@ -279,7 +277,11 @@ static int __ext4fs_dirhash(const struct inode *dir, const char *name, int len,
 	}
 	default:
 		hinfo->hash = 0;
-		return -1;
+		hinfo->minor_hash = 0;
+		ext4_warning(dir->i_sb,
+			     "invalid/unsupported hash tree version %u",
+			     hinfo->hash_version);
+		return -EINVAL;
 	}
 	hash = hash & ~1;
 	if (hash == (EXT4_HTREE_EOF_32BIT << 1))

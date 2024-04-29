@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Driver for the Diolan DLN-2 USB-SPI adapter
  *
  * Copyright (c) 2014 Intel Corporation
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License as
- * published by the Free Software Foundation, version 2.
  */
 
 #include <linux/kernel.h>
@@ -546,7 +543,8 @@ static int dln2_spi_read_write_one(struct dln2_spi *dln2, const u8 *tx_data,
  * single ones due to device buffer constraints.
  */
 static int dln2_spi_rdwr(struct dln2_spi *dln2, const u8 *tx_data,
-			 u8 *rx_data, u16 data_len, u8 attr) {
+			 u8 *rx_data, u16 data_len, u8 attr)
+{
 	int ret;
 	u16 len;
 	u8 temp_attr;

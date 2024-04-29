@@ -1,10 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (c) 2016, Fuzhou Rockchip Electronics Co., Ltd
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/device.h>
@@ -14,8 +10,11 @@
 #include <linux/of.h>
 #include <linux/reboot.h>
 #include <linux/reboot-mode.h>
+#include <linux/string.h>
+#include <linux/slab.h>
 
 #define PREFIX "mode-"
+#define MAX_REBOOT_REASON_LEN 30
 
 struct mode_info {
 	const char *mode;
@@ -48,9 +47,19 @@ static int reboot_mode_notify(struct notifier_block *this,
 {
 	struct reboot_mode_driver *reboot;
 	unsigned int magic;
+	char *reason = NULL;
+
+	if (cmd) {
+		reason = kmalloc(MAX_REBOOT_REASON_LEN, GFP_KERNEL);
+		strscpy(reason, (char *)cmd, MAX_REBOOT_REASON_LEN);
+	}
+
+	/* Before comparing to modes retrieved via DT, replace ' ' by '-' */
+	if (reason && strnstr(reason, " ", strlen(reason)))
+		strreplace(reason, ' ', '-');
 
 	reboot = container_of(this, struct reboot_mode_driver, reboot_notifier);
-	magic = get_reboot_mode_magic(reboot, cmd);
+	magic = get_reboot_mode_magic(reboot, reason);
 	if (magic)
 		reboot->write(reboot, magic);
 
@@ -194,6 +203,6 @@ void devm_reboot_mode_unregister(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(devm_reboot_mode_unregister);
 
-MODULE_AUTHOR("Andy Yan <andy.yan@rock-chips.com");
+MODULE_AUTHOR("Andy Yan <andy.yan@rock-chips.com>");
 MODULE_DESCRIPTION("System reboot mode core library");
 MODULE_LICENSE("GPL v2");

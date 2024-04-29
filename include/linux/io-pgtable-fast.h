@@ -1,20 +1,13 @@
-/* Copyright (c) 2017, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
  */
 
 #ifndef __LINUX_IO_PGTABLE_FAST_H
 #define __LINUX_IO_PGTABLE_FAST_H
 
 #include <linux/notifier.h>
-
+#include <linux/io-pgtable.h>
 /*
  * This ought to be private to io-pgtable-fast, but dma-mapping-fast
  * currently requires it for a debug usecase.
@@ -22,6 +15,29 @@
 typedef u64 av8l_fast_iopte;
 
 struct io_pgtable_ops;
+struct scatterlist;
+
+struct av8l_fast_io_pgtable {
+	struct io_pgtable	  iop;
+	av8l_fast_iopte		 *pgd;
+	av8l_fast_iopte		 *puds[4];
+	av8l_fast_iopte		 *pmds;
+	struct page		**pages; /* page table memory */
+	int			  nr_pages;
+	dma_addr_t		  base;
+	dma_addr_t		  end;
+};
+
+/* Struct accessors */
+#define iof_pgtable_to_data(x)						\
+	container_of((x), struct av8l_fast_io_pgtable, iop)
+
+#define iof_pgtable_ops_to_pgtable(x)					\
+	container_of((x), struct io_pgtable, ops)
+
+#define iof_pgtable_ops_to_data(x)					\
+	iof_pgtable_to_data(iof_pgtable_ops_to_pgtable(x))
+
 
 #ifdef CONFIG_IOMMU_IO_PGTABLE_FAST
 
@@ -30,6 +46,10 @@ int av8l_fast_map_public(struct io_pgtable_ops *ops, unsigned long iova,
 
 void av8l_fast_unmap_public(struct io_pgtable_ops *ops, unsigned long iova,
 				size_t size);
+
+int av8l_fast_map_sg_public(struct io_pgtable_ops *ops,
+			unsigned long iova, struct scatterlist *sgl,
+			unsigned int nents, int prot, size_t *size);
 
 bool av8l_fast_iova_coherent_public(struct io_pgtable_ops *ops,
 					unsigned long iova);
@@ -46,6 +66,13 @@ av8l_fast_map_public(struct io_pgtable_ops *ops, unsigned long iova,
 static inline void av8l_fast_unmap_public(struct io_pgtable_ops *ops,
 					  unsigned long iova, size_t size)
 {
+}
+
+static inline int av8l_fast_map_sg_public(struct io_pgtable_ops *ops,
+				unsigned long iova, struct scatterlist *sgl,
+				unsigned int nents, int prot, size_t *size)
+{
+	return 0;
 }
 
 static inline bool av8l_fast_iova_coherent_public(struct io_pgtable_ops *ops,
@@ -75,8 +102,8 @@ av8l_fast_iova_to_phys_public(struct io_pgtable_ops *ops,
  */
 #define AV8L_FAST_PTE_UNMAPPED_NEED_TLBI 0xa
 
-void av8l_fast_clear_stale_ptes(struct io_pgtable_ops *ops, u64 base,
-				u64 start, u64 end, bool skip_sync);
+void av8l_fast_clear_stale_ptes(struct io_pgtable_ops *ops, u64 base, u64 end,
+				bool skip_sync);
 void av8l_register_notify(struct notifier_block *nb);
 
 #else  /* !CONFIG_IOMMU_IO_PGTABLE_FAST_PROVE_TLB */
@@ -85,7 +112,6 @@ void av8l_register_notify(struct notifier_block *nb);
 
 static inline void av8l_fast_clear_stale_ptes(struct io_pgtable_ops *ops,
 					      u64 base,
-					      u64 start,
 					      u64 end,
 					      bool skip_sync)
 {

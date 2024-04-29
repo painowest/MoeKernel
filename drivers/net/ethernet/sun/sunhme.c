@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* sunhme.c: Sparc HME/BigMac 10/100baseT half/full duplex auto switching,
  *           auto carrier detecting ethernet driver.  Also known as the
  *           "Happy Meal Ethernet" found on SunSwift SBUS cards.
@@ -51,7 +52,6 @@
 #endif
 #include <linux/uaccess.h>
 
-#include <asm/pgtable.h>
 #include <asm/irq.h>
 
 #ifdef CONFIG_PCI
@@ -251,14 +251,6 @@ static u32 pci_hme_read_desc32(hme32 *p)
 	((__hp)->write_txd((__txd), (__flags), (__addr)))
 #define hme_read_desc32(__hp, __p) \
 	((__hp)->read_desc32(__p))
-#define hme_dma_map(__hp, __ptr, __size, __dir) \
-	((__hp)->dma_map((__hp)->dma_dev, (__ptr), (__size), (__dir)))
-#define hme_dma_unmap(__hp, __addr, __size, __dir) \
-	((__hp)->dma_unmap((__hp)->dma_dev, (__addr), (__size), (__dir)))
-#define hme_dma_sync_for_cpu(__hp, __addr, __size, __dir) \
-	((__hp)->dma_sync_for_cpu((__hp)->dma_dev, (__addr), (__size), (__dir)))
-#define hme_dma_sync_for_device(__hp, __addr, __size, __dir) \
-	((__hp)->dma_sync_for_device((__hp)->dma_dev, (__addr), (__size), (__dir)))
 #else
 #ifdef CONFIG_SBUS
 /* SBUS only compilation */
@@ -277,14 +269,6 @@ do {	(__txd)->tx_addr = (__force hme32)(u32)(__addr); \
 	(__txd)->tx_flags = (__force hme32)(u32)(__flags); \
 } while(0)
 #define hme_read_desc32(__hp, __p)	((__force u32)(hme32)*(__p))
-#define hme_dma_map(__hp, __ptr, __size, __dir) \
-	dma_map_single((__hp)->dma_dev, (__ptr), (__size), (__dir))
-#define hme_dma_unmap(__hp, __addr, __size, __dir) \
-	dma_unmap_single((__hp)->dma_dev, (__addr), (__size), (__dir))
-#define hme_dma_sync_for_cpu(__hp, __addr, __size, __dir) \
-	dma_dma_sync_single_for_cpu((__hp)->dma_dev, (__addr), (__size), (__dir))
-#define hme_dma_sync_for_device(__hp, __addr, __size, __dir) \
-	dma_dma_sync_single_for_device((__hp)->dma_dev, (__addr), (__size), (__dir))
 #else
 /* PCI only compilation */
 #define hme_write32(__hp, __reg, __val) \
@@ -305,14 +289,6 @@ static inline u32 hme_read_desc32(struct happy_meal *hp, hme32 *p)
 {
 	return le32_to_cpup((__le32 *)p);
 }
-#define hme_dma_map(__hp, __ptr, __size, __dir) \
-	pci_map_single((__hp)->dma_dev, (__ptr), (__size), (__dir))
-#define hme_dma_unmap(__hp, __addr, __size, __dir) \
-	pci_unmap_single((__hp)->dma_dev, (__addr), (__size), (__dir))
-#define hme_dma_sync_for_cpu(__hp, __addr, __size, __dir) \
-	pci_dma_sync_single_for_cpu((__hp)->dma_dev, (__addr), (__size), (__dir))
-#define hme_dma_sync_for_device(__hp, __addr, __size, __dir) \
-	pci_dma_sync_single_for_device((__hp)->dma_dev, (__addr), (__size), (__dir))
 #endif
 #endif
 
@@ -685,9 +661,9 @@ static int is_lucent_phy(struct happy_meal *hp)
 	return ret;
 }
 
-static void happy_meal_timer(unsigned long data)
+static void happy_meal_timer(struct timer_list *t)
 {
-	struct happy_meal *hp = (struct happy_meal *) data;
+	struct happy_meal *hp = from_timer(hp, t, happy_timer);
 	void __iomem *tregs = hp->tcvregs;
 	int restart_timer = 0;
 
@@ -1413,8 +1389,6 @@ force_link:
 
 	hp->timer_ticks = 0;
 	hp->happy_timer.expires = jiffies + (12 * HZ)/10;  /* 1.2 sec. */
-	hp->happy_timer.data = (unsigned long) hp;
-	hp->happy_timer.function = happy_meal_timer;
 	add_timer(&hp->happy_timer);
 }
 
@@ -1963,7 +1937,7 @@ static void happy_meal_tx(struct happy_meal *hp)
 			this = &txbase[elem];
 		}
 
-		dev_kfree_skb_irq(skb);
+		dev_consume_skb_irq(skb);
 		dev->stats.tx_packets++;
 	}
 	hp->tx_old = elem;
@@ -2247,7 +2221,7 @@ static int happy_meal_close(struct net_device *dev)
 #define SXD(x)
 #endif
 
-static void happy_meal_tx_timeout(struct net_device *dev)
+static void happy_meal_tx_timeout(struct net_device *dev, unsigned int txqueue)
 {
 	struct happy_meal *hp = netdev_priv(dev);
 
@@ -2288,8 +2262,8 @@ static netdev_tx_t happy_meal_start_xmit(struct sk_buff *skb,
 					 struct net_device *dev)
 {
 	struct happy_meal *hp = netdev_priv(dev);
- 	int entry;
- 	u32 tx_flags;
+	int entry;
+	u32 tx_flags;
 
 	tx_flags = TXFLAG_OWN;
 	if (skb->ip_summed == CHECKSUM_PARTIAL) {
@@ -2303,7 +2277,7 @@ static netdev_tx_t happy_meal_start_xmit(struct sk_buff *skb,
 
 	spin_lock_irq(&hp->happy_lock);
 
- 	if (TX_BUFFS_AVAIL(hp) <= (skb_shinfo(skb)->nr_frags + 1)) {
+	if (TX_BUFFS_AVAIL(hp) <= (skb_shinfo(skb)->nr_frags + 1)) {
 		netif_stop_queue(dev);
 		spin_unlock_irq(&hp->happy_lock);
 		printk(KERN_ERR "%s: BUG! Tx Ring full when queue awake!\n",
@@ -2692,7 +2666,7 @@ static int happy_meal_sbus_probe_one(struct platform_device *op, int is_qfe)
 	sbus_dp = op->dev.parent->of_node;
 
 	/* We can match PCI devices too, do not accept those here. */
-	if (strcmp(sbus_dp->name, "sbus") && strcmp(sbus_dp->name, "sbi"))
+	if (!of_node_name_eq(sbus_dp, "sbus") && !of_node_name_eq(sbus_dp, "sbi"))
 		return err;
 
 	if (is_qfe) {
@@ -2819,7 +2793,7 @@ static int happy_meal_sbus_probe_one(struct platform_device *op, int is_qfe)
 	hp->timer_state = asleep;
 	hp->timer_ticks = 0;
 
-	init_timer(&hp->happy_timer);
+	timer_setup(&hp->happy_timer, happy_meal_timer, 0);
 
 	hp->dev = dev;
 	dev->netdev_ops = &hme_netdev_ops;
@@ -3000,7 +2974,7 @@ static int happy_meal_pci_probe(struct pci_dev *pdev,
 	/* Now make sure pci_dev cookie is there. */
 #ifdef CONFIG_SPARC
 	dp = pci_device_to_OF_node(pdev);
-	strcpy(prom_name, dp->name);
+	snprintf(prom_name, sizeof(prom_name), "%pOFn", dp);
 #else
 	if (is_quattro_p(pdev))
 		strcpy(prom_name, "SUNW,qfe");
@@ -3133,7 +3107,7 @@ static int happy_meal_pci_probe(struct pci_dev *pdev,
 	hp->timer_state = asleep;
 	hp->timer_ticks = 0;
 
-	init_timer(&hp->happy_timer);
+	timer_setup(&hp->happy_timer, happy_meal_timer, 0);
 
 	hp->irq = pdev->irq;
 	hp->dev = dev;

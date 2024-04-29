@@ -20,20 +20,16 @@ int ia32_setup_frame(int sig, struct ksignal *ksig,
 # define ia32_setup_rt_frame	__setup_rt_frame
 #endif
 
-#ifdef CONFIG_COMPAT
-int __copy_siginfo_to_user32(compat_siginfo_t __user *to,
-		const siginfo_t *from, bool x32_ABI);
-#endif
-
-
 extern void convert_from_fxsr(struct user_i387_ia32_struct *env,
 			      struct task_struct *tsk);
-extern void convert_to_fxsr(struct task_struct *tsk,
+extern void convert_to_fxsr(struct fxregs_state *fxsave,
 			    const struct user_i387_ia32_struct *env);
 
 unsigned long
 fpu__alloc_mathframe(unsigned long sp, int ia32_frame,
 		     unsigned long *buf_fx, unsigned long *size);
+
+unsigned long fpu__get_fpstate_size(void);
 
 extern void fpu__init_prepare_fx_sw_frame(void);
 

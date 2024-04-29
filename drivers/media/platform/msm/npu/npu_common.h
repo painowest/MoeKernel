@@ -1,13 +1,7 @@
-/* Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2017-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2023-2024, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _NPU_COMMON_H
@@ -17,7 +11,6 @@
  * Includes
  * -------------------------------------------------------------------------
  */
-#include <asm/dma-iommu.h>
 #include <linux/cdev.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -102,12 +95,6 @@ struct npu_debugfs_ctx {
 	struct dentry *root;
 	uint32_t reg_off;
 	uint32_t reg_cnt;
-	uint8_t *log_buf;
-	struct mutex log_lock;
-	uint32_t log_num_bytes_buffered;
-	uint32_t log_read_index;
-	uint32_t log_write_index;
-	uint32_t log_buf_size;
 };
 
 struct npu_debugfs_reg_ctx {
@@ -124,7 +111,7 @@ struct npu_mbox {
 };
 
 /**
- * struct npul_pwrlevel - Struct holding different pwrlevel info obtained from
+ * struct npu_pwrlevel - Struct holding different pwrlevel info obtained
  * from dtsi file
  * @pwr_level:           NPU power level
  * @freq[]:              NPU frequency vote in Hz
@@ -209,6 +196,13 @@ struct npu_io_data {
 	void __iomem *base;
 };
 
+struct npu_fw_io_data {
+	phys_addr_t mem_phys;
+	phys_addr_t mem_reloc;
+	void *mem_region;
+	size_t mem_size;
+};
+
 struct npu_device {
 	struct mutex dev_lock;
 
@@ -223,6 +217,7 @@ struct npu_device {
 	struct npu_io_data tcm_io;
 	struct npu_io_data bwmon_io;
 	struct npu_io_data qfprom_io;
+	struct npu_fw_io_data fw_io;
 
 	uint32_t core_clk_num;
 	struct npu_clk core_clks[NUM_MAX_CLK_NUM];
@@ -247,7 +242,8 @@ struct npu_device {
 	struct llcc_slice_desc *sys_cache;
 	uint32_t execute_v2_flag;
 	bool cxlimit_registered;
-
+	struct icc_path *icc_npu_cdspmem;
+	struct icc_path *icc_cpu_imemcfg;
 	uint32_t hw_version;
 };
 

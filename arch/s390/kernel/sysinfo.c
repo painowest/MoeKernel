@@ -25,19 +25,22 @@ int topology_max_mnest;
 
 static inline int __stsi(void *sysinfo, int fc, int sel1, int sel2, int *lvl)
 {
-	register int r0 asm("0") = (fc << 28) | sel1;
-	register int r1 asm("1") = sel2;
+	int r0 = (fc << 28) | sel1;
 	int rc = 0;
 
 	asm volatile(
-		"	stsi	0(%3)\n"
+		"	lr	0,%[r0]\n"
+		"	lr	1,%[r1]\n"
+		"	stsi	0(%[sysinfo])\n"
 		"0:	jz	2f\n"
-		"1:	lhi	%1,%4\n"
-		"2:\n"
+		"1:	lhi	%[rc],%[retval]\n"
+		"2:	lr	%[r0],0\n"
 		EX_TABLE(0b, 1b)
-		: "+d" (r0), "+d" (rc)
-		: "d" (r1), "a" (sysinfo), "K" (-EOPNOTSUPP)
-		: "cc", "memory");
+		: [r0] "+d" (r0), [rc] "+d" (rc)
+		: [r1] "d" (sel2),
+		  [sysinfo] "a" (sysinfo),
+		  [retval] "K" (-EOPNOTSUPP)
+		: "cc", "0", "1", "memory");
 	*lvl = ((unsigned int) r0) >> 28;
 	return rc;
 }
@@ -91,6 +94,8 @@ static void stsi_1_1_1(struct seq_file *m, struct sysinfo_1_1_1 *info)
 	EBCASC(info->model_temp_cap, sizeof(info->model_temp_cap));
 	seq_printf(m, "Manufacturer:         %-16.16s\n", info->manufacturer);
 	seq_printf(m, "Type:                 %-4.4s\n", info->type);
+	if (info->lic)
+		seq_printf(m, "LIC Identifier:       %016lx\n", info->lic);
 	/*
 	 * Sigh: the model field has been renamed with System z9
 	 * to model_capacity and a new model field has been added
@@ -294,21 +299,9 @@ static int sysinfo_show(struct seq_file *m, void *v)
 	return 0;
 }
 
-static int sysinfo_open(struct inode *inode, struct file *file)
-{
-	return single_open(file, sysinfo_show, NULL);
-}
-
-static const struct file_operations sysinfo_fops = {
-	.open		= sysinfo_open,
-	.read		= seq_read,
-	.llseek		= seq_lseek,
-	.release	= single_release,
-};
-
 static int __init sysinfo_create_proc(void)
 {
-	proc_create("sysinfo", 0444, NULL, &sysinfo_fops);
+	proc_create_single("sysinfo", 0444, NULL, sysinfo_show);
 	return 0;
 }
 device_initcall(sysinfo_create_proc);
@@ -388,18 +381,6 @@ static const struct seq_operations service_level_seq_ops = {
 	.show		= service_level_show
 };
 
-static int service_level_open(struct inode *inode, struct file *file)
-{
-	return seq_open(file, &service_level_seq_ops);
-}
-
-static const struct file_operations service_level_ops = {
-	.open		= service_level_open,
-	.read		= seq_read,
-	.llseek 	= seq_lseek,
-	.release	= seq_release
-};
-
 static void service_level_vm_print(struct seq_file *m,
 				   struct service_level *slr)
 {
@@ -422,7 +403,7 @@ static struct service_level service_level_vm = {
 
 static __init int create_proc_service_level(void)
 {
-	proc_create("service_levels", 0, NULL, &service_level_ops);
+	proc_create_seq("service_levels", 0, NULL, &service_level_seq_ops);
 	if (MACHINE_IS_VM)
 		register_service_level(&service_level_vm);
 	return 0;
@@ -567,8 +548,6 @@ static __init int stsi_init_debugfs(void)
 	int lvl, i;
 
 	stsi_root = debugfs_create_dir("stsi", arch_debugfs_dir);
-	if (IS_ERR_OR_NULL(stsi_root))
-		return 0;
 	lvl = stsi(NULL, 0, 0, 0);
 	if (lvl > 0)
 		stsi_0_0_0 = lvl;

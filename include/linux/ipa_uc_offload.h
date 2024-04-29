@@ -1,13 +1,7 @@
-/* Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #ifndef _IPA_UC_OFFLOAD_H_
@@ -53,8 +47,8 @@ struct ipa_hdr_info {
  * @notify:	callback for exception/embedded packets
  * @priv: callback cookie
  * @hdr_info: header information
- * @meta_data: meta data if any
- * @meta_data_mask: meta data mask
+ * @meta_data: metadata if any
+ * @meta_data_mask: metadata mask
  * @proto: uC offload protocol type
  * @alt_dst_pipe: alternate routing output pipe
  */
@@ -91,8 +85,9 @@ struct ntn_buff_smmu_map {
  * @ntn_ring_size: size of the Tx/Rx ring (in terms of elements)
  * @buff_pool_base_pa: physical address of the base of the Tx/Rx buffer pool
  * @buff_pool_base_iova: virtual address of the base of the Tx/Rx buffer pool
- * @buff_pool_base_sgt: Scatter table for buffer pools,contains valid non NULL
- *			 value when EMAC S1-SMMU enabed, else NULL.
+ * @buff_pool_base_sgt: Scatter table for buffer pools,contains valid
+ *			non NULL value. When NULL, do continuosly
+ *			pa to iova mapping (SMMU disable, pa == iova).
  * @num_buffers: Rx/Tx buffer pool size (in terms of elements)
  * @data_buff_size: size of the each data buffer allocated in DDR
  * @ntn_reg_base_ptr_pa: physical address of the Tx/Rx NTN Ring's
@@ -148,6 +143,7 @@ struct ipa_ntn_conn_in_params {
  *				to uC offload client
  * @ul_uc_db_pa: physical address of IPA uc doorbell for UL
  * @dl_uc_db_pa: physical address of IPA uc doorbell for DL
+ * @clnt_hdl: opaque handle assigned to offload client
  * @ul_uc_db_iomem: iomem address of IPA uc doorbell for UL
  * @dl_uc_db_iomem: iomem address of IPA uc doorbell for DL
  */
@@ -212,7 +208,7 @@ struct ipa_uc_ready_params {
 	enum ipa_uc_offload_proto proto;
 };
 
-#if defined CONFIG_IPA || defined CONFIG_IPA3
+#if IS_ENABLED(CONFIG_IPA3)
 
 /**
  * ipa_uc_offload_reg_intf - Client should call this function to
@@ -285,7 +281,7 @@ int ipa_uc_offload_reg_rdyCB(struct ipa_uc_ready_params *param);
  */
 void ipa_uc_offload_dereg_rdyCB(enum ipa_uc_offload_proto proto);
 
-#else /* (CONFIG_IPA || CONFIG_IPA3) */
+#else /* IS_ENABLED(CONFIG_IPA3) */
 
 static inline int ipa_uc_offload_reg_intf(
 		struct ipa_uc_offload_intf_params *in,

@@ -6,6 +6,9 @@
 
 #include "cgroup-internal.h"
 
+#include <trace/events/cgroup.h>
+#include <trace/hooks/dtask.h>
+
 /*
  * Propagate the cgroup frozen state upwards by the cgroup tree.
  */
@@ -28,6 +31,7 @@ static void cgroup_propagate_frozen(struct cgroup *cgrp, bool frozen)
 			    cgrp->nr_descendants) {
 				set_bit(CGRP_FROZEN, &cgrp->flags);
 				cgroup_file_notify(&cgrp->events_file);
+				TRACE_CGROUP_PATH(notify_frozen, cgrp, 1);
 				desc++;
 			}
 		} else {
@@ -35,6 +39,7 @@ static void cgroup_propagate_frozen(struct cgroup *cgrp, bool frozen)
 			if (test_bit(CGRP_FROZEN, &cgrp->flags)) {
 				clear_bit(CGRP_FROZEN, &cgrp->flags);
 				cgroup_file_notify(&cgrp->events_file);
+				TRACE_CGROUP_PATH(notify_frozen, cgrp, 0);
 				desc++;
 			}
 		}
@@ -73,6 +78,7 @@ void cgroup_update_frozen(struct cgroup *cgrp)
 		clear_bit(CGRP_FROZEN, &cgrp->flags);
 	}
 	cgroup_file_notify(&cgrp->events_file);
+	TRACE_CGROUP_PATH(notify_frozen, cgrp, frozen);
 
 	/* Update the state of ancestor cgroups. */
 	cgroup_propagate_frozen(cgrp, frozen);
@@ -134,19 +140,13 @@ void cgroup_leave_frozen(bool always_leave)
 		cgroup_update_frozen(cgrp);
 		WARN_ON_ONCE(!current->frozen);
 		current->frozen = false;
+	} else if (!(current->jobctl & JOBCTL_TRAP_FREEZE)) {
+		spin_lock(&current->sighand->siglock);
+		current->jobctl |= JOBCTL_TRAP_FREEZE;
+		set_thread_flag(TIF_SIGPENDING);
+		spin_unlock(&current->sighand->siglock);
 	}
 	spin_unlock_irq(&css_set_lock);
-
-	if (unlikely(current->frozen)) {
-		/*
-		 * If the task remained in the frozen state,
-		 * make sure it won't reach userspace without
-		 * entering the signal handling loop.
-		 */
-		spin_lock_irq(&current->sighand->siglock);
-		recalc_sigpending();
-		spin_unlock_irq(&current->sighand->siglock);
-	}
 }
 
 /*
@@ -156,17 +156,21 @@ void cgroup_leave_frozen(bool always_leave)
 static void cgroup_freeze_task(struct task_struct *task, bool freeze)
 {
 	unsigned long flags;
+	bool wake = true;
 
 	/* If the task is about to die, don't bother with freezing it. */
 	if (!lock_task_sighand(task, &flags))
 		return;
 
+	trace_android_vh_freeze_whether_wake(task, &wake);
 	if (freeze) {
 		task->jobctl |= JOBCTL_TRAP_FREEZE;
-		signal_wake_up(task, false);
+		if (wake)
+			signal_wake_up(task, false);
 	} else {
 		task->jobctl &= ~JOBCTL_TRAP_FREEZE;
-		wake_up_process(task);
+		if (wake)
+			wake_up_process(task);
 	}
 
 	unlock_task_sighand(task, &flags);
@@ -188,6 +192,11 @@ static void cgroup_do_freeze(struct cgroup *cgrp, bool freeze)
 	else
 		clear_bit(CGRP_FREEZE, &cgrp->flags);
 	spin_unlock_irq(&css_set_lock);
+
+	if (freeze)
+		TRACE_CGROUP_PATH(freeze, cgrp);
+	else
+		TRACE_CGROUP_PATH(unfreeze, cgrp);
 
 	css_task_iter_start(&cgrp->self, 0, &it);
 	while ((task = css_task_iter_next(&it))) {
@@ -227,6 +236,15 @@ void cgroup_freezer_migrate_task(struct task_struct *task,
 		return;
 
 	/*
+	 * It's not necessary to do changes if both of the src and dst cgroups
+	 * are not freezing and task is not frozen.
+	 */
+	if (!test_bit(CGRP_FREEZE, &src->flags) &&
+	    !test_bit(CGRP_FREEZE, &dst->flags) &&
+	    !task->frozen)
+		return;
+
+	/*
 	 * Adjust counters of freezing and frozen tasks.
 	 * Note, that if the task is frozen, but the destination cgroup is not
 	 * frozen, we bump both counters to keep them balanced.
@@ -242,16 +260,6 @@ void cgroup_freezer_migrate_task(struct task_struct *task,
 	 * Force the task to the desired state.
 	 */
 	cgroup_freeze_task(task, test_bit(CGRP_FREEZE, &dst->flags));
-}
-
-void cgroup_freezer_frozen_exit(struct task_struct *task)
-{
-	struct cgroup *cgrp = task_dfl_cgroup(task);
-
-	lockdep_assert_held(&css_set_lock);
-
-	cgroup_dec_frozen_cnt(cgrp);
-	cgroup_update_frozen(cgrp);
 }
 
 void cgroup_freeze(struct cgroup *cgrp, bool freeze)
@@ -312,6 +320,9 @@ void cgroup_freeze(struct cgroup *cgrp, bool freeze)
 	 * In both cases it's better to notify a user, that there is
 	 * nothing to wait for.
 	 */
-	if (!applied)
+	if (!applied) {
+		TRACE_CGROUP_PATH(notify_frozen, cgrp,
+				  test_bit(CGRP_FROZEN, &cgrp->flags));
 		cgroup_file_notify(&cgrp->events_file);
+	}
 }

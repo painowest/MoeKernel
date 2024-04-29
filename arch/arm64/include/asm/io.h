@@ -1,38 +1,23 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Based on arch/arm/include/asm/io.h
  *
  * Copyright (C) 1996-2000 Russell King
  * Copyright (C) 2012 ARM Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 #ifndef __ASM_IO_H
 #define __ASM_IO_H
 
-#ifdef __KERNEL__
-
 #include <linux/types.h>
+#include <linux/pgtable.h>
 
 #include <asm/byteorder.h>
 #include <asm/barrier.h>
 #include <asm/memory.h>
-#include <asm/pgtable.h>
 #include <asm/early_ioremap.h>
 #include <asm/alternative.h>
 #include <asm/cpufeature.h>
 #include <linux/msm_rtb.h>
-
-#include <xen/xen.h>
 
 /*
  * Generic IO read/write.  These perform native-endian accesses.
@@ -48,7 +33,8 @@ static inline void __raw_writew_no_log(u16 val, volatile void __iomem *addr)
 	asm volatile("strh %w0, [%1]" : : "rZ" (val), "r" (addr));
 }
 
-static inline void __raw_writel_no_log(u32 val, volatile void __iomem *addr)
+#define __raw_writel __raw_writel
+static __always_inline void __raw_writel(u32 val, volatile void __iomem *addr)
 {
 	asm volatile("str %w0, [%1]" : : "rZ" (val), "r" (addr));
 }
@@ -79,7 +65,8 @@ static inline u16 __raw_readw_no_log(const volatile void __iomem *addr)
 	return val;
 }
 
-static inline u32 __raw_readl_no_log(const volatile void __iomem *addr)
+#define __raw_readl __raw_readl
+static __always_inline u32 __raw_readl(const volatile void __iomem *addr)
 {
 	u32 val;
 	asm volatile(ALTERNATIVE("ldr %w0, [%1]",
@@ -140,7 +127,7 @@ static inline u64 __raw_readq_no_log(const volatile void __iomem *addr)
 #define __raw_readq(a)		__raw_read_logged((a), q, u64)
 
 /* IO barriers */
-#define __iormb(v)							\
+#define __io_ar(v)							\
 ({									\
 	unsigned long tmp;						\
 									\
@@ -157,55 +144,14 @@ static inline u64 __raw_readq_no_log(const volatile void __iomem *addr)
 		     : "memory");					\
 })
 
-#define __iowmb()		dma_wmb()
+#define __io_bw()		dma_wmb()
+#define __io_br(v)
+#define __io_aw(v)
 
-#define mmiowb()		do { } while (0)
-
-/*
- * Relaxed I/O memory access primitives. These follow the Device memory
- * ordering rules but do not guarantee any ordering relative to Normal memory
- * accesses.
- */
-#define readb_relaxed(c)	({ u8  __r = __raw_readb(c); __r; })
-#define readw_relaxed(c)	({ u16 __r = le16_to_cpu((__force __le16)__raw_readw(c)); __r; })
-#define readl_relaxed(c)	({ u32 __r = le32_to_cpu((__force __le32)__raw_readl(c)); __r; })
-#define readq_relaxed(c)	({ u64 __r = le64_to_cpu((__force __le64)__raw_readq(c)); __r; })
-
-#define writeb_relaxed(v,c)	((void)__raw_writeb((v),(c)))
-#define writew_relaxed(v,c)	((void)__raw_writew((__force u16)cpu_to_le16(v),(c)))
-#define writel_relaxed(v,c)	((void)__raw_writel((__force u32)cpu_to_le32(v),(c)))
-#define writeq_relaxed(v,c)	((void)__raw_writeq((__force u64)cpu_to_le64(v),(c)))
-
-#define readb_relaxed_no_log(c)	({ u8 __v = __raw_readb_no_log(c); __v; })
-#define readw_relaxed_no_log(c) \
-	({ u16 __v = le16_to_cpu((__force __le16)__raw_readw_no_log(c)); __v; })
-#define readl_relaxed_no_log(c) \
-	({ u32 __v = le32_to_cpu((__force __le32)__raw_readl_no_log(c)); __v; })
-#define readq_relaxed_no_log(c) \
-	({ u64 __v = le64_to_cpu((__force __le64)__raw_readq_no_log(c)); __v; })
-
-#define writeb_relaxed_no_log(v, c)	((void)__raw_writeb_no_log((v), (c)))
-#define writew_relaxed_no_log(v, c) \
-	((void)__raw_writew_no_log((__force u16)cpu_to_le32(v), (c)))
-#define writel_relaxed_no_log(v, c) \
-	((void)__raw_writel_no_log((__force u32)cpu_to_le32(v), (c)))
-#define writeq_relaxed_no_log(v, c) \
-	((void)__raw_writeq_no_log((__force u64)cpu_to_le32(v), (c)))
-
-/*
- * I/O memory access primitives. Reads are ordered relative to any
- * following Normal memory access. Writes are ordered relative to any prior
- * Normal memory access.
- */
-#define readb(c)		({ u8  __v = readb_relaxed(c); __iormb(__v); __v; })
-#define readw(c)		({ u16 __v = readw_relaxed(c); __iormb(__v); __v; })
-#define readl(c)		({ u32 __v = readl_relaxed(c); __iormb(__v); __v; })
-#define readq(c)		({ u64 __v = readq_relaxed(c); __iormb(__v); __v; })
-
-#define writeb(v,c)		({ __iowmb(); writeb_relaxed((v),(c)); })
-#define writew(v,c)		({ __iowmb(); writew_relaxed((v),(c)); })
-#define writel(v,c)		({ __iowmb(); writel_relaxed((v),(c)); })
-#define writeq(v,c)		({ __iowmb(); writeq_relaxed((v),(c)); })
+/* arm64-specific, don't use in portable drivers */
+#define __iormb(v)		__io_ar(v)
+#define __iowmb()		__io_bw()
+#define __iomb()		dma_mb()
 
 #define readb_no_log(c) \
 		({ u8  __v = readb_relaxed_no_log(c); __iormb(__v); __v; })
@@ -247,24 +193,12 @@ extern void __memset_io(volatile void __iomem *, int, size_t);
  * I/O memory mapping functions.
  */
 extern void __iomem *__ioremap(phys_addr_t phys_addr, size_t size, pgprot_t prot);
-extern void __iounmap(volatile void __iomem *addr);
+extern void iounmap(volatile void __iomem *addr);
 extern void __iomem *ioremap_cache(phys_addr_t phys_addr, size_t size);
 
 #define ioremap(addr, size)		__ioremap((addr), (size), __pgprot(PROT_DEVICE_nGnRE))
-#define ioremap_nocache(addr, size)	__ioremap((addr), (size), __pgprot(PROT_DEVICE_nGnRE))
 #define ioremap_wc(addr, size)		__ioremap((addr), (size), __pgprot(PROT_NORMAL_NC))
-#define ioremap_wt(addr, size)		__ioremap((addr), (size), __pgprot(PROT_DEVICE_nGnRE))
-#define iounmap				__iounmap
-
-/*
- * PCI configuration space mapping function.
- *
- * The PCI specification disallows posted write configuration transactions.
- * Add an arch specific pci_remap_cfgspace() definition that is implemented
- * through nGnRnE device memory attribute as recommended by the ARM v8
- * Architecture reference manual Issue A.k B2.8.2 "Device memory".
- */
-#define pci_remap_cfgspace(addr, size) __ioremap((addr), (size), __pgprot(PROT_DEVICE_nGnRnE))
+#define ioremap_np(addr, size)		__ioremap((addr), (size), __pgprot(PROT_DEVICE_nGnRnE))
 
 /*
  * io{read,write}{16,32,64}be() macros
@@ -287,14 +221,8 @@ extern void __iomem *ioremap_cache(phys_addr_t phys_addr, size_t size);
 extern int valid_phys_addr_range(phys_addr_t addr, size_t size);
 extern int valid_mmap_phys_addr_range(unsigned long pfn, size_t size);
 
-extern int devmem_is_allowed(unsigned long pfn);
+extern bool arch_memremap_can_ram_remap(resource_size_t offset, size_t size,
+					unsigned long flags);
+#define arch_memremap_can_ram_remap arch_memremap_can_ram_remap
 
-struct bio_vec;
-extern bool xen_biovec_phys_mergeable(const struct bio_vec *vec1,
-				      const struct bio_vec *vec2);
-#define BIOVEC_PHYS_MERGEABLE(vec1, vec2)				\
-	(__BIOVEC_PHYS_MERGEABLE(vec1, vec2) &&				\
-	 (!xen_domain() || xen_biovec_phys_mergeable(vec1, vec2)))
-
-#endif	/* __KERNEL__ */
 #endif	/* __ASM_IO_H */

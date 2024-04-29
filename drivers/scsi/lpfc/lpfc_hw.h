@@ -1,8 +1,8 @@
 /*******************************************************************
  * This file is part of the Emulex Linux Device Driver for         *
  * Fibre Channel Host Bus Adapters.                                *
- * Copyright (C) 2017 Broadcom. All Rights Reserved. The term      *
- * “Broadcom” refers to Broadcom Limited and/or its subsidiaries.  *
+ * Copyright (C) 2017-2021 Broadcom. All Rights Reserved. The term *
+ * “Broadcom” refers to Broadcom Inc. and/or its subsidiaries.     *
  * Copyright (C) 2004-2016 Emulex.  All rights reserved.           *
  * EMULEX and SLI are trademarks of Emulex.                        *
  * www.broadcom.com                                                *
@@ -22,7 +22,7 @@
 
 #define FDMI_DID        0xfffffaU
 #define NameServer_DID  0xfffffcU
-#define SCR_DID         0xfffffdU
+#define Fabric_Cntl_DID 0xfffffdU
 #define Fabric_DID      0xfffffeU
 #define Bcast_DID       0xffffffU
 #define Mask_DID        0xffffffU
@@ -115,6 +115,7 @@ struct lpfc_sli_ct_request {
 		uint32_t PortID;
 		struct gid {
 			uint8_t PortType;	/* for GID_PT requests */
+#define GID_PT_N_PORT	1
 			uint8_t DomainScope;
 			uint8_t AreaScope;
 			uint8_t Fc4Type;	/* for GID_FT requests */
@@ -274,6 +275,7 @@ struct lpfc_sli_ct_request {
 #define  SLI_CT_ACCESS_DENIED             0x10
 #define  SLI_CT_INVALID_PORT_ID           0x11
 #define  SLI_CT_DATABASE_EMPTY            0x12
+#define  SLI_CT_APP_ID_NOT_AVAILABLE      0x40
 
 /*
  * Name Server Command Codes
@@ -399,16 +401,16 @@ struct csp {
 	uint16_t altBbCredit:1;	/* FC Word 1, bit 27 */
 	uint16_t edtovResolution:1;	/* FC Word 1, bit 26 */
 	uint16_t multicast:1;	/* FC Word 1, bit 25 */
-	uint16_t broadcast:1;	/* FC Word 1, bit 24 */
+	uint16_t app_hdr_support:1;	/* FC Word 1, bit 24 */
 
-	uint16_t huntgroup:1;	/* FC Word 1, bit 23 */
+	uint16_t priority_tagging:1;	/* FC Word 1, bit 23 */
 	uint16_t simplex:1;	/* FC Word 1, bit 22 */
 	uint16_t word1Reserved1:3;	/* FC Word 1, bit 21:19 */
 	uint16_t dhd:1;		/* FC Word 1, bit 18 */
 	uint16_t contIncSeqCnt:1;	/* FC Word 1, bit 17 */
 	uint16_t payloadlength:1;	/* FC Word 1, bit 16 */
 #else	/*  __LITTLE_ENDIAN_BITFIELD */
-	uint16_t broadcast:1;	/* FC Word 1, bit 24 */
+	uint16_t app_hdr_support:1;	/* FC Word 1, bit 24 */
 	uint16_t multicast:1;	/* FC Word 1, bit 25 */
 	uint16_t edtovResolution:1;	/* FC Word 1, bit 26 */
 	uint16_t altBbCredit:1;	/* FC Word 1, bit 27 */
@@ -422,7 +424,7 @@ struct csp {
 	uint16_t dhd:1;		/* FC Word 1, bit 18 */
 	uint16_t word1Reserved1:3;	/* FC Word 1, bit 21:19 */
 	uint16_t simplex:1;	/* FC Word 1, bit 22 */
-	uint16_t huntgroup:1;	/* FC Word 1, bit 23 */
+	uint16_t priority_tagging:1;	/* FC Word 1, bit 23 */
 #endif
 
 	uint8_t bbRcvSizeMsb;	/* Upper nibble is reserved */
@@ -559,6 +561,8 @@ struct fc_vft_header {
 #define fc_vft_hdr_hopct_WORD		word1
 };
 
+#include <uapi/scsi/fc/fc_els.h>
+
 /*
  *  Extended Link Service LS_COMMAND codes (Payload Word 0)
  */
@@ -585,6 +589,7 @@ struct fc_vft_header {
 #define ELS_CMD_RRQ       0x12000000
 #define ELS_CMD_REC       0x13000000
 #define ELS_CMD_RDP       0x18000000
+#define ELS_CMD_RDF       0x19000000
 #define ELS_CMD_PRLI      0x20100014
 #define ELS_CMD_NVMEPRLI  0x20140018
 #define ELS_CMD_PRLO      0x21100014
@@ -594,14 +599,18 @@ struct fc_vft_header {
 #define ELS_CMD_ADISC     0x52000000
 #define ELS_CMD_FARP      0x54000000
 #define ELS_CMD_FARPR     0x55000000
-#define ELS_CMD_RPS       0x56000000
 #define ELS_CMD_RPL       0x57000000
 #define ELS_CMD_FAN       0x60000000
 #define ELS_CMD_RSCN      0x61040000
+#define ELS_CMD_RSCN_XMT  0x61040008
 #define ELS_CMD_SCR       0x62000000
 #define ELS_CMD_RNID      0x78000000
 #define ELS_CMD_LIRR      0x7A000000
 #define ELS_CMD_LCB	  0x81000000
+#define ELS_CMD_FPIN	  0x16000000
+#define ELS_CMD_EDC	  0x17000000
+#define ELS_CMD_QFPA      0xB0000000
+#define ELS_CMD_UVEM      0xB1000000
 #else	/*  __LITTLE_ENDIAN_BITFIELD */
 #define ELS_CMD_MASK      0xffff
 #define ELS_RSP_MASK      0xff
@@ -625,6 +634,7 @@ struct fc_vft_header {
 #define ELS_CMD_RRQ       0x12
 #define ELS_CMD_REC       0x13
 #define ELS_CMD_RDP	  0x18
+#define ELS_CMD_RDF	  0x19
 #define ELS_CMD_PRLI      0x14001020
 #define ELS_CMD_NVMEPRLI  0x18001420
 #define ELS_CMD_PRLO      0x14001021
@@ -634,14 +644,18 @@ struct fc_vft_header {
 #define ELS_CMD_ADISC     0x52
 #define ELS_CMD_FARP      0x54
 #define ELS_CMD_FARPR     0x55
-#define ELS_CMD_RPS       0x56
 #define ELS_CMD_RPL       0x57
 #define ELS_CMD_FAN       0x60
 #define ELS_CMD_RSCN      0x0461
+#define ELS_CMD_RSCN_XMT  0x08000461
 #define ELS_CMD_SCR       0x62
 #define ELS_CMD_RNID      0x78
 #define ELS_CMD_LIRR      0x7A
 #define ELS_CMD_LCB	  0x81
+#define ELS_CMD_FPIN	  ELS_FPIN
+#define ELS_CMD_EDC	  ELS_EDC
+#define ELS_CMD_QFPA      0xB0
+#define ELS_CMD_UVEM      0xB1
 #endif
 
 /*
@@ -836,7 +850,7 @@ typedef struct _ADISC {		/* Structure is in Big Endian format */
 	struct lpfc_name portName;
 	struct lpfc_name nodeName;
 	uint32_t DID;
-} ADISC;
+} __packed ADISC;
 
 typedef struct _FARP {		/* Structure is in Big Endian format */
 	uint32_t Mflags:8;
@@ -866,7 +880,7 @@ typedef struct _FAN {		/* Structure is in Big Endian format */
 	uint32_t Fdid;
 	struct lpfc_name FportName;
 	struct lpfc_name FnodeName;
-} FAN;
+} __packed FAN;
 
 typedef struct _SCR {		/* Structure is in Big Endian format */
 	uint8_t resvd1;
@@ -910,25 +924,7 @@ typedef struct _RNID {		/* Structure is in Big Endian format */
 	union {
 		RNID_TOP_DISC topologyDisc;	/* topology disc (0xdf) */
 	} un;
-} RNID;
-
-typedef struct  _RPS {		/* Structure is in Big Endian format */
-	union {
-		uint32_t portNum;
-		struct lpfc_name portName;
-	} un;
-} RPS;
-
-typedef struct  _RPS_RSP {	/* Structure is in Big Endian format */
-	uint16_t rsvd1;
-	uint16_t portStatus;
-	uint32_t linkFailureCnt;
-	uint32_t lossSyncCnt;
-	uint32_t lossSignalCnt;
-	uint32_t primSeqErrCnt;
-	uint32_t invalidXmitWord;
-	uint32_t crcCnt;
-} RPS_RSP;
+} __packed RNID;
 
 struct RLS {			/* Structure is in Big Endian format */
 	uint32_t rls;
@@ -1065,14 +1061,17 @@ typedef struct _ELS_PKT {	/* Structure is in Big Endian format */
 struct fc_lcb_request_frame {
 	uint32_t      lcb_command;      /* ELS command opcode (0x81)     */
 	uint8_t       lcb_sub_command;/* LCB Payload Word 1, bit 24:31 */
-#define LPFC_LCB_ON    0x1
-#define LPFC_LCB_OFF   0x2
-	uint8_t       reserved[3];
-
+#define LPFC_LCB_ON		0x1
+#define LPFC_LCB_OFF		0x2
+	uint8_t       reserved[2];
+	uint8_t	      capability;	/* LCB Payload Word 1, bit 0:7 */
 	uint8_t       lcb_type; /* LCB Payload Word 2, bit 24:31 */
-#define LPFC_LCB_GREEN 0x1
-#define LPFC_LCB_AMBER 0x2
+#define LPFC_LCB_GREEN		0x1
+#define LPFC_LCB_AMBER		0x2
 	uint8_t       lcb_frequency;    /* LCB Payload Word 2, bit 16:23 */
+#define LCB_CAPABILITY_DURATION	1
+#define BEACON_VERSION_V1	1
+#define BEACON_VERSION_V0	0
 	uint16_t      lcb_duration;     /* LCB Payload Word 2, bit 15:0  */
 };
 
@@ -1082,7 +1081,8 @@ struct fc_lcb_request_frame {
 struct fc_lcb_res_frame {
 	uint32_t      lcb_ls_acc;       /* Acceptance of LCB request (0x02) */
 	uint8_t       lcb_sub_command;/* LCB Payload Word 1, bit 24:31 */
-	uint8_t       reserved[3];
+	uint8_t       reserved[2];
+	uint8_t	      capability;	/* LCB Payload Word 1, bit 0:7 */
 	uint8_t       lcb_type; /* LCB Payload Word 2, bit 24:31 */
 	uint8_t       lcb_frequency;    /* LCB Payload Word 2, bit 16:23 */
 	uint16_t      lcb_duration;     /* LCB Payload Word 2, bit 15:0  */
@@ -1177,6 +1177,9 @@ struct fc_rdp_link_error_status_desc {
 #define RDP_PS_8GB             0x0800
 #define RDP_PS_16GB            0x0400
 #define RDP_PS_32GB            0x0200
+#define RDP_PS_64GB            0x0100
+#define RDP_PS_128GB           0x0080
+#define RDP_PS_256GB           0x0040
 
 #define RDP_CAP_USER_CONFIGURED 0x0002
 #define RDP_CAP_UNKNOWN         0x0001
@@ -1321,6 +1324,117 @@ struct fc_rdp_res_frame {
 };
 
 
+/* UVEM */
+
+#define LPFC_UVEM_SIZE 60
+#define LPFC_UVEM_VEM_ID_DESC_SIZE 16
+#define LPFC_UVEM_VE_MAP_DESC_SIZE 20
+
+#define VEM_ID_DESC_TAG  0x0001000A
+struct lpfc_vem_id_desc {
+	uint32_t tag;
+	uint32_t length;
+	uint8_t vem_id[16];
+};
+
+#define LPFC_QFPA_SIZE	4
+
+#define INSTANTIATED_VE_DESC_TAG  0x0001000B
+struct instantiated_ve_desc {
+	uint32_t tag;
+	uint32_t length;
+	uint8_t global_vem_id[16];
+	uint32_t word6;
+#define lpfc_instantiated_local_id_SHIFT   0
+#define lpfc_instantiated_local_id_MASK    0x000000ff
+#define lpfc_instantiated_local_id_WORD    word6
+#define lpfc_instantiated_nport_id_SHIFT   8
+#define lpfc_instantiated_nport_id_MASK    0x00ffffff
+#define lpfc_instantiated_nport_id_WORD    word6
+};
+
+#define DEINSTANTIATED_VE_DESC_TAG  0x0001000C
+struct deinstantiated_ve_desc {
+	uint32_t tag;
+	uint32_t length;
+	uint8_t global_vem_id[16];
+	uint32_t word6;
+#define lpfc_deinstantiated_nport_id_SHIFT   0
+#define lpfc_deinstantiated_nport_id_MASK    0x000000ff
+#define lpfc_deinstantiated_nport_id_WORD    word6
+#define lpfc_deinstantiated_local_id_SHIFT   24
+#define lpfc_deinstantiated_local_id_MASK    0x00ffffff
+#define lpfc_deinstantiated_local_id_WORD    word6
+};
+
+/* Query Fabric Priority Allocation Response */
+#define LPFC_PRIORITY_RANGE_DESC_SIZE 12
+
+struct priority_range_desc {
+	uint32_t tag;
+	uint32_t length;
+	uint8_t lo_range;
+	uint8_t hi_range;
+	uint8_t qos_priority;
+	uint8_t local_ve_id;
+};
+
+struct fc_qfpa_res {
+	uint32_t reply_sequence;	/* LS_ACC or LS_RJT */
+	uint32_t length;	/* FC Word 1    */
+	struct priority_range_desc desc[1];
+};
+
+/* Application Server command code */
+/* VMID               */
+
+#define SLI_CT_APP_SEV_Subtypes     0x20	/* Application Server subtype */
+
+#define SLI_CTAS_GAPPIA_ENT    0x0100	/* Get Application Identifier */
+#define SLI_CTAS_GALLAPPIA     0x0101	/* Get All Application Identifier */
+#define SLI_CTAS_GALLAPPIA_ID  0x0102	/* Get All Application Identifier */
+					/* for Nport */
+#define SLI_CTAS_GAPPIA_IDAPP  0x0103	/* Get Application Identifier */
+					/* for Nport */
+#define SLI_CTAS_RAPP_IDENT    0x0200	/* Register Application Identifier */
+#define SLI_CTAS_DAPP_IDENT    0x0300	/* Deregister Application */
+					/* Identifier */
+#define SLI_CTAS_DALLAPP_ID    0x0301	/* Deregister All Application */
+					/* Identifier */
+
+struct entity_id_object {
+	uint8_t entity_id_len;
+	uint8_t entity_id[255];	/* VM UUID */
+};
+
+struct app_id_object {
+	uint32_t port_id;
+	uint32_t app_id;
+	struct entity_id_object obj;
+};
+
+struct lpfc_vmid_rapp_ident_list {
+	uint32_t no_of_objects;
+	struct entity_id_object obj[1];
+};
+
+struct lpfc_vmid_dapp_ident_list {
+	uint32_t no_of_objects;
+	struct entity_id_object obj[1];
+};
+
+#define GALLAPPIA_ID_LAST  0x80
+struct lpfc_vmid_gallapp_ident_list {
+	uint8_t control;
+	uint8_t reserved[3];
+	struct app_id_object app_id;
+};
+
+#define RAPP_IDENT_OFFSET  (offsetof(struct lpfc_sli_ct_request, un) + 4)
+#define DAPP_IDENT_OFFSET  (offsetof(struct lpfc_sli_ct_request, un) + 4)
+#define GALLAPPIA_ID_SIZE  (offsetof(struct lpfc_sli_ct_request, un) + 4)
+#define DALLAPP_ID_SIZE    (offsetof(struct lpfc_sli_ct_request, un) + 4)
+
 /******** FDMI ********/
 
 /* lpfc_sli_ct_request defines the CT_IU preamble for FDMI commands */
@@ -1383,6 +1497,9 @@ struct lpfc_fdmi_reg_hba {
 	struct lpfc_fdmi_hba_ident hi;
 	struct lpfc_fdmi_reg_port_list rpl;
 };
+
+/******** MI MIB ********/
+#define SLI_CT_MIB_Subtypes	0x11
 
 /*
  * Register HBA Attributes (RHAT)
@@ -1469,7 +1586,7 @@ struct lpfc_fdmi_reg_portattr {
 #define LPFC_FDMI2_HBA_ATTR			0x0002efff
 
 /*
- * Port Attrubute Types
+ * Port Attribute Types
  */
 #define  RPRT_SUPPORTED_FC4_TYPES     0x1 /* 32 byte binary array */
 #define  RPRT_SUPPORTED_SPEED         0x2 /* 32-bit unsigned int */
@@ -1487,6 +1604,7 @@ struct lpfc_fdmi_reg_portattr {
 #define  RPRT_PORT_STATE              0x101 /* 32-bit unsigned int */
 #define  RPRT_DISC_PORT               0x102 /* 32-bit unsigned int */
 #define  RPRT_PORT_ID                 0x103 /* 32-bit unsigned int */
+#define  RPRT_VENDOR_MI               0xf047 /* vendor ascii string */
 #define  RPRT_SMART_SERVICE           0xf100 /* 4 to 256 byte ASCII string */
 #define  RPRT_SMART_GUID              0xf101 /* 8 byte WWNN + 8 byte WWPN */
 #define  RPRT_SMART_VERSION           0xf102 /* 4 to 256 byte ASCII string */
@@ -1519,6 +1637,7 @@ struct lpfc_fdmi_reg_portattr {
 #define LPFC_FDMI_SMART_ATTR_port_info		0x00100000 /* Vendor specific */
 #define LPFC_FDMI_SMART_ATTR_qos		0x00200000 /* Vendor specific */
 #define LPFC_FDMI_SMART_ATTR_security		0x00400000 /* Vendor specific */
+#define LPFC_FDMI_VENDOR_ATTR_mi		0x00800000 /* Vendor specific */
 
 /* Bit mask for FDMI-1 defined PORT attributes */
 #define LPFC_FDMI1_PORT_ATTR			0x0000003f
@@ -1576,6 +1695,8 @@ struct lpfc_fdmi_reg_portattr {
 #define PCI_DEVICE_ID_LANCER_FCOE   0xe260
 #define PCI_DEVICE_ID_LANCER_FCOE_VF 0xe268
 #define PCI_DEVICE_ID_LANCER_G6_FC  0xe300
+#define PCI_DEVICE_ID_LANCER_G7_FC  0xf400
+#define PCI_DEVICE_ID_LANCER_G7P_FC 0xf500
 #define PCI_DEVICE_ID_SAT_SMB       0xf011
 #define PCI_DEVICE_ID_SAT_MID       0xf015
 #define PCI_DEVICE_ID_RFLY          0xf095
@@ -2253,6 +2374,9 @@ typedef struct {
 #define LINK_SPEED_10G  0x10    /* 10 Gigabaud */
 #define LINK_SPEED_16G  0x11    /* 16 Gigabaud */
 #define LINK_SPEED_32G  0x14    /* 32 Gigabaud */
+#define LINK_SPEED_64G  0x17    /* 64 Gigabaud */
+#define LINK_SPEED_128G 0x1A    /* 128 Gigabaud */
+#define LINK_SPEED_256G 0x1D    /* 256 Gigabaud */
 
 } INIT_LINK_VAR;
 
@@ -2437,6 +2561,9 @@ typedef struct {
 #define LMT_10Gb      0x100
 #define LMT_16Gb      0x200
 #define LMT_32Gb      0x400
+#define LMT_64Gb      0x800
+#define LMT_128Gb     0x1000
+#define LMT_256Gb     0x2000
 	uint32_t rsvd2;
 	uint32_t rsvd3;
 	uint32_t max_xri;
@@ -2961,6 +3088,9 @@ struct lpfc_mbx_read_top {
 #define LPFC_LINK_SPEED_10GHZ	0x40
 #define LPFC_LINK_SPEED_16GHZ	0x80
 #define LPFC_LINK_SPEED_32GHZ	0x90
+#define LPFC_LINK_SPEED_64GHZ	0xA0
+#define LPFC_LINK_SPEED_128GHZ	0xB0
+#define LPFC_LINK_SPEED_256GHZ	0xC0
 };
 
 /* Structure for MB Command CLEAR_LA (22) */
@@ -3256,8 +3386,7 @@ typedef struct {
 #endif
 
 #ifdef __BIG_ENDIAN_BITFIELD
-	uint32_t rsvd1     : 19;  /* Reserved                             */
-	uint32_t cdss      :  1;  /* Configure Data Security SLI          */
+	uint32_t rsvd1     : 20;  /* Reserved                             */
 	uint32_t casabt    :  1;  /* Configure async abts status notice   */
 	uint32_t rsvd2     :  2;  /* Reserved                             */
 	uint32_t cbg       :  1;  /* Configure BlockGuard                 */
@@ -3281,12 +3410,10 @@ typedef struct {
 	uint32_t cbg       :  1;  /* Configure BlockGuard                 */
 	uint32_t rsvd2     :  2;  /* Reserved                             */
 	uint32_t casabt    :  1;  /* Configure async abts status notice   */
-	uint32_t cdss      :  1;  /* Configure Data Security SLI          */
-	uint32_t rsvd1     : 19;  /* Reserved                             */
+	uint32_t rsvd1     : 20;  /* Reserved                             */
 #endif
 #ifdef __BIG_ENDIAN_BITFIELD
-	uint32_t rsvd3     : 19;  /* Reserved                             */
-	uint32_t gdss      :  1;  /* Configure Data Security SLI          */
+	uint32_t rsvd3     : 20;  /* Reserved                             */
 	uint32_t gasabt    :  1;  /* Grant async abts status notice       */
 	uint32_t rsvd4     :  2;  /* Reserved                             */
 	uint32_t gbg       :  1;  /* Grant BlockGuard                     */
@@ -3310,8 +3437,7 @@ typedef struct {
 	uint32_t gbg       :  1;  /* Grant BlockGuard                     */
 	uint32_t rsvd4     :  2;  /* Reserved                             */
 	uint32_t gasabt    :  1;  /* Grant async abts status notice       */
-	uint32_t gdss      :  1;  /* Configure Data Security SLI          */
-	uint32_t rsvd3     : 19;  /* Reserved                             */
+	uint32_t rsvd3     : 20;  /* Reserved                             */
 #endif
 
 #ifdef __BIG_ENDIAN_BITFIELD
@@ -3333,15 +3459,11 @@ typedef struct {
 	uint32_t rsvd6;           /* Reserved                             */
 
 #ifdef __BIG_ENDIAN_BITFIELD
-	uint32_t fips_rev   : 3;   /* FIPS Spec Revision                   */
-	uint32_t fips_level : 4;   /* FIPS Level                           */
-	uint32_t sec_err    : 9;   /* security crypto error                */
+	uint32_t rsvd7      : 16;
 	uint32_t max_vpi    : 16;  /* Max number of virt N-Ports           */
 #else	/*  __LITTLE_ENDIAN */
 	uint32_t max_vpi    : 16;  /* Max number of virt N-Ports           */
-	uint32_t sec_err    : 9;   /* security crypto error                */
-	uint32_t fips_level : 4;   /* FIPS Level                           */
-	uint32_t fips_rev   : 3;   /* FIPS Spec Revision                   */
+	uint32_t rsvd7      : 16;
 #endif
 
 } CONFIG_PORT_VAR;

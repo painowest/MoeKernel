@@ -1,13 +1,6 @@
-/* Copyright (c) 2017,2019, The Linux Foundation. All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 and
- * only version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
+/* SPDX-License-Identifier: GPL-2.0-only */
+/*
+ * Copyright (c) 2017-2020, The Linux Foundation. All rights reserved.
  */
 
 #ifndef IPA_MHI_H_
@@ -110,7 +103,7 @@ struct ipa_mhi_connect_params {
 /* bit #40 in address should be asserted for MHI transfers over pcie */
 #define IPA_MHI_HOST_ADDR(addr) ((addr) | BIT_ULL(40))
 
-#if defined CONFIG_IPA || defined CONFIG_IPA3
+#if IS_ENABLED(CONFIG_IPA3)
 
 int ipa_mhi_init(struct ipa_mhi_init_params *params);
 
@@ -128,7 +121,7 @@ void ipa_mhi_destroy(void);
 
 int ipa_mhi_update_mstate(enum ipa_mhi_mstate mstate_info);
 
-#else /* (CONFIG_IPA || CONFIG_IPA3) */
+#else /* IS_ENABLED(CONFIG_IPA3) */
 
 static inline int ipa_mhi_init(struct ipa_mhi_init_params *params)
 {
@@ -172,6 +165,6 @@ static inline int ipa_mhi_update_mstate
 	return -EPERM;
 }
 
-#endif /* (CONFIG_IPA || CONFIG_IPA3) */
+#endif /* IS_ENABLED(CONFIG_IPA3) */
 
 #endif /* IPA_MHI_H_ */

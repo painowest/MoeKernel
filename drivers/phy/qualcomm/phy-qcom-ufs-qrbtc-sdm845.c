@@ -1,5 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2016, Linux Foundation. All rights reserved.
+ * Copyright (c) 2016, 2019-2021, Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,18 +18,21 @@
 #define UFS_PHY_NAME "ufs_phy_qrbtc_sdm845"
 
 static
-int ufs_qcom_phy_qrbtc_sdm845_phy_calibrate(struct ufs_qcom_phy *ufs_qcom_phy,
-					bool is_rate_B, bool is_g4)
+int ufs_qcom_phy_qrbtc_sdm845_phy_calibrate(struct phy *generic_phy)
 {
 	int err;
 	int tbl_size_A, tbl_size_B;
 	struct ufs_qcom_phy_calibration *tbl_A, *tbl_B;
+	struct ufs_qcom_phy *ufs_qcom_phy = get_ufs_qcom_phy(generic_phy);
+	bool is_rate_B;
 
 	tbl_A = phy_cal_table_rate_A;
 	tbl_size_A = ARRAY_SIZE(phy_cal_table_rate_A);
 
 	tbl_size_B = ARRAY_SIZE(phy_cal_table_rate_B);
 	tbl_B = phy_cal_table_rate_B;
+
+	is_rate_B = (ufs_qcom_phy->mode == PHY_MODE_UFS_HS_B) ? true : false;
 
 	err = ufs_qcom_phy_calibrate(ufs_qcom_phy,
 				     tbl_A, tbl_size_A,
@@ -84,7 +88,14 @@ static void ufs_qcom_phy_qrbtc_sdm845_start_serdes(struct ufs_qcom_phy *phy)
 
 static int ufs_qcom_phy_qrbtc_sdm845_init(struct phy *generic_phy)
 {
-	return 0;
+	struct ufs_qcom_phy *phy_common = get_ufs_qcom_phy(generic_phy);
+	int ret;
+
+	ret = ufs_qcom_phy_get_reset(phy_common);
+	if (ret)
+		dev_err(phy_common->dev, "Failed to get reset control\n", ret);
+
+	return ret;
 }
 
 static int ufs_qcom_phy_qrbtc_sdm845_exit(struct phy *generic_phy)
@@ -92,14 +103,31 @@ static int ufs_qcom_phy_qrbtc_sdm845_exit(struct phy *generic_phy)
 	return 0;
 }
 
-struct phy_ops ufs_qcom_phy_qrbtc_sdm845_phy_ops = {
+static
+int ufs_qcom_phy_qrbtc_sdm845_set_mode(struct phy *generic_phy,
+				   enum phy_mode mode, int submode)
+{
+	struct ufs_qcom_phy *phy_common = get_ufs_qcom_phy(generic_phy);
+
+	phy_common->mode = PHY_MODE_INVALID;
+
+	if (mode > 0)
+		phy_common->mode = mode;
+
+	phy_common->submode = submode;
+
+	return 0;
+}
+
+static const struct phy_ops ufs_qcom_phy_qrbtc_sdm845_phy_ops = {
 	.init		= ufs_qcom_phy_qrbtc_sdm845_init,
 	.exit		= ufs_qcom_phy_qrbtc_sdm845_exit,
+	.set_mode	= ufs_qcom_phy_qrbtc_sdm845_set_mode,
+	.calibrate	= ufs_qcom_phy_qrbtc_sdm845_phy_calibrate,
 	.owner		= THIS_MODULE,
 };
 
-struct ufs_qcom_phy_specific_ops phy_qrbtc_sdm845_ops = {
-	.calibrate_phy		= ufs_qcom_phy_qrbtc_sdm845_phy_calibrate,
+static struct ufs_qcom_phy_specific_ops phy_qrbtc_sdm845_ops = {
 	.start_serdes		= ufs_qcom_phy_qrbtc_sdm845_start_serdes,
 	.is_physical_coding_sublayer_ready =
 				ufs_qcom_phy_qrbtc_sdm845_is_pcs_ready,
@@ -130,7 +158,7 @@ static int ufs_qcom_phy_qrbtc_sdm845_probe(struct platform_device *pdev)
 
 	phy_set_drvdata(generic_phy, phy);
 
-	strlcpy(phy->common_cfg.name, UFS_PHY_NAME,
+	strscpy(phy->common_cfg.name, UFS_PHY_NAME,
 		sizeof(phy->common_cfg.name));
 
 out:
@@ -148,7 +176,6 @@ static struct platform_driver ufs_qcom_phy_qrbtc_sdm845_driver = {
 	.driver = {
 		.of_match_table = ufs_qcom_phy_qrbtc_sdm845_of_match,
 		.name = "ufs_qcom_phy_qrbtc_sdm845",
-		.owner = THIS_MODULE,
 	},
 };
 

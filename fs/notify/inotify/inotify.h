@@ -5,6 +5,7 @@
 
 struct inotify_event_info {
 	struct fsnotify_event fse;
+	u32 mask;
 	int wd;
 	u32 sync_cookie;
 	int name_len;
@@ -35,13 +36,10 @@ static inline __u32 inotify_mark_user_mask(struct fsnotify_mark *fsn_mark)
 
 extern void inotify_ignored_and_remove_idr(struct fsnotify_mark *fsn_mark,
 					   struct fsnotify_group *group);
-extern int inotify_handle_event(struct fsnotify_group *group,
-				struct inode *inode,
-				struct fsnotify_mark *inode_mark,
-				struct fsnotify_mark *vfsmount_mark,
-				u32 mask, const void *data, int data_type,
-				const unsigned char *file_name, u32 cookie,
-				struct fsnotify_iter_info *iter_info);
+extern int inotify_handle_inode_event(struct fsnotify_mark *inode_mark,
+				      u32 mask, struct inode *inode,
+				      struct inode *dir,
+				      const struct qstr *name, u32 cookie);
 
 extern const struct fsnotify_ops inotify_fsnotify_ops;
 extern struct kmem_cache *inotify_inode_mark_cachep;
