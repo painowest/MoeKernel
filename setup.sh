@@ -15,6 +15,10 @@ clang() {
 	rm -rf clang
 }
 
+kernelsu() {
+	./ksu_update.sh -t stable
+}
+
 # idk lol.
 kernel() {
 	make mrproper
@@ -22,4 +26,5 @@ kernel() {
 
 packages
 clang
+kernelsu
 kernel
